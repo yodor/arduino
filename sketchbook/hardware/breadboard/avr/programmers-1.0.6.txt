@@ -1,0 +1,5 @@
+ponyser1.name=PonySer
+ponyser1.communication=serial
+ponyser1.protocol=ponyser
+ponyser1.speed=115200
+

@@ -1,0 +1,70 @@
+
+menu.cpu=Processor
+
+##############################################################
+
+brd.name=BreadBoard
+
+brd.upload.tool=avrdude
+brd.upload.protocol=ponyser
+#brd.upload.speed=19200
+
+brd.bootloader.tool=avrdude
+brd.bootloader.unlock_bits=0x3F
+brd.bootloader.lock_bits=0x0F
+
+brd.build.core=arduino
+brd.build.variant=standard
+
+## ATmega328p 8Mhz internal OSC
+## ----------------------------
+brd.menu.cpu.8MHzatmega328p=ATmega328 P (8Mhz Int OSC)
+brd.menu.cpu.8MHzatmega328p.bootloader.low_fuses=0xC2
+brd.menu.cpu.8MHzatmega328p.bootloader.high_fuses=0xDE
+brd.menu.cpu.8MHzatmega328p.bootloader.extended_fuses=0xFC
+brd.menu.cpu.8MHzatmega328p.bootloader.file=optiboot/optiboot_atmega328.hex
+brd.menu.cpu.8MHzatmega328p.build.mcu=atmega328p
+brd.menu.cpu.8MHzatmega328p.build.f_cpu=8000000L
+brd.menu.cpu.8MHzatmega328p.upload.maximum_size=32768
+
+## ATmega328 8Mhz internal OSC
+## ---------------------------
+brd.menu.cpu.8MHzatmega328=ATmega328 (8Mhz Int OSC)
+#brd.menu.cpu.8MHzatmega328.bootloader.low_fuses=0xC2
+#brd.menu.cpu.8MHzatmega328.bootloader.high_fuses=0xDA
+brd.menu.cpu.8MHzatmega328.bootloader.low_fuses=0xE2
+brd.menu.cpu.8MHzatmega328.bootloader.high_fuses=0xD8
+brd.menu.cpu.8MHzatmega328.bootloader.extended_fuses=0x04
+brd.menu.cpu.8MHzatmega328.bootloader.file=optiboot/optiboot_atmega328.hex
+brd.menu.cpu.8MHzatmega328.build.mcu=atmega328
+brd.menu.cpu.8MHzatmega328.build.f_cpu=8000000L
+brd.menu.cpu.8MHzatmega328.upload.maximum_size=32256
+
+
+## ATmega8 (2MHz internal OSC)
+## ---------------------------
+brd.menu.cpu.2Mhzatmega8=ATmega8 (2MHz Int OSC)
+brd.menu.cpu.2Mhzatmega8.bootloader.low_fuses=0xE2
+brd.menu.cpu.2Mhzatmega8.bootloader.high_fuses=0xD9
+brd.menu.cpu.2Mhzatmega8.bootloader.extended_fuses=0x04
+brd.menu.cpu.2Mhzatmega8.bootloader.file=optiboot/optiboot_atmega8.hex
+brd.menu.cpu.2Mhzatmega8.build.mcu=atmega8
+brd.menu.cpu.2Mhzatmega8.build.f_cpu=2000000L
+brd.menu.cpu.2Mhzatmega8.upload.maximum_size=7168
+brd.menu.cpu.2Mhzatmega8.upload.speed=4800
+
+
+## ATmega8 (1MHz internal OSC)
+## ---------------------------
+brd.menu.cpu.1Mhzatmega8=ATmega8 (1MHz Int OSC)
+brd.menu.cpu.1Mhzatmega8.bootloader.low_fuses=0x81
+brd.menu.cpu.1Mhzatmega8.bootloader.high_fuses=0xD8
+brd.menu.cpu.1Mhzatmega8.bootloader.extended_fuses=0x04
+brd.menu.cpu.1Mhzatmega8.bootloader.file=optiboot/optiboot_atmega8.hex
+brd.menu.cpu.1Mhzatmega8.build.mcu=atmega8
+brd.menu.cpu.1Mhzatmega8.build.f_cpu=1000000L
+brd.menu.cpu.1Mhzatmega8.upload.maximum_size=7168
+brd.menu.cpu.1Mhzatmega8.upload.speed=4800
+
+##############################################################
+

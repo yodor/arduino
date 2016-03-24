@@ -1,0 +1,42 @@
+ponyser.name=PonySer
+ponyser.communication=serial
+ponyser.protocol=ponyser
+ponyser.program.protocol=ponyser
+ponyser.program.tool=avrdude
+ponyser.program.extra_params=-P/dev/ttyS0
+
+ponyser1.name=PonySer4800
+ponyser1.communication=serial
+ponyser1.protocol=ponyser
+ponyser1.program.protocol=ponyser
+ponyser1.program.tool=avrdude
+ponyser1.program.extra_params=-P/dev/ttyS0 -b{program.speed}
+ponyser1.program.speed=4800
+ponyser1.speed=4800
+
+ponyser2.name=PonySer9600
+ponyser2.communication=serial
+ponyser2.protocol=ponyser
+ponyser2.program.protocol=ponyser
+ponyser2.program.tool=avrdude
+ponyser2.program.extra_params=-P/dev/ttyS0 -b{program.speed}
+ponyser2.program.speed=9600
+ponyser2.speed=9600
+
+ponyser3.name=PonySer19200
+ponyser3.communication=serial
+ponyser3.protocol=ponyser
+ponyser3.program.protocol=ponyser
+ponyser3.program.tool=avrdude
+ponyser3.program.extra_params=-P/dev/ttyS0 -b{program.speed}
+ponyser3.program.speed=19200
+ponyser3.speed=19200
+
+ponyser4.name=PonySer115200
+ponyser4.communication=serial
+ponyser4.protocol=ponyser
+ponyser4.program.protocol=ponyser
+ponyser4.program.tool=avrdude
+ponyser4.program.extra_params=-P/dev/ttyS0 -b{program.speed}
+ponyser4.program.speed=115200
+ponyser4.speed=115200
