@@ -11,15 +11,21 @@ unsigned long interval_update = 500;
 
 void setup() {  
   
+  Wire.setClock(200000L);
+  
+  Serial.begin(9600);
+  Serial.println("Start");
   disp.start();
-
+  
 }
 
 void loop() {
 
-
+  
+  
   if (millis() - last_update > interval_update)
   {
+    
     number+=0.1;
     if (number>99)number = 0;
     last_update = millis();

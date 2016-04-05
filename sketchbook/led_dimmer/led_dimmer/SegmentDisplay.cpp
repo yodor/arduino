@@ -2,7 +2,8 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#define DELAY_SEGMENT 5500
+//adjust for long loops -  off time between segment updates
+#define DELAY_SEGMENT 2500
 
 Adafruit_MCP23017 mcp;
 
@@ -136,7 +137,12 @@ void SegmentDisplay::digitBits(uint8_t seg_num, int dgt, bool dot)
   
 }
 
-
+void SegmentDisplay::displayOff()
+{
+    mcp.digitalWrite(EN_D1, LOW);
+    mcp.digitalWrite(EN_D2, LOW);
+    mcp.digitalWrite(EN_D3, LOW);
+}
 void SegmentDisplay::showFloat(float number)
 {
   int tens = (int(number) % 100) / 10;

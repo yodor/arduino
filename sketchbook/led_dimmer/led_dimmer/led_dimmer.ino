@@ -2,21 +2,27 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+#include <Wire.h>
+#include "Adafruit_MCP23017.h"
+#include "SegmentDisplay.h"
+
+SegmentDisplay disp;
+
 #include <IRremote.h>
 
 #include <Adafruit_NeoPixel.h>
 
 //to RGB
-const uint8_t PIN_RGB  = 8;
+const uint8_t PIN_RGB  = 10;
 
 //to IR
-const uint8_t PIN_IR   = 9;
+const uint8_t PIN_IR   = 8;
 
 //to bc547 base
-const uint8_t PIN_FADE = 10;
+const uint8_t PIN_FADE = 5;
 
 // Data wire is plugged into port 2 on the Arduino
-const uint8_t PIN_TEMP = 7;
+const uint8_t PIN_TEMP = A3;
 
 #define ADDR_CONFIG    0xff
 #define CHK_CONFIG_VAL 0x3c
@@ -64,7 +70,9 @@ unsigned long ir_last = 0; // code of last pressed IR button
 decode_results results;
 
 unsigned long last_update = 0;
-unsigned long interval_update = 1000;
+
+//make reading of temperatures non blocking
+unsigned long interval_update = 5000;
 
 const uint8_t FADE_STEP = 15;
 
@@ -136,8 +144,16 @@ void setup() {
   updateRGB();
   updateBrightness();
 
+  digitalWrite(SDA, 1);
+  digitalWrite(SCL, 1);
+  Wire.setClock(50000L);
+  
+  disp.start();
+  
   Serial.println(F("Setup Done"));
 }
+volatile float tempValue = 0.0f;
+volatile boolean tempVisible = false;
 
 void loop() {
 
@@ -146,15 +162,21 @@ void loop() {
 
     sensors.requestTemperatures();
 
-    float temp = sensors.getTempCByIndex(0);
+    tempValue = sensors.getTempCByIndex(0);
 
 
-    Serial.println(temp,1);
+    //Serial.println(tempValue,1);
 
     last_update = millis();
 
   }
 
+  if (tempVisible) {
+    disp.showFloat(tempValue);  
+  }
+  else {
+    disp.displayOff();  
+  }
   boolean ir_repeat = false;
 
   if (irrecv.decode(&results)) {
@@ -163,6 +185,7 @@ void loop() {
 
     if (results.value == 0xFFFFFFFF) {
       results.value = ir_last;
+      ir_repeat = true;
     }
     if (results.value == IR_ON) {
       setPowerState(true);
@@ -172,6 +195,17 @@ void loop() {
     }
     else if (results.value == IR_FLASH) {
       toggleFlashState();
+    }
+    else if (results.value == IR_STROBE && ir_repeat == false) {
+      if (tempVisible) {
+        
+        tempVisible=false;
+      }
+      else {
+        
+        tempVisible=true;
+      }
+      
     }
     else if (results.value == IR_WHI) {
       cfg.red_value = 255;
