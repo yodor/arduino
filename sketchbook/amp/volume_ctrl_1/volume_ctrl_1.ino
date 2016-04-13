@@ -49,12 +49,17 @@ volatile boolean initial_boot = true;
 ////////////////////////////////////////////
 
 long unsigned last_update = 0;
-const long unsigned interval_update = 1000;
+const long unsigned interval_update = 2000;
+
+DeviceAddress tempDeviceAddress;
+
+#define IR_LUP      0xFF906F
+#define IR_LDN      0xFFB847
 
 void setup()
 {
 
-  Serial.begin(9600);
+  //Serial.begin(9600);
 
 
   for (int a = 0; a < sizeof(unused_pins) - 1; a++) {
@@ -88,7 +93,10 @@ void setup()
   delay(1500);
   setMute(false);
 
-  sensors.begin();
+  sensors.getAddress(tempDeviceAddress, 0);
+  sensors.setResolution(tempDeviceAddress, 12);
+  sensors.setWaitForConversion(false);
+  sensors.requestTemperatures();
 }
 
 
@@ -122,14 +130,14 @@ void loop()
 
   if (millis() - last_update >= interval_update) {
 
-    sensors.requestTemperatures(); // Send the command to get temperatures
-
-    float temp = sensors.getTempCByIndex(0);
-
-    current_temp  = temp * 10000;
-
+     if (sensors.isConversionAvailable(tempDeviceAddress)) {
+          float temp = sensors.getTempC(tempDeviceAddress);
+          sensors.requestTemperaturesByAddress(tempDeviceAddress);
+          current_temp  = temp * 10000;
+     }
+        
     last_update = millis();
-    //Serial.println(current_temp);
+    
 
   }
 
@@ -138,38 +146,37 @@ void loop()
   
   unsigned long button = irproc.buttonPressed();
   
+  //clears button released 
+  unsigned long lastButton = irproc.lastButton();
 
-  if ( button == BTN_VOL_UP && motor_direction ==  STOPPED) {
+  if (button == BTN_NOBUTTON) {
+    if (lastButton == BTN_MUTE) {
+        toggleMute();
+    }
+    else if (lastButton != BTN_NOBUTTON) {
+        digitalWrite(PIN_MOTOR_ENABLE, LOW);
+        digitalWrite(PIN_MOTOR_DIR_RIGHT, LOW);
+        digitalWrite(PIN_MOTOR_DIR_LEFT, LOW);
+        motor_direction = STOPPED;
+    }
+  }
+  else if ( button == BTN_VOL_UP || button == IR_LUP ) {
 
     digitalWrite(PIN_MOTOR_ENABLE, HIGH);
     digitalWrite(PIN_MOTOR_DIR_RIGHT, HIGH);
     digitalWrite(PIN_MOTOR_DIR_LEFT, LOW);
     motor_direction = UP;
 
-    Serial.println(F("Volume UP"));
+    //Serial.println(F("Volume UP"));
   }
-  else if ( button == BTN_VOL_DOWN && motor_direction ==  STOPPED ) {
+  else if ( button == BTN_VOL_DOWN || button == IR_LDN ) {
 
     digitalWrite(PIN_MOTOR_ENABLE, HIGH);
     digitalWrite(PIN_MOTOR_DIR_RIGHT, LOW);
     digitalWrite(PIN_MOTOR_DIR_LEFT, HIGH);
     motor_direction = DOWN;
 
-    Serial.println(F("Volume DOWN"));
-  }
-  else if (button == BTN_NOBUTTON && motor_direction !=  STOPPED) {
-    digitalWrite(PIN_MOTOR_ENABLE, LOW);
-    digitalWrite(PIN_MOTOR_DIR_RIGHT, LOW);
-    digitalWrite(PIN_MOTOR_DIR_LEFT, LOW);
-    motor_direction = STOPPED;
-
-    Serial.println(F("Volume Stopped"));
-  }
-
-
-  //clears button released 
-  if (irproc.lastButton() == BTN_MUTE && button == BTN_NOBUTTON) {
-      toggleMute();
+    //Serial.println(F("Volume DOWN"));
   }
 
 

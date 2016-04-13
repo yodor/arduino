@@ -24,8 +24,8 @@ const uint8_t PIN_FADE = 5;
 // Data wire is plugged into port 2 on the Arduino
 const uint8_t PIN_TEMP = A3;
 
-#define ADDR_CONFIG    0xff
-#define CHK_CONFIG_VAL 0x3c
+#define ADDR_CONFIG    0x100
+#define CHK_CONFIG_VAL 0x100
 
 #define IR_ON       0xFFB04F
 #define IR_OFF      0xFFF807
@@ -71,8 +71,8 @@ decode_results results;
 
 unsigned long last_update = 0;
 
-//make reading of temperatures non blocking
-unsigned long interval_update = 5000;
+//TODO: ? make reading of temperatures non blocking
+unsigned long interval_update = 2000;
 
 const uint8_t FADE_STEP = 15;
 
@@ -107,6 +107,11 @@ ConfigStruct cfg;
 #define C_OLIVEDRAB     0xFF32CD
 #define C_SLATEBLUE     0xFF6897
 
+float tempValue = 0.0f;
+boolean tempVisible = false;
+
+DeviceAddress tempDeviceAddress;
+
 void setup() {
 
   Serial.begin(9600);
@@ -114,15 +119,10 @@ void setup() {
   pinMode(PIN_FADE, OUTPUT);
   analogWrite(PIN_FADE, 0);
 
-
-  strip.begin();
-  strip.show(); // Initialize all pixels to 'off'
-
-  irrecv.enableIRIn(); // Start the receiver
-  irrecv.blink13(false);
-
-  sensors.begin();
-
+  digitalWrite(SDA, 1);
+  digitalWrite(SCL, 1);
+  //Wire.setClock(100000L);
+  
   EEPROM_read(ADDR_CONFIG, cfg);
   if (cfg.ver != CHK_CONFIG_VAL) {
     Serial.println(F("Config Init"));
@@ -139,44 +139,59 @@ void setup() {
     Serial.println(F("Config Read"));
   }
 
-  setPowerState(true);
 
-  updateRGB();
-  updateBrightness();
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
 
-  digitalWrite(SDA, 1);
-  digitalWrite(SCL, 1);
-  Wire.setClock(50000L);
+  irrecv.enableIRIn(); // Start the receiver
+  irrecv.blink13(false);
+
+  //sensors.begin();
+
+//  if (sensors.getAddress(tempDeviceAddress, 0)) {
+//    sensors.setResolution(tempDeviceAddress, 12);
+//  
+//    sensors.setWaitForConversion(false);
+//    sensors.requestTemperatures();
+//  }
+
+//  setPowerState(true);
+//
+//  updateRGB();
+//  updateBrightness();
+
   
-  disp.start();
+  
+  //disp.start();
   
   Serial.println(F("Setup Done"));
+
+  
+  
+
 }
-volatile float tempValue = 0.0f;
-volatile boolean tempVisible = false;
+
 
 void loop() {
 
-  if (millis() - last_update > interval_update ) {
-
-
-    sensors.requestTemperatures();
-
-    tempValue = sensors.getTempCByIndex(0);
-
-
-    //Serial.println(tempValue,1);
-
-    last_update = millis();
-
-  }
 
   if (tempVisible) {
-    disp.showFloat(tempValue);  
+
+    disp.updateSegments();
+    
+    if (millis() - last_update > interval_update) {
+        if (sensors.isConversionAvailable(tempDeviceAddress)) {
+          tempValue = sensors.getTempC(tempDeviceAddress);
+          sensors.requestTemperaturesByAddress(tempDeviceAddress);
+          disp.showFloat(tempValue);  
+        }
+        last_update = millis();
+    }
+    
+    
+    
   }
-  else {
-    disp.displayOff();  
-  }
+  
   boolean ir_repeat = false;
 
   if (irrecv.decode(&results)) {
@@ -187,19 +202,22 @@ void loop() {
       results.value = ir_last;
       ir_repeat = true;
     }
-    if (results.value == IR_ON) {
+    
+    if (results.value == IR_ON && ir_repeat == false) {
       setPowerState(true);
     }
-    else if (results.value == IR_OFF) {
+    else if (results.value == IR_OFF && ir_repeat == false) {
       setPowerState(false);
     }
-    else if (results.value == IR_FLASH) {
+    else if (results.value == IR_FLASH && ir_repeat == false) {
       toggleFlashState();
     }
     else if (results.value == IR_STROBE && ir_repeat == false) {
       if (tempVisible) {
         
         tempVisible=false;
+        disp.displayOff();  
+        
       }
       else {
         
@@ -273,16 +291,16 @@ void setPowerState(boolean mode)
     }
 
   }
-  Serial.print("Power: ");
+  Serial.print(F("Power: "));
   Serial.println(power_state);
-  delay(1000);
+  
 }
 
 void updateBrightness()
 {
   analogWrite(PIN_FADE, cfg.fade_value);
   Serial.print(F("Strip:"));
-  Serial.println(cfg.fade_value);
+  Serial.println(cfg.fade_value, DEC);
   EEPROM_write(ADDR_CONFIG, cfg);
 }
 void updateRGB()
@@ -293,19 +311,20 @@ void updateRGB()
     strip.setBrightness(cfg.rgb_bright);
 
     Serial.print(F("Flash: Fade->"));
-    Serial.print(cfg.rgb_bright);
+    Serial.print(cfg.rgb_bright,DEC);
     Serial.print(F(" RGB("));
-    Serial.print(cfg.red_value);
+    Serial.print(cfg.red_value,DEC);
     Serial.print(F("|"));
-    Serial.print(cfg.green_value);
+    Serial.print(cfg.green_value, DEC);
     Serial.print(F("|"));
-    Serial.print(cfg.blue_value);
+    Serial.print(cfg.blue_value, DEC);
     Serial.println(F(")"));
 
   }
   else {
     strip.setPixelColor(0, strip.Color(0, 0, 0));
-    Serial.println("Flash OFF");
+    strip.setBrightness(0);
+    Serial.println(F("Flash OFF"));
   }
 
   strip.show();
@@ -313,11 +332,11 @@ void updateRGB()
 }
 void toggleFlashState()
 {
-  cfg.flash_enabled = !cfg.flash_enabled;
+  cfg.flash_enabled = !(cfg.flash_enabled);
 
   updateRGB();
 
-  delay(1000);
+  //delay(1000);
 }
 
 
