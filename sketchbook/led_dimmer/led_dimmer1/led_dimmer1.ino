@@ -129,8 +129,11 @@ void setup() {
   }
   else {
     Serial.println(F("Config Read"));
+    
   }
 
+  //force lights on at power on
+  CFG.fade_value = 255;
  
   //setup RGB led
   strip.begin();

@@ -12,9 +12,9 @@
  */
 
 
-#define echoPin 9 // Echo Pin
-#define trigPin 8 // Trigger Pin
-#define LEDPin 10 // Onboard LED
+#define echoPin 10 // Echo Pin
+#define trigPin 9 // Trigger Pin
+#define LEDPin 8 // Onboard LED
 
 int maximumRange = 200; // Maximum range needed
 int minimumRange = 0; // Minimum range needed

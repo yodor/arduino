@@ -53,6 +53,10 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
   Wire.begin();
+  Wire.setClock(50000L);
+  digitalWrite(SDA, 1);
+  digitalWrite(SCL, 1);
+  
   // get the date and time the compiler was run
   //setCompilerDateTime();
   
@@ -87,22 +91,22 @@ void loop() {
 }
 
 void digitalClockDisplay(){
-  char clock_str[9];
-  sprintf(clock_str, "%02d:%02d:%02d", hour(), minute(), second());
-  Serial.println(clock_str);
+  //char clock_str[9];
+  //sprintf(clock_str, "%02d:%02d:%02d", hour(), minute(), second());
+  //Serial.println(clock_str);
   
   
   // digital clock display of the time
-//  Serial.print(hour());
-//  printDigits(minute());
-//  printDigits(second());
-//  Serial.print(" ");
-//  Serial.print(day());
-//  Serial.print(" ");
-//  Serial.print(month());
-//  Serial.print(" ");
-//  Serial.print(year()); 
-//  Serial.println(); 
+  Serial.print(hour());
+  printDigits(minute());
+  printDigits(second());
+  Serial.print(" ");
+  Serial.print(day());
+  Serial.print(" ");
+  Serial.print(month());
+  Serial.print(" ");
+  Serial.print(year()); 
+  Serial.println(); 
 }
 
 void printDigits(int digits){

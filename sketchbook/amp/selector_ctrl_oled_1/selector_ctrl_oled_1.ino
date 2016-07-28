@@ -261,58 +261,61 @@ void processIRButton( long  unsigned int current )
       MDISPLAY.processButton(BUTTON_CANCEL);
       break;
 
-    case BTN_MTS:
-      MDISPLAY.processButton(BUTTON_ENTER);
+    case BTN_PLAY_PAUSE:
+      if (current_mode == DisplayDevice::MODE_MENU) {
+        MDISPLAY.processButton(BUTTON_ENTER);
+      }
+      else {
+        if (current_channel == BLUETOOTH) { 
+          EXPANDER.bluetoothPress(BT_PLAY);
+        }
+      }
       break;
 
-    case BTN_FUNCTION:
+    case BTN_MENU:
       MDISPLAY.changeDisplayMode(DisplayDevice::MODE_MENU);
       break;
 
-    case BTN_CH_PLUS:
-      MDISPLAY.processButton(BUTTON_UP);
-      break;
-
-    case BTN_CH_MINUS:
-
-      MDISPLAY.processButton(BUTTON_DOWN);
-
-      break;
-
     case BTN_NEXT:
-      if (current_channel == BLUETOOTH) { 
-        EXPANDER.bluetoothPress(BT_FWD);
+      if (current_mode == DisplayDevice::MODE_MENU) {
+        MDISPLAY.processButton(BUTTON_UP);
+      }
+      else {
+        if (current_channel == BLUETOOTH) { 
+          EXPANDER.bluetoothPress(BT_FWD);
+        }  
       }
       break;
 
     case BTN_PREV:
-      if (current_channel == BLUETOOTH) { 
-        EXPANDER.bluetoothPress(BT_BACK);
+      if (current_mode == DisplayDevice::MODE_MENU) {
+        MDISPLAY.processButton(BUTTON_DOWN);
+      }
+      else {
+        if (current_channel == BLUETOOTH) { 
+          EXPANDER.bluetoothPress(BT_BACK);
+        }  
       }
       break;
 
-    case BTN_PLAY_PAUSE:
-      if (current_channel == BLUETOOTH) { 
-        EXPANDER.bluetoothPress(BT_PLAY);
-      }
-      break;
-    case BTN_TSHIFT:
-        if (current_channel == BLUETOOTH) { 
-          EXPANDER.bluetoothPress(BT_VOLUP);
+    
+   
+    case BTN_EIGHT:
+        if (current_mode != DisplayDevice::MODE_MENU) {
+          if (current_channel == BLUETOOTH) { 
+            EXPANDER.bluetoothPress(BT_VOLDN);
+          }
         }
         break;
-    case BTN_ZERO:
-        if (current_channel == BLUETOOTH) {
-          EXPANDER.bluetoothPress(BT_VOLDN);
+    case BTN_NINE:
+        if (current_mode != DisplayDevice::MODE_MENU) {
+          if (current_channel == BLUETOOTH) {
+            EXPANDER.bluetoothPress(BT_VOLUP);
+          }
         }
         break;
-    //case BTN_VOL_UP:
-    //  EXPANDER.bluetoothPress(BT_VOLUP);
-    //  break;
-    //case BTN_VOL_DOWN:
-    //  EXPANDER.bluetoothPress(BT_VOLDN);
-    //  break;
-    case BTN_FULLSCREEN:
+    
+    case BTN_TEST:
       MDISPLAY.changeDisplayMode(DisplayDevice::MODE_SIGNAL);      
       break;
 
@@ -331,11 +334,6 @@ void processIRButton( long  unsigned int current )
     case BTN_FOUR:
       SELECTOR.setActiveChannel(BLUETOOTH);
       break;
-
-    //case BTN_POWER:
-      //TODO
-      //SELECTOR.toggleChannelPower();
-      //break;
 
     }//switch
 

@@ -53,8 +53,7 @@ const long unsigned interval_update = 2000;
 
 DeviceAddress tempDeviceAddress;
 
-#define IR_LUP      0xFF906F
-#define IR_LDN      0xFFB847
+
 
 void setup()
 {
