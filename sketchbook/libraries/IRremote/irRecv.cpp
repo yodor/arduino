@@ -15,7 +15,7 @@ int  IRrecv::decode (decode_results *results)
 
 	if (irparams.rcvstate != STATE_STOP)  return false ;
 
-#ifdef DECODE_NEC
+#if DECODE_NEC
 	DBG_PRINTLN("Attempting NEC decode");
 	if (decodeNEC(results))  return true ;
 #endif
@@ -97,6 +97,16 @@ IRrecv::IRrecv (int recvpin)
 	irparams.blinkflag = 0;
 }
 
+IRrecv::IRrecv (int recvpin, int blinkpin)
+{
+	irparams.recvpin = recvpin;
+	irparams.blinkpin = blinkpin;
+	pinMode(blinkpin, OUTPUT);
+	irparams.blinkflag = 0;
+}
+
+
+
 //+=============================================================================
 // initialization
 //
@@ -133,6 +143,13 @@ void  IRrecv::blink13 (int blinkflag)
 	if (blinkflag)  pinMode(BLINKLED, OUTPUT) ;
 }
 
+//+=============================================================================
+// Return if receiving new IR signals
+// 
+bool  IRrecv::isIdle ( ) 
+{
+ return (irparams.rcvstate == STATE_IDLE || irparams.rcvstate == STATE_STOP) ? true : false;
+}
 //+=============================================================================
 // Restart the ISR state machine
 //

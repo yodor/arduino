@@ -1,15 +1,15 @@
 // Include the libraries we need
-#include <OneWire.h>
-#include <DallasTemperature.h>
+//#include <OneWire.h>
+//#include <DallasTemperature.h>
 
 // Data wire is plugged into port 2 on the Arduino
-#define ONE_WIRE_BUS A3
+//#define ONE_WIRE_BUS A3
 
 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
-OneWire oneWire(ONE_WIRE_BUS);
+//OneWire oneWire(ONE_WIRE_BUS);
 
 // Pass our oneWire reference to Dallas Temperature.
-DallasTemperature sensors(&oneWire);
+//DallasTemperature sensors(&oneWire);
 
 #include <Wire.h>
 
@@ -38,7 +38,7 @@ volatile boolean power_enabled = false;
 volatile boolean power_amp_enabled = false;
 
 
-#define INTERVAL_POWER_START 2000
+#define INTERVAL_POWER_START 100
 
 unsigned long pnlPressTime = 0;
 unsigned long pnlReleaseTime = 0;
@@ -47,7 +47,7 @@ int LED_VALUE = 0;
 int LED_STEP = 1;
 int LED_INDEX = 0;
 
-const uint8_t LED_VALUES[] = {255, 180, 128, 90, 64, 45, 32, 23, 16, 12, 8, 6, 4, 3, 0, 0, 0};
+const uint8_t LED_VALUES[] = {254, 180, 128, 90, 64, 45, 32, 23, 16, 12, 8, 6, 4, 3, 0, 0, 0};
 
 //temperature sensor
 volatile unsigned long current_temp = 0;
@@ -57,6 +57,8 @@ unsigned long last_update = 0;
 unsigned long interval_update = 500;
 
 int process_release = 0;
+unsigned long setup_start = 0;
+bool i2c_started = false;
 
 void setup()
 {
@@ -87,20 +89,24 @@ void setup()
   irrecv.blink13(false);
 
 
-
   Serial.println(F("Setup"));
 
-  sensors.begin();
+  //sensors.begin();
 
+  setup_start = millis();
+  
+  
 }
 
 
 void i2c_on()
 {
   Wire.begin(ADDR_PWR);
+  Wire.setClock(50000L);
+  
   Wire.onRequest(requestEvent); // other device writes to us using requestFrom
   Wire.onReceive(receiveEvent); // other device writes to us using beginTransmission (not used yet)
-  Wire.setClock(50000L);
+
 }
 void i2c_off()
 {
@@ -112,32 +118,39 @@ int pnlButtonState = LOW;
 void loop()
 {
 
+  if (i2c_started == false && (millis() - setup_start > 2000)) {
+      
+        i2c_on();
+        i2c_started = true;  
+      
+  }
+  
   if (millis() - last_update > interval_update ) {
 
     if (power_enabled) {
-      sensors.requestTemperatures();
-
-      float temp = sensors.getTempCByIndex(0);
-
-      if (temp != -127)
-      {
-        current_temp = 0;
-      }
-      else {
-        current_temp = temp * 10000;
-
-        if (current_temp > 500000) { // 50.00 centigrade celsius
-          powerOff();
-          analogWrite(PIN_LED, 0);
-          Serial.println(F("Thermal shutdown"));
-          while (true)
-          {
-            delay(1000);
-          }
-        }
-      }
-
-      current_vcc = AMPSHARED.readVoltageMCU();
+//      sensors.requestTemperatures();
+//
+//      float temp = sensors.getTempCByIndex(0);
+//
+//      if (temp != -127)
+//      {
+//        current_temp = 0;
+//      }
+//      else {
+//        current_temp = temp * 10000;
+//
+//        if (current_temp > 500000) { // 50.00 centigrade celsius
+//          powerOff();
+//          analogWrite(PIN_LED, 0);
+//          Serial.println(F("Thermal shutdown"));
+//          while (true)
+//          {
+//            delay(1000);
+//          }
+//        }
+//      }
+//
+//      current_vcc = AMPSHARED.readVoltageMCU();
     }
 
 
@@ -151,7 +164,8 @@ void loop()
   irrecv.process();
 
   unsigned long irButton = irrecv.buttonPressed();
-
+  //Serial.println(irButton, HEX);
+  
   bool pnlButtonPressed = false;
 
   int pin_state = digitalRead(PIN_BTN_POWER);
@@ -179,7 +193,7 @@ void loop()
 
 
 
-  if ( irButton == BTN_POWER || pnlPressTime > 0) {
+  if ( isIRPowerBTN(irButton) || pnlPressTime > 0) {
 
     if (LED_VALUE > 0) {
       LED_VALUE = 0;
@@ -208,7 +222,7 @@ void loop()
     
     if (process_release>0) {
 
-      if ( (irrecv.lastButton() == BTN_POWER && irButton == BTN_NOBUTTON) && process_release == 1) {
+      if ( (isIRPowerBTN(irrecv.lastButton()) && irButton == BTN_NOBUTTON) && process_release == 1) {
         process_release = false;
         Serial.println(F("Release processed"));
       }
@@ -221,7 +235,7 @@ void loop()
     }
     else {
 
-      if (  irButton == BTN_POWER && ( millis() - irrecv.buttonPressTime() ) >= INTERVAL_POWER_START ) {
+      if (  isIRPowerBTN(irButton) && ( millis() - irrecv.buttonPressTime() ) >= INTERVAL_POWER_START ) {
         powerOn();
         process_release = 1;
         
@@ -251,7 +265,7 @@ void loop()
   else {
 
     if (process_release > 0) {
-      if ( (irrecv.lastButton() == BTN_POWER && irButton == BTN_NOBUTTON) && process_release == 1) {
+      if ( isIRPowerBTN(irrecv.lastButton()) && irButton == BTN_NOBUTTON && process_release == 1) {
         Serial.println(F("Release processed"));
         process_release = 0;
       }
@@ -262,7 +276,7 @@ void loop()
       }
     }
     else {
-      if ( irButton == BTN_POWER || pnlButtonState == HIGH) {
+      if ( isIRPowerBTN(irButton) || pnlButtonState == HIGH) {
         powerOff();
         process_release = 1;
       }
@@ -279,7 +293,18 @@ void loop()
 
 }
 
-
+bool isIRPowerBTN(unsigned long value)
+{
+    if (value == BTN_POWER || value == PANA_BTN_POWER) {
+        
+        return true;
+    }
+    else {
+        
+        return false;
+    }
+    
+}
 
 void powerOnAmp()
 {
@@ -288,7 +313,8 @@ void powerOnAmp()
   delay(300);
   digitalWrite(PIN_RELAY_SOFT, HIGH);
   Serial.println(F("Amp ON"));
-
+  
+  
 }
 
 void powerOn()
@@ -303,9 +329,9 @@ void powerOn()
 
   Serial.println(F("Full ON"));
 
-  i2c_on();
+  //i2c_on();
 
-
+  delay(2000);
 
 }
 
@@ -335,9 +361,9 @@ void powerOff()
 
   Serial.println(F("Full OFF"));
 
-  i2c_off();
+  //i2c_off();
 
-
+  delay(2000);
 }
 
 // respond to commands from master

@@ -1,7 +1,7 @@
 
 //******************************************************************************
 // IRremote
-// Version 0.1 July, 2009
+// Version 2.0.1 June, 2015
 // Copyright 2009 Ken Shirriff
 // For details, see http://arcfn.com/2009/08/multi-protocol-infrared-remote-library.html
 // Edited by Mitra to add new controller SANYO
@@ -40,7 +40,7 @@
 #define DECODE_SONY          0
 #define SEND_SONY            0
 
-#define DECODE_PANASONIC     0
+#define DECODE_PANASONIC     1
 #define SEND_PANASONIC       0
 
 #define DECODE_JVC           0
@@ -56,7 +56,7 @@
 #define SEND_AIWA_RC_T501    0
 
 #define DECODE_LG            0
-#define SEND_LG              0 // NOT WRITTEN
+#define SEND_LG              0 
 
 #define DECODE_SANYO         0
 #define SEND_SANYO           0 // NOT WRITTEN
@@ -168,10 +168,12 @@ class IRrecv
 {
 	public:
 		IRrecv (int recvpin) ;
+		IRrecv (int recvpin, int blinkpin);
 
 		void  blink13    (int blinkflag) ;
 		int   decode     (decode_results *results) ;
 		void  enableIRIn ( ) ;
+		bool  isIdle     ( ) ;
 		void  resume     ( ) ;
 
 	private:
@@ -246,15 +248,18 @@ class IRrecv
 //------------------------------------------------------------------------------
 // Main class for sending IR
 //
+#ifdef IRSEND_ENABLED
+
 class IRsend
 {
 	public:
 		IRsend () { }
 
-		void  enableIROut (int khz) ;
-		void  mark        (int usec) ;
-		void  space       (int usec) ;
-		void  sendRaw     (unsigned int buf[],  int len,  int hz) ;
+		void  custom_delay_usec (unsigned long uSecs);
+		void  enableIROut 		(int khz) ;
+		void  mark        		(unsigned int usec) ;
+		void  space       		(unsigned int usec) ;
+		void  sendRaw     		(const unsigned int buf[],  unsigned int len,  unsigned int hz) ;
 
 		//......................................................................
 #		if SEND_RC5
@@ -297,7 +302,7 @@ class IRsend
 #		endif
 		//......................................................................
 #		if SEND_LG
-			void  sendLG         ( ) ; // NOT WRITTEN
+			void  sendLG         (unsigned long data,  int nbits) ;
 #		endif
 		//......................................................................
 #		if SEND_SANYO
@@ -321,9 +326,10 @@ class IRsend
 			void  sendDenon      (unsigned long data,  int nbits) ;
 #		endif
 		//......................................................................
-#		if SEND_Pronto
+#		if SEND_PRONTO
 			void  sendPronto     (char* code,  bool repeat,  bool fallback) ;
 #		endif
 } ;
+#endif
 
 #endif

@@ -159,7 +159,7 @@ void loop()
         motor_direction = STOPPED;
     }
   }
-  else if ( button == BTN_VOL_UP || button == IR_LUP ) {
+  else if ( button == BTN_VOL_UP || button == PANA_VOL_UP) {
 
     digitalWrite(PIN_MOTOR_ENABLE, HIGH);
     digitalWrite(PIN_MOTOR_DIR_RIGHT, HIGH);
@@ -168,7 +168,7 @@ void loop()
 
     //Serial.println(F("Volume UP"));
   }
-  else if ( button == BTN_VOL_DOWN || button == IR_LDN ) {
+  else if ( button == BTN_VOL_DOWN || button == PANA_VOL_DN ) {
 
     digitalWrite(PIN_MOTOR_ENABLE, HIGH);
     digitalWrite(PIN_MOTOR_DIR_RIGHT, LOW);

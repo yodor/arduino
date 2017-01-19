@@ -10,7 +10,7 @@
 // t1 is the time interval for a single bit in microseconds.
 // Returns -1 for error (measured time interval is not a multiple of t1).
 //
-#if DECODE_RC6 
+#if (DECODE_RC5 || DECODE_RC6)
 int  IRrecv::getRClevel (decode_results *results,  int *offset,  int *used,  int t1)
 {
 	int  width;

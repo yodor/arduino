@@ -42,6 +42,9 @@
 /*remote new */
 
 
+#define PANA_BTN_POWER       0x406A954D
+#define PANA_VOL_UP          0x68E69B7F
+#define PANA_VOL_DN          0x223C02A7
 
 #define BTN_POWER 	     0xFFA25D
 #define BTN_MENU	     0xFFE21D

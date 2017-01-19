@@ -49,10 +49,8 @@ const uint8_t unused_pins[] = {2,3,4,A0,A1,A3};
 void setup()
 {
 
-  delay(1000);
+  Serial.begin(9600);
   
-  //Serial.begin(9600);
-  Serial.println(F("Setup"));
 
   for (int a=0;a<6;a++){
     pinMode(unused_pins[a], INPUT_PULLUP);
@@ -61,15 +59,21 @@ void setup()
   irproc.enableIRIn(); // Start the receiver
   irproc.blink13(false); 
 
+
+  delay(1500);
+
+  
+  
   Wire.begin(ADDR_SELECTOR);
 
-  digitalWrite(SDA, 1);
-  digitalWrite(SCL, 1);
+  Wire.setClock(50000L);
   
-  //Wire.setClock(50000L);
+  //digitalWrite(SDA, 1);
+  //digitalWrite(SCL, 1);
+ 
   
-  //Wire.onRequest(requestEvent); // other device writes to us using requestFrom
-  //Wire.onReceive(receiveCommand); // other device writes to us using beginTransmission
+  Wire.onRequest(requestEvent); // other device writes to us using requestFrom
+  Wire.onReceive(receiveCommand); // other device writes to us using beginTransmission
 
   EXPANDER.start();
 
@@ -107,14 +111,27 @@ void setup()
   
   MDISPLAY.showMessage(F("Booting ..."));
   
-  delay(1500);
-  Serial.println(F("Setup Done"));
+  
+ 
 }
 
 boolean init_boot = true;
 
+//other device writes to us using beginTransmission
+void receiveCommand(int howMany)
+{
+  uint8_t i2c_command = CMD_NONE;
 
+  if (Wire.available()) {
+    i2c_command = Wire.read();
+  }
+}
 
+//other device writes to us using requestFrom
+void requestEvent()
+{
+
+}
 void loop()
 {
     //Serial.println("Loop");
@@ -137,7 +154,7 @@ void loop()
     readVolume();
     
     if (MDISPLAY.currentMode() == DisplayDevice::MODE_SIGNAL) {
-      readPower();
+      //readPower();
     }
     
     EXPANDER.readButtons();

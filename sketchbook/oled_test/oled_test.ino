@@ -8,7 +8,17 @@ int band_levels[] = {0,127,255,383,511,639,767,895};
 void setup()
 {
   randomSeed(analogRead(0));
-  Wire.begin();
+  delay(5000);
+  
+  
+  Wire.begin(0x6);
+
+  //digitalWrite(SDA, 1);
+  //digitalWrite(SCL, 1);
+  //Wire.onRequest(requestEvent); // other device writes to us using requestFrom
+  //Wire.onReceive(receiveEvent); // other device writes to us using beginTransmission (not used yet)
+  //Wire.setClock(30000L);
+  
   initDisplay();
 }
 

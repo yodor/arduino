@@ -22,9 +22,12 @@ void IRProcessor::process()
   if (decode(&results)) {
     unsigned long code = results.value;
     
+    
     if (results.value == BTN_REPEAT) {
       code = buttonCode;
     }
+    
+    
     
     if (buttonState == LOW) {
       buttonState = HIGH;  // Button pressed, so set state to HIGH

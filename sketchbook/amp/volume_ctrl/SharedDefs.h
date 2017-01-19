@@ -1,9 +1,9 @@
 #ifndef SHARED_DEFS_H
 #define SHARED_DEFS_H
 
-#define  ADDR_VOLUME                 0x9
-#define  ADDR_SELECTOR               0x10
-#define  ADDR_PWR                    0x12
+#define  ADDR_VOLUME                 0x10
+#define  ADDR_SELECTOR               0x12
+#define  ADDR_PWR                    0x14
 
 
 
