@@ -1,4 +1,7 @@
 
+#include <Wire.h>
+
+#define ADDR_I2C_VORTEX 0x55
 
 
 //pin numbers
@@ -34,9 +37,15 @@ int mot[2][3] = {
                 { M2_EN, M2_L, M2_R }, //Motor 1 rotating side
 };
 
+String version_string = "vortex ctrl v1.0";
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
+
+  // activate internal pullups for twi.
+  digitalWrite(SDA, 1);
+  digitalWrite(SCL, 1);
   
   pinMode(M1_EN, OUTPUT);
   analogWrite(M1_EN, 0);
@@ -57,36 +66,99 @@ void setup() {
   Serial.println(F("SETUP"));
 }
 
+
 // Buffer to store incoming commands from serial port
 String inData = "";
 bool have_line = false;
 unsigned long auto_off_timeout = 1000;
 
-void loop()
-{ 
-    
-    
-    while (Serial.available() > 0)
+void serialEvent()
+{
+    while (Serial.available())
     {
-        char recieved = Serial.read();
-        inData += recieved; 
-
+        // get the new byte
+        char inChar = Serial.read();
+         
         // Process message when new line character is recieved
-        if (recieved == '\n' || recieved == '\r')
+        if (inChar == '\n' || inChar == '\r')
         {
+            inData.toUpperCase();
             have_line = true;
             break;
                     
         }
+        inData += inChar;    
     }
+}
 
+void i2c_on()
+{
+
+  
+  
+  Wire.begin(ADDR_I2C_VORTEX);
+  Wire.setClock(50000L);
+
+  
+  Wire.onRequest(requestEvent); // other device writes to us using requestFrom
+  Wire.onReceive(receiveEvent); // other device writes to us using beginTransmission (not used yet)
+
+}
+void i2c_off()
+{
+  Wire.end();
+
+  
+}
+
+/**
+  * This function returns a single string separated by a predefined character at a given index. 
+  * For example:
+  * String split = "hi this is a split test";
+  * String word_index_3 = getValue(split, ' ', 2); // = "is"
+*/
+
+String getValue(String data, char separator, int index)
+{
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length()-1;
+
+  for(int i=0; i<=maxIndex && found<=index; i++){
+    if(data.charAt(i)==separator || i==maxIndex){
+        found++;
+        strIndex[0] = strIndex[1]+1;
+        strIndex[1] = (i == maxIndex) ? i+1 : i;
+    }
+  }
+
+  return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
+
+void loop()
+{ 
+    
+    
+    
     if (have_line) {
-      if (inData.startsWith("AT+")) {
+      if (inData.equals("AT+V")) {
+        
+        Serial.println(version_string);
+          
+      }
+      else if (inData.startsWith("AT+RGBLED")) {
+          inData = inData.substring(9);
+          int r_val = getValue(inData,',',0).toInt();
+          int g_val = getValue(inData,',',1).toInt();
+          int b_val = getValue(inData,',',2).toInt();
+          
+      }
+      else if (inData.startsWith("AT")) {
         processCommand(inData);     
         
       }
       else {
-        printError(F("AT Command only"));
+        printError(F("Unrecognized Command"));
       }  
       
       have_line = false;
@@ -106,14 +178,14 @@ void printError(String errstr)
 
 void processCommand(String inData)
 {
-  //AT+:
-  String cmd = inData.substring(3);
-  Serial.print("SubCMD: ");
+  //AT:
+  String cmd = inData.substring(2);
+  Serial.print("CMD: ");
   Serial.println(cmd);
   
-  if (cmd.startsWith("MOVE")) {
+  if (cmd.startsWith("M")) {
 
-      cmd = cmd.substring(4);
+      cmd = cmd.substring(1);
       
       int pipe = cmd.indexOf("|");
       if (pipe<0) {
@@ -133,15 +205,16 @@ void processCommand(String inData)
       motor_ctrl(1, mot_r.toInt());
       
   }
-  else if (cmd.startsWith("STOP")) {
+  else if (cmd.startsWith("ST")) {
       driveStop();
   }
-  else if (cmd.startsWith("AUTOSTOP_ENABLE")) {
+  else if (cmd.startsWith("ASE")) {
       auto_off_timeout = 1000;
-      
+      Serial.println(F("AUTOSTOP enabled"));
   }
-  else if (cmd.startsWith("AUTOSTOP_DISABLE")) {
-    auto_off_timeout = 0;  
+  else if (cmd.startsWith("ASD")) {
+      auto_off_timeout = 0;  
+      Serial.println(F("AUTOSTOP disabled"));
   }
   else if (cmd.startsWith("F")) {
     driveForward();  
@@ -172,11 +245,12 @@ void processCommand(String inData)
  
   
 }
-//AT+MOVE:255|255
+//ATM255|255
 void motor_ctrl(int num, int spd)
 {
     
-      analogWrite(mot[num][MOT_EN], abs(spd));
+      analogWrite(mot[num][MOT_EN], 255-abs(spd)); //spd==0 pwm = high
+      
       if (spd>0) {
         digitalWrite(mot[num][MOT_L], 0);
         digitalWrite(mot[num][MOT_R], 1);  
@@ -186,10 +260,13 @@ void motor_ctrl(int num, int spd)
         digitalWrite(mot[num][MOT_R], 0);    
       }
       else {
-        digitalWrite(mot[num][MOT_L], 0);
-        digitalWrite(mot[num][MOT_R], 0);    
+        digitalWrite(mot[num][MOT_L], 1); //spd = 0 freewheeling
+        digitalWrite(mot[num][MOT_R], 1); //spd = 0 freewheeling   
       }
 
+     
+      
+      
       Serial.print("MOT: ");
       Serial.print(num);
       Serial.print(" | ");
@@ -233,6 +310,75 @@ void driveRight()
     motor_ctrl(1, -current_speed);  
     
 }
+
+// respond to commands from master
+// master use Wire.beginTransmission(ADDR_I2C_VORTEX)
+// Wire.write(I2C_COMMAND);
+// Wire.endTransmission();
+void receiveEvent(int howMany)
+{
+/**
+  uint8_t i2c_command = CMD_NONE;
+
+  if (Wire.available()) {
+    i2c_command = Wire.read();
+  }
+
+
+  if (i2c_command == CMD_PWR_FULL_ON) {
+    if (power_enabled == false) {
+      powerOn();
+    }
+  }
+  else if (i2c_command == CMD_PWR_FULL_OFF) {
+    if (power_enabled == true) {
+      powerOff();
+    }
+  }
+  else if (i2c_command == CMD_PWR_AMP_ON) {
+    if (power_amp_enabled == false) {
+      if (power_enabled == true) {
+        powerOnAmp();
+      }
+      else {
+        powerOn();
+      }
+    }
+  }
+  else if (i2c_command == CMD_PWR_AMP_OFF) {
+    if (power_amp_enabled == true) {
+      powerOffAmp();
+    }
+  }
+ */
+}
+
+
+//return temperature and vcc and power state data
+//master device should use Wire.requestFrom(ADDR_I2C_VORTEX, 10);
+void requestEvent()
+{
+
+/**
+  uint8_t data[10];
+  data[0] = power_enabled;
+  data[1] = power_amp_enabled;
+
+  //temp
+  uint8_t buf[4];
+  memset(&buf, 0, 4);
+  AMPSHARED.writeFloat(current_temp, buf);
+  memcpy(&data[2], &buf, 4);
+
+  //vcc
+  memset(&buf, 0, 4);
+  AMPSHARED.writeFloat(current_vcc, buf);
+  memcpy(&data[6], &buf, 4);
+
+  Wire.write(data, 10);
+*/
+}
+
 
 void demo() 
 {

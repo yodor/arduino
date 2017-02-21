@@ -25,4 +25,4 @@ protected:
   unsigned long pressTime;
 };
 
-#endif IR_PROCESSOR_H
+#endif //IR_PROCESSOR_H

@@ -38,7 +38,7 @@ volatile boolean power_enabled = false;
 volatile boolean power_amp_enabled = false;
 
 
-#define INTERVAL_POWER_START 100
+#define INTERVAL_POWER_START 1000
 
 unsigned long pnlPressTime = 0;
 unsigned long pnlReleaseTime = 0;

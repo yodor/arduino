@@ -8,6 +8,7 @@ void setup(void) {
   // initialize inputs/outputs
   // start serial port
   Serial.begin(9600);
+  Serial.println("SETUP");
   
   if (sensor.haveDevice()) {
       uint8_t sensorType = sensor.deviceType();
@@ -21,7 +22,7 @@ void setup(void) {
    else {
         Serial.println("No device found");         
    }
-   
+   Serial.println("SETUP DONE");
 }
 
 

@@ -2,7 +2,7 @@
 #include <OneWire.h>
 
 
-OneWire ds(A3);  // on pin 10
+OneWire ds(10);  // on pin 10
 
 #define READ_TIME 750
 
@@ -67,7 +67,7 @@ void DS18B20::prepareRead()
   
   ds.reset();
   ds.select(addr);
-  ds.write(0x44,1);         // start conversion, with parasite power on at the end
+  ds.write(0x44);         // start conversion, with parasite power on at the end
   read_start = millis();
 }
 
