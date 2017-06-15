@@ -53,12 +53,12 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
   Wire.begin();
-  Wire.setClock(50000L);
+ // Wire.setClock(50000L);
   digitalWrite(SDA, 1);
   digitalWrite(SCL, 1);
   
   // get the date and time the compiler was run
-  //setCompilerDateTime();
+  setCompilerDateTime();
   
   setSyncProvider(RTC.get);   // the function to get the time from the RTC
   if(timeStatus()!= timeSet) 

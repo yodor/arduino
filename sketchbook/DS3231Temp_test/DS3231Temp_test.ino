@@ -10,9 +10,12 @@ void setup() {
  
 void loop() {
   tempC = RTC.getTemperature();
-  tempF = (tempC * 1.8) + 32.0; // Convert C to F
+  //tempF = (tempC * 1.8) + 32.0; // Convert C to F
  
-  lcd.print(tempF);
-  lcd.print("F");
+  //lcd.print(tempF);
+  //lcd.print("F");
+  delay(1000);
+  Serial.println(tempC);
+  
 }
 

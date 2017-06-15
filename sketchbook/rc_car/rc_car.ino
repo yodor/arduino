@@ -43,6 +43,23 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);
 
+//---------------------------------------------- Set PWM frequency for D9 & D10 ------------------------------
+TCCR1B = TCCR1B & B11111000 | B00000001;    // set timer 1 divisor to     1 for PWM frequency of 31372.55 Hz
+//TCCR1B = TCCR1B & B11111000 | B00000010;    // set timer 1 divisor to     8 for PWM frequency of  3921.16 Hz
+//TCCR1B = TCCR1B & B11111000 | B00000011;    // set timer 1 divisor to    64 for PWM frequency of   490.20 Hz (The DEFAULT)
+//TCCR1B = TCCR1B & B11111000 | B00000100;    // set timer 1 divisor to   256 for PWM frequency of   122.55 Hz
+//TCCR1B = TCCR1B & B11111000 | B00000101;    // set timer 1 divisor to  1024 for PWM frequency of    30.64 Hz
+
+//---------------------------------------------- Set PWM frequency for D3 & D11 ------------------------------
+TCCR2B = TCCR2B & B11111000 | B00000001;    // set timer 2 divisor to     1 for PWM frequency of 31372.55 Hz
+//TCCR2B = TCCR2B & B11111000 | B00000010;    // set timer 2 divisor to     8 for PWM frequency of  3921.16 Hz
+//TCCR2B = TCCR2B & B11111000 | B00000011;    // set timer 2 divisor to    32 for PWM frequency of   980.39 Hz
+//TCCR2B = TCCR2B & B11111000 | B00000100;    // set timer 2 divisor to    64 for PWM frequency of   490.20 Hz (The DEFAULT)
+//TCCR2B = TCCR2B & B11111000 | B00000101;    // set timer 2 divisor to   128 for PWM frequency of   245.10 Hz
+//TCCR2B = TCCR2B & B11111000 | B00000110;    // set timer 2 divisor to   256 for PWM frequency of   122.55 Hz
+//TCCR2B = TCCR2B & B11111000 | B00000111;    // set timer 2 divisor to  1024 for PWM frequency of    30.64 Hz
+
+ 
   // activate internal pullups for twi.
   digitalWrite(SDA, 1);
   digitalWrite(SCL, 1);
@@ -63,6 +80,7 @@ void setup() {
   pinMode(M2_R, OUTPUT);
   digitalWrite(M2_R, 0);
 
+
   Serial.println(F("SETUP"));
 }
 
@@ -71,6 +89,7 @@ void setup() {
 String inData = "";
 bool have_line = false;
 unsigned long auto_off_timeout = 1000;
+unsigned long last_motor_command = 0;
 
 void serialEvent()
 {
@@ -78,16 +97,25 @@ void serialEvent()
     {
         // get the new byte
         char inChar = Serial.read();
-         
+        
+        //0-9 || a-z || A-Z
+        if ( (inChar >= 43 && inChar <= 59) 
+              || (inChar >= 65 && inChar <= 70) 
+              || (inChar >= 97 && inChar <= 122)
+              || (inChar == 124) 
+              || (inChar == 61) ) 
+        {
+          inData += inChar;  
+        }
+        
         // Process message when new line character is recieved
-        if (inChar == '\n' || inChar == '\r')
+        else if (inChar == '\n' || inChar == '\r')
         {
             inData.toUpperCase();
             have_line = true;
             break;
-                    
         }
-        inData += inChar;    
+         
     }
 }
 
@@ -137,8 +165,13 @@ String getValue(String data, char separator, int index)
 
 void loop()
 { 
-    
-    
+   
+    if (last_motor_command>0 && auto_off_timeout>0 && (millis() - last_motor_command > auto_off_timeout)) {
+      Serial.println(F("AUTOSTOP"));
+      driveStop();
+      last_motor_command = 0;
+
+    }
     
     if (have_line) {
       if (inData.equals("AT+V")) {
@@ -238,18 +271,20 @@ void processCommand(String inData)
       printError(F("Unknown subcommand"));  
   }
 
-  if (auto_off_timeout>0) {
-    delay(auto_off_timeout);
-    driveStop();
-  }
+  //if (auto_off_timeout>0) {
+  //  delay(auto_off_timeout);
+  //  driveStop();
+  //}
  
   
 }
 //ATM255|255
 void motor_ctrl(int num, int spd)
 {
+
+      
     
-      analogWrite(mot[num][MOT_EN], 255-abs(spd)); //spd==0 pwm = high
+      analogWrite(mot[num][MOT_EN], abs(spd)); //spd==0 pwm = high 255-abs(spd)
       
       if (spd>0) {
         digitalWrite(mot[num][MOT_L], 0);
@@ -260,12 +295,12 @@ void motor_ctrl(int num, int spd)
         digitalWrite(mot[num][MOT_R], 0);    
       }
       else {
-        digitalWrite(mot[num][MOT_L], 1); //spd = 0 freewheeling
-        digitalWrite(mot[num][MOT_R], 1); //spd = 0 freewheeling   
+        digitalWrite(mot[num][MOT_L], 0); //spd = 0 freewheeling
+        digitalWrite(mot[num][MOT_R], 0); //spd = 0 freewheeling   
       }
 
      
-      
+      last_motor_command = millis();
       
       Serial.print("MOT: ");
       Serial.print(num);
