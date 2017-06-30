@@ -1,3 +1,9 @@
+ft232cts.name=ft232r-cts
+ft232cts.communication=usb
+ft232cts.protocol=ft232r-cts
+ft232cts.program.protocol=ft232r-cts
+ft232cts.program.tool=avrdude
+
 ponyser.name=PonySer
 ponyser.communication=serial
 ponyser.protocol=ponyser
@@ -5,14 +11,12 @@ ponyser.program.protocol=ponyser
 ponyser.program.tool=avrdude
 ponyser.program.extra_params=-P/dev/ttyS0
 
-ponyser1.name=PonySer4800
+ponyser1.name=PonySer-NEW
 ponyser1.communication=serial
 ponyser1.protocol=ponyser
 ponyser1.program.protocol=ponyser
 ponyser1.program.tool=avrdude
-ponyser1.program.extra_params=-P/dev/ttyS0 -b{program.speed}
-ponyser1.program.speed=4800
-ponyser1.speed=4800
+ponyser1.program.extra_params=-P/dev/ttyUSB0 -b{program.speed}
 
 ponyser2.name=PonySer9600
 ponyser2.communication=serial

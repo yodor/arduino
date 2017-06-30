@@ -1,12 +1,16 @@
 #include <SoftwareSerial.h>
 #include <Wire.h>
 
-SoftwareSerial dbg(10,9); // RX-green, TX-white
+SoftwareSerial dbg(A1,A0); // RX-green, TX-white
 
-static uint8_t nunchuck_buf[6];   // array to store nunchuck data,
+//static uint8_t nunchuck_buf[6];   // array to store nunchuck data,
 unsigned int start_setup = 0;
-int max_speed = 190;
-int min_speed = 160;
+const int SPD_MAX = 190;
+const int SPD_MIN = 160;
+const int SPD_TBO = 255;
+
+int max_speed = SPD_MAX;
+int min_speed = SPD_MIN;
 
 void setup()
 {
@@ -15,7 +19,10 @@ void setup()
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
-  dbg.begin(9600);
+  
+
+  Wire.begin();                      // join i2c bus as master
+  //Wire.setClock(100000L);
   
   digitalWrite(SDA, 1);
   digitalWrite(SCL, 1);
@@ -23,7 +30,7 @@ void setup()
   nunchuck_init(); // send the initilization handshake
   
 
-  delay(1000);
+  
   start_setup = millis();
 
   dbg.println(F("Finished setup"));
@@ -42,13 +49,15 @@ void loop()
   while (dbg.available()) {
     Serial.write(dbg.read());
   }
-  
-  if (nunchuck_get_data()) {
 
-    if (millis() - start_setup < 6000) {
-      delay(1000);  
-      return;
-    }
+  uint8_t nunchuck_buf[6];
+  
+  if (nunchuck_get_data(&nunchuck_buf[0])) {
+
+//    if (millis() - start_setup < 6000) {
+//      delay(1000);  
+//      return;
+//    }
     //int x_axis = map(nunchuck_buf[0], 23, 222, 180, 0);
    // int y_axis = map(nunchuck_buf[1], 32, 231, 0, 180);
     //int x_axis = nunchuck_buf[0];
@@ -62,10 +71,10 @@ void loop()
 
     //button z is pressed
     if (z_button == 0) {
-      max_speed = 255;  
+      max_speed = SPD_TBO;  
     }    
     else {
-      max_speed = 180;
+      max_speed = SPD_MAX;
     }
     
     int y_axis = 0;
@@ -100,8 +109,8 @@ void loop()
         stop_sent = true;
       }  
     }
-    int spd_y = map(abs(y_axis), 1,5, min_speed, max_speed);
-    int spd_x = map(abs(x_axis), 1,5, min_speed, max_speed);
+    int spd_y = map(abs(y_axis), 0,5, min_speed, max_speed);
+    int spd_x = map(abs(x_axis), 0,5, min_speed, max_speed);
     
     if (y_axis != 0 && x_axis == 0) {    
       
@@ -111,41 +120,41 @@ void loop()
       
     }
 
-    if (x_axis!=0) {
+    else if (x_axis!=0) {
       
         //turning
         if (x_axis>0) {
 
           //foreward right
           if (y_axis>0) {
-            mot_spdL = map(abs(x_axis), 0,4, min_speed, max_speed);
+            mot_spdL = spd_x;
             mot_spdR = 0;
           }
           //backward right
           else if (y_axis<0) {
+            mot_spdL = -spd_x;
             mot_spdR = 0;  
-            mot_spdL = -map(abs(x_axis), 0,4, min_speed, max_speed);
           }
           //rotate on center
           else {
              mot_spdL = spd_x;
-             mot_spdR = spd_x*-1;  
+             mot_spdR = -spd_x;  
           }
         }
         else if (x_axis<0) {
           //backward left
           if (y_axis<0) {
-            mot_spdR=-map(abs(x_axis), 0,4, min_speed, max_speed);
             mot_spdL=0;
+            mot_spdR=-spd_x;
           }
           //forward left
           else if (y_axis>0) {
             mot_spdL=0;
-            mot_spdR=map(abs(x_axis), 0,4, min_speed, max_speed);
+            mot_spdR=spd_x;
           }
           else {
+             mot_spdL = -spd_x; 
              mot_spdR = spd_x;
-             mot_spdL = spd_x*-1; 
           }
         } 
     }
@@ -176,10 +185,10 @@ void moveMotor(int mot_spd2, int mot_spd1)
 {
     count_commands++;
     if (count_commands == 1) return;
-    if (mot_spd1>255)mot_spd1=255;
-    if (mot_spd1<-255)mot_spd1=255;
-    if (mot_spd2>255)mot_spd2=255;
-    if (mot_spd2<-255)mot_spd2=255;
+    if (mot_spd1>=255)mot_spd1=255;
+    if (mot_spd1<=-254)mot_spd1=-254;
+    if (mot_spd2>=255)mot_spd2=255;
+    if (mot_spd2<=-254)mot_spd2=-254;
     Serial.print(F("atm"));
     Serial.print(mot_spd1);
     Serial.print(F("|"));
@@ -194,7 +203,7 @@ void moveMotor(int mot_spd2, int mot_spd1)
 // and tell the nunchuck we're talking to it
 void nunchuck_init()
 { 
-  Wire.begin();                      // join i2c bus as master
+  
   Wire.beginTransmission(0x52);     // transmit to device 0x52
   Wire.write(0x40);            // sends memory address
   Wire.write(0x00);            // sends sent a zero.  
@@ -211,11 +220,11 @@ void nunchuck_send_request()
 }
 
 // Receive data back from the nunchuck, 
-int nunchuck_get_data()
+int nunchuck_get_data(uint8_t *nunchuck_buf)
 {
     int cnt=0;
     Wire.requestFrom (0x52, 6);     // request data from nunchuck
-    while (Wire.available ()) {
+    while (Wire.available()) {
       // receive byte as an integer
       nunchuck_buf[cnt] = nunchuk_decode_byte(Wire.read());
       cnt++;
@@ -236,7 +245,7 @@ int nunchuck_get_data()
 // so we read 8 bits, then we have to add
 // on the last 2 bits.  That is why I
 // multiply them by 2 * 2
-void nunchuck_print_data()
+void nunchuck_print_data(uint8_t *nunchuck_buf)
 { 
   static int i=0;
   int joy_x_axis = nunchuck_buf[0];
