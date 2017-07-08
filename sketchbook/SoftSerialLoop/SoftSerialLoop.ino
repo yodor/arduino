@@ -1,6 +1,6 @@
 #include <SoftwareSerial.h>
 
-SoftwareSerial mySerial(10, 9); // RX-green, TX-white
+SoftwareSerial mySerial(A2, A1); // RX-green, TX-white
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(9600);

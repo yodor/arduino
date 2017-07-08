@@ -1,13 +1,13 @@
 #include <SoftwareSerial.h>
 #include <Wire.h>
 
-SoftwareSerial dbg(A1,A0); // RX-green, TX-white
+SoftwareSerial dbg(A2,A1); // RX-green, TX-white
 
 //static uint8_t nunchuck_buf[6];   // array to store nunchuck data,
 unsigned int start_setup = 0;
-const int SPD_MAX = 190;
-const int SPD_MIN = 160;
-const int SPD_TBO = 255;
+const int SPD_MAX = 7;
+const int SPD_MIN = 3;
+const int SPD_TBO = 9;
 
 int max_speed = SPD_MAX;
 int min_speed = SPD_MIN;
@@ -19,13 +19,14 @@ void setup()
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
+  dbg.begin(9600);
   
 
   Wire.begin();                      // join i2c bus as master
   //Wire.setClock(100000L);
   
-  digitalWrite(SDA, 1);
-  digitalWrite(SCL, 1);
+  //digitalWrite(SDA, 1);
+ // digitalWrite(SCL, 1);
   
   nunchuck_init(); // send the initilization handshake
   
@@ -167,7 +168,7 @@ void loop()
    
 
     if (c_button == 0) {
-      Serial.print(F("at+v\n"));
+      Serial.print(F("l9999"));
     }
     
   }
@@ -176,29 +177,38 @@ void loop()
 }
 
 
-//
-// Nunchuck functions
-//
-int count_commands = 0;
-//reverse the commands as the car uses swapped l and r 
-void moveMotor(int mot_spd2, int mot_spd1)
+
+
+void moveMotor(int mot_spdL, int mot_spdR)
 {
-    count_commands++;
-    if (count_commands == 1) return;
-    if (mot_spd1>=255)mot_spd1=255;
-    if (mot_spd1<=-254)mot_spd1=-254;
-    if (mot_spd2>=255)mot_spd2=255;
-    if (mot_spd2<=-254)mot_spd2=-254;
-    Serial.print(F("atm"));
-    Serial.print(mot_spd1);
-    Serial.print(F("|"));
-    Serial.print(mot_spd2);
-    Serial.print("\n");
+    //count_commands++;
+    //if (count_commands == 1) return;
+    if (mot_spdL>9)mot_spdL=9;
+    if (mot_spdL<-9)mot_spdL=-9;
+    if (mot_spdR>9)mot_spdR=9;
+    if (mot_spdR<-9)mot_spdR=-9;
+    Serial.print(F("m"));
+    Serial.print(abs(mot_spdL));
+    if (mot_spdL<0) {
+      Serial.print(F("1")); 
+    }
+    else {
+      Serial.print(F("0"));  
+    }
+    Serial.print(abs(mot_spdR));
+    if (mot_spdR<0) {
+      Serial.print(F("1")); 
+    }
+    else {
+      Serial.print(F("0"));  
+    }
     
     
 }
 
-
+//
+// Nunchuck functions
+//
 // initialize the I2C system, join the I2C bus,
 // and tell the nunchuck we're talking to it
 void nunchuck_init()
