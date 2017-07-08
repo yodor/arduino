@@ -5,12 +5,14 @@ SoftwareSerial dbg(A2,A1); // RX-green, TX-white
 
 //static uint8_t nunchuck_buf[6];   // array to store nunchuck data,
 unsigned int start_setup = 0;
-const int SPD_MAX = 7;
-const int SPD_MIN = 3;
+const int SPD_MAX = 6;
+const int SPD_MIN = 1;
 const int SPD_TBO = 9;
 
 int max_speed = SPD_MAX;
 int min_speed = SPD_MIN;
+int joy_min = 1;
+int joy_max = 6;
 
 void setup()
 {
@@ -83,17 +85,17 @@ void loop()
 
     
     if (nunchuck_buf[1]>144) {
-      y_axis = map(nunchuck_buf[1], 144,  218, 1, 5);
+      y_axis = map(nunchuck_buf[1], 144,  218, joy_min, joy_max);
     }
     else if (nunchuck_buf[1]<117) {
-      y_axis = map(nunchuck_buf[1], 43, 117, -5, 0);
+      y_axis = map(nunchuck_buf[1], 43, 117, -joy_max, -joy_min);
     }
 
     if (nunchuck_buf[0]>175) {
-      x_axis = map(nunchuck_buf[0], 175,  230, 1, 5);
+      x_axis = map(nunchuck_buf[0], 175,  230, joy_min, joy_max);
     }
     else if (nunchuck_buf[0]<95) {
-      x_axis = map(nunchuck_buf[0], 37, 95, -5, 0);
+      x_axis = map(nunchuck_buf[0], 37, 95, -joy_max, -joy_min);
     }
     
     //dbg.print("X=");
@@ -110,8 +112,8 @@ void loop()
         stop_sent = true;
       }  
     }
-    int spd_y = map(abs(y_axis), 0,5, min_speed, max_speed);
-    int spd_x = map(abs(x_axis), 0,5, min_speed, max_speed);
+    int spd_y = map(abs(y_axis), joy_min,joy_max, min_speed, max_speed);
+    int spd_x = map(abs(x_axis), joy_min,joy_max, min_speed, max_speed);
     
     if (y_axis != 0 && x_axis == 0) {    
       
