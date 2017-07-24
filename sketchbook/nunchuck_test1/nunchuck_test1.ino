@@ -25,7 +25,9 @@ void setup()
   //servo1.attach(11);
   //servo2.attach(12);
 
- 
+  Serial.begin(9600);
+  while (!Serial) {}
+  
   Wire.begin();
 
   Wire.beginTransmission(WII_NUNCHUK_I2C_ADDRESS);
@@ -68,14 +70,17 @@ void loop()
      
       value = map(value, -180, 180, 0, 180);
      
-      servo1.write(value);
-      
+      //servo1.write(value);
+      Serial.print("AccelY=>");
+      Serial.print(value);
      
       value = constrain(accelX, -180, 180);
       value = map(value, -180, 180, 0, 180); 
-      servo2.write(value);
+      //servo2.write(value);
 
-    
+      Serial.print(" | AccelX=>");
+      Serial.println(value);
+      
       delay(20);
     }
 }
