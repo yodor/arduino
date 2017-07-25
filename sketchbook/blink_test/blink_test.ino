@@ -7,7 +7,8 @@
  
 // Pin 13 has an LED connected on most Arduino boards.
 // give it a name:
-int led = 9;
+int led = LED_BUILTIN;
+char recvbuf[4] = { 'p', 'i', 'n', 'g' };
 
 // the setup routine runs once when you press reset:
 void setup() {                
@@ -17,8 +18,12 @@ void setup() {
 
 // the loop routine runs over and over again forever:
 void loop() {
+  if (strncmp(recvbuf, "ping", 4)==0) {
   digitalWrite(led, HIGH);   // turn the LED on (HIGH is the voltage level)
   delay(250);               // wait for a second
   digitalWrite(led, LOW);    // turn the LED off by making the voltage LOW
-  delay(250);               // wait for a second
+  delay(250);   
+
+  }
+    
 }
