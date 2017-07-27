@@ -8,36 +8,42 @@ WiiChuck chuck = WiiChuck();
 //SoftwareSerial dbg(A2,A1); // RX-green, TX-white
 
 
-const int SPD_MAX = 7;
-const int SPD_MIN = 1;
-const int SPD_TBO = 10;
+const int SPD_MAX = 6;
+const int SPD_MIN = 0;
+const int SPD_TBO = 9;
 
 int max_speed = SPD_MAX;
 int min_speed = SPD_MIN;
 
-
 void setup()
 {
+
   //bluetooth module
   Serial.begin(9600);
   while (!Serial) {
     ; // wait for serial port to connect. Needed for native USB port only
   }
-  //dbg.begin(9600);
+
+
 
 
   Wire.begin();                      // join i2c bus as master
-  //Wire.setClock(100000L);
-
-  digitalWrite(SDA, 1);
-  digitalWrite(SCL, 1);
 
   chuck.begin();
-  chuck.update();
+
+  while (!chuck.update()) {
+    delay(1);
+  }
+
   chuck.calibrateJoy();
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
+
+
+
+  //dbg.begin(9600);
+
   //dbg.println(F("Finished setup"));
 }
 bool stop_sent = false;
@@ -47,6 +53,8 @@ String cmd = "";
 char recv = 0;
 
 bool ping_val = LOW;
+
+bool stick_turning = false;
 
 void loop()
 {
@@ -77,85 +85,80 @@ void loop()
   //    Serial.write(dbg.read());
   //  }
 
-  chuck.update();
+  if (chuck.update()) {
 
-  //button z is pressed
-  if (chuck.buttonZ) {
-    max_speed = SPD_TBO;
-  }
-  else {
-    max_speed = SPD_MAX;
-  }
-
-  int joyY = chuck.readJoyY();
-  int joyX = chuck.readJoyX();
-  
-  int dir = 0;
-  //turn using joystick x axis
-  if (joyX>40)dir = 1;
-  if (joyX<-40) dir = -1;
-  
-
-  //turn using accelerometer
-//  int angle = chuck.readRoll();
-//  if (angle >= 30) {
-//    //rotated on axis out of button c to the right
-//    dir = 1;
-//  }
-//  else if (angle <= -30) {
-//    //rotated on axis out of button c to the left
-//    dir = -1;
-//  }
-  //end turn left/right accel
-
-  
-  
+    //button z is pressed
+    if (chuck.buttonZ) {
+      max_speed = SPD_TBO;
+    }
+    else {
+      max_speed = SPD_MAX;
+    }
 
 
-  int spd = map(abs(joyY), 0, 100, min_speed, max_speed);
-  if (abs(joyY) != joyY) {
-    spd = -spd;
-  }
+
+    int joyX = chuck.readJoyX();
+    int joyY = chuck.readJoyY();
+
+    //clamp to 80 max
+    int c = min(sqrt((joyX * joyX)  + (joyY * joyY)), 80);
+
+    int spd = map(c, 0, 80, min_speed, max_speed);
 
 
-//  Serial.print("JoyX=");
+    //top vs bottom of joystick relaxed to 20
+    if (abs(joyY) != joyY && abs(joyY) > 20) {
+      spd = -spd;
+    }
+
+
+    int dir = 0;
+
+    //turn using joystick
+    if (stick_turning) {
+      if (abs(joyX) != joyX && abs(joyX) > 20) {
+        dir = -1;
+      }
+      else if (abs(joyX) == joyX && abs(joyX) > 20) {
+        dir = 1;
+      }
+    }
+    //turn using accelerometer
+    else {
+      int angle = chuck.readRoll();
+      if (angle >= 20) {
+        //rotated on axis out of button c to the right
+        dir = 1;
+      }
+      else if (angle <= -20) {
+        //rotated on axis out of button c to the left
+        dir = -1;
+      }
+    }
+    //end turn left/right accel
+
+
+//    Serial.print(" X=");
 //    Serial.print(joyX);
-//  Serial.print("SPD=");
+//    Serial.print(" Y=");
+//    Serial.print(joyY);
+//    Serial.print(" DIST=");
+//    Serial.print(c);
+//    Serial.print(" SPD=");
 //    Serial.print(spd);
-//  Serial.println();
+//    Serial.print(" DIR=");
+//    Serial.print(dir);
+//    Serial.println();
 
-  
-  //      Serial.print(" DIR=");
-  //        Serial.print(dir);
-  //      Serial.print(" ANG=");
-  //Serial.print("Pitch=");
-  //Serial.print(chuck.readPitch());
+    moveCar(spd, dir);
 
-
- // int spd = 0;
+  }//chuck update
 
 
-//  int pitch = chuck.readPitch()-45;
-//  if (pitch<0) pitch = 0;
-//  if (pitch>80) pitch = 80;
-//  
-//  if (pitch < 20) {
-//    //forward  
-//    spd = map(pitch, 0, 20, max_speed , min_speed);
-//    
-//  }
-//  else if (pitch>40) {
-//    //backward  
-//    spd = map(pitch, 40, 70, min_speed , max_speed);
-//    spd=-spd;
-//  }
+  //delay(20);
 
 
 
-
-  moveCar(spd, dir);
-
-  delay(80);
 
 
 }
