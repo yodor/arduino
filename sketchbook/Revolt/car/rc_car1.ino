@@ -1,4 +1,9 @@
 #include <TimerOne.h>
+#include <Adafruit_NeoPixel.h>
+
+#define LIGHTS_PIN A1
+
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(1, LIGHTS_PIN, NEO_GRB + NEO_KHZ800);
 
 // This example creates a PWM signal with 25 kHz carrier.
 //
@@ -44,6 +49,9 @@ void setup(void)
   // 200 us = 5.0 kHz
   Timer1.initialize(200);
 
+  strip.begin();
+  strip.show(); // Initialize all pixels to 'off'
+  
   Serial.println(F("Setup Finished"));
 }
 
@@ -148,6 +156,10 @@ void processLights(char a)
     uint8_t blue = map(buf[2], 0, 9, 0, 255);
     uint8_t i = map(buf[3], 0, 9, 0, 255);
 
+    strip.setPixelColor(0, strip.Color(red,green,blue)); // Moderately bright green color.
+
+    strip.show(); // This sends the updated pixel color to the hardware.
+    
     if (debug_enabled) {
       Serial.print(F("R: "));
       Serial.print(red);

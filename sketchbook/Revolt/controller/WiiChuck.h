@@ -68,7 +68,8 @@ class WiiChuck {
 
     bool lastZ, lastC;
 
-
+    bool not_connected;
+    
   public:
 
     uint8_t joyX;
@@ -84,6 +85,8 @@ class WiiChuck {
       joyX = DEFAULT_ZERO_JOY_X;
       joyY = DEFAULT_ZERO_JOY_Y;
 
+      not_connected = false;
+      
       // instead of the common 0x40 -> 0x00 initialization, we
       // use 0xF0 -> 0x55 followed by 0xFB -> 0x00.
       // this lets us use 3rd party nunchucks (like cheap $4 ebay ones)
@@ -101,6 +104,7 @@ class WiiChuck {
       Wire.write((uint8_t)0x00);
       Wire.endTransmission();
 
+      
       while (!update()) {
         delay(1);
       }
@@ -118,9 +122,14 @@ class WiiChuck {
       zeroJoyY = joyY;
     }
 
+    bool isConnected() {
+        return !not_connected;
+    }
     
     bool update() {
 
+      if (not_connected) return false;
+      
       Wire.requestFrom (0x52, 6); // request data from nunchuck
       while (Wire.available ()) {
         // receive byte as an integer
