@@ -5,7 +5,7 @@
 #include "WiiChuck.h"
 
 WiiChuck chuck = WiiChuck();
-//SoftwareSerial dbg(A2,A1); // RX-green, TX-white
+SoftwareSerial dbg(A2,A1); // RX-green, TX-white
 
 //joystick buttons on original controller
 #define JOYL_UP_P 3
@@ -108,9 +108,9 @@ void setup()
   digitalWrite(LED_BUILTIN, LOW);
 
 
-  //dbg.begin(9600);
+  dbg.begin(9600);
 
-  //dbg.println(F("Finished setup"));
+  dbg.println(F("Finished setup"));
 }
 bool stop_sent = false;
 
@@ -120,11 +120,13 @@ bool stick_turning = false;
 
 String cmd = "";
 
+String buf = "";
+
 char recv = 0;
 
 bool ping_val = LOW;
 
-
+float voltage = 0.0;
 
 void loop()
 {
@@ -133,23 +135,36 @@ void loop()
     recv = Serial.read();
     //dbg.write(Serial.read());
 
-    if (cmd == "" && recv == 'p') {
-      cmd += recv;
+    if (buf[0] == 'p' && recv == '|') {
+      cmd = "ping";
     }
-    else if (cmd[0] == 'p') {
-      cmd += recv;
-    }
-    if (cmd == "ping")
-    {
-      cmd = "";
-      ping_val = !ping_val;
-      digitalWrite(LED_BUILTIN, ping_val);
-    }
-    else if (cmd.length() >= 4) {
+    
+    buf+=recv;
+      
+    //reset - unrecognized command
+    if (buf.length() >= 10) {
+      buf = "";
       cmd = "";
     }
   }
 
+  if (cmd == "ping")
+  {
+      //read voltage
+      buf.remove(0,1);
+      
+      voltage = buf.toFloat() * 11.0;
+      
+      ping_val = !ping_val;
+      digitalWrite(LED_BUILTIN, ping_val);
+
+      dbg.print("Voltage: ");
+      dbg.println(voltage);
+
+      buf = "";
+      cmd = "";
+  }
+    
   //  while (dbg.available()) {
   //    Serial.write(dbg.read());
   //  }
