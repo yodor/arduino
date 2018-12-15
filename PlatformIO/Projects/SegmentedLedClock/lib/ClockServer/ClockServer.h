@@ -16,11 +16,16 @@ public:
     void print(const DateTime& dateTime);
     double temperature();
     void update();
-    
+
+
+
 protected:
 
-    DateTime current_time;
+
+
+    ESP8266WebServer& m_server;
     double current_temp;
+    DateTime current_time;
 
     void handleGetTime();
     void handleSetTime();
@@ -28,10 +33,12 @@ protected:
     void handleSetDate();
 
     void handleGetTemperature();
+    void handleWifiConfig();
 
     void handleNotFound();
 
-    ESP8266WebServer& m_server;
+    void sendResult(const String& response, bool restart=false);
+
 };
 
 #endif //CLOCKSERVER_H

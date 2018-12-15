@@ -1,4 +1,4 @@
-// Date and time functions using a DS3231 RTC connected via I2C and Wire lib
+#include <FS.h>
 #include <Wire.h>
 
 #include <ESP8266WiFi.h>
@@ -10,10 +10,12 @@
 
 #include <ClockServer.h>
 
-const char* ssid = "saturno";
-const char* password = "cafebabe";
-
 double version = 1.0;
+
+
+
+
+
 
 
 ESP8266WebServer server(80);
@@ -29,11 +31,64 @@ bool led_state = true;
 
 volatile boolean tick_flag = false;
 
+
+
 void tickISR()
 {
     tick_flag=true;
 }
 
+void wifiSoftAP()
+{
+    IPAddress local_IP(10,10,10,1);
+    IPAddress gateway(10,10,10,1);
+    IPAddress subnet(255,255,255,0);
+
+    Serial.print("Configuring Soft-AP: ");
+    Serial.println(WiFi.softAPConfig(local_IP, gateway, subnet) ? "Ready" : "Failed!");
+
+    Serial.print("Initializing Soft-AP: ");
+    Serial.println(WiFi.softAP("ESP-Clock") ? "Ready" : "Failed!");
+
+    Serial.print("Soft-AP IP: ");
+    Serial.println(WiFi.softAPIP());
+
+}
+
+void wifiSTA(const String& ssid, const String& pass)
+{
+    Serial.println("Initializing wifi client");
+    Serial.print("SSID: ");
+    Serial.println(ssid);
+    Serial.print("PASS: ");
+    Serial.println(pass);
+
+
+    disp.startProgress();
+
+    WiFi.mode(WIFI_STA);
+
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    digitalWrite(LED, LOW); // turn the LED on.
+
+    // Wait for connection
+    while (WiFi.status() != WL_CONNECTED) {
+
+      Serial.print(".");
+      delay(100);
+      disp.stepProgress();
+
+    }
+
+    disp.endProgress();
+
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+}
 void setup ()
 {
 
@@ -41,9 +96,11 @@ void setup ()
     while (!Serial); // for Leonardo/Micro/Zero
   #endif
 
-  Serial.begin(9600);
+  Serial.begin(115200);
 
-  //delay(3000); // wait for console opening
+  delay(3000); // wait for console opening
+  //Initialize file system.
+
 
   Wire.begin(4,5);
 
@@ -55,34 +112,34 @@ void setup ()
 
   disp.begin();
 
-  disp.startProgress();
 
-  Serial.print("Version: ");
+
+  Serial.print("ESPClock Version: ");
   Serial.println(version,DEC);
 
+  Serial.println("Loading wifi settings ... ");
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  //Serial.println("");
+  SPIFFS.begin();
 
-  digitalWrite(LED, LOW);          // turn the LED on.
-  // Wait for connection
-  while (WiFi.status() != WL_CONNECTED) {
+  File file = SPIFFS.open("/wificonfig.txt", "r");
+  if (!file) {
+      Serial.println("Unable to open wificonfig.txt");
+      wifiSoftAP();
+  }
+  else {
 
-    Serial.print(".");
-    delay(100);
-    disp.stepProgress();
+      Serial.print("config size: ");
+      Serial.println(file.size(),DEC);
 
+      String ssid = file.readStringUntil('\n');
+      ssid.trim();
+      String pass = file.readStringUntil('\n');
+      ssid.trim();
+      file.close();
+
+      wifiSTA(ssid, pass);
 
   }
-
-  disp.endProgress();
-  
-  Serial.println("");
-  Serial.print("Connected to ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
 
   if (MDNS.begin("esp8266")) {
     Serial.println("MDNS responder started");
@@ -91,10 +148,12 @@ void setup ()
   ArduinoOTA.setPassword("123456");
   ArduinoOTA.onStart([](){
       Serial.println("OTA Process start ...");
+      SPIFFS.end();
   });
 
   ArduinoOTA.onEnd([](){
       Serial.println("OTA Process end ...");
+      SPIFFS.begin();
   });
 
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total){

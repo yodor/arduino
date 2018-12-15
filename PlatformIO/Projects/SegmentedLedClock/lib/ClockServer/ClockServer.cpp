@@ -1,6 +1,6 @@
 #include "ClockServer.h"
 #include "RTClib.h"
-
+#include <FS.h>
 
 RTC_DS3231 rtc;
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
@@ -47,6 +47,8 @@ void ClockServer::begin()
     m_server.on("/setDate" , std::bind(&ClockServer::handleSetDate, this));
     m_server.on("/getTemperature" , std::bind(&ClockServer::handleGetTemperature, this));
 
+    m_server.on("/wificonfig", std::bind(&ClockServer::handleWifiConfig,this));
+
     m_server.onNotFound(std::bind(&ClockServer::handleNotFound, this));
 
     m_server.begin();
@@ -55,13 +57,10 @@ void ClockServer::begin()
 
 }
 
+
 void ClockServer::loop()
 {
-
   m_server.handleClient();
-
-
-
 }
 
 void ClockServer::update()
@@ -70,23 +69,7 @@ void ClockServer::update()
   current_temp = rtc.getTemp();
 }
 
-void ClockServer::print(const DateTime& dateTime)
-{
-    Serial.print(dateTime.year(), DEC);
-    Serial.print('/');
-    Serial.print(dateTime.month(), DEC);
-    Serial.print('/');
-    Serial.print(dateTime.day(), DEC);
-    Serial.print(" (");
-    Serial.print(daysOfTheWeek[dateTime.dayOfTheWeek()]);
-    Serial.print(") ");
-    Serial.print(dateTime.hour(), DEC);
-    Serial.print(':');
-    Serial.print(dateTime.minute(), DEC);
-    Serial.print(':');
-    Serial.print(dateTime.second(), DEC);
-    Serial.println();
-}
+
 DateTime ClockServer::now()
 {
     return current_time; //rtc.now();
@@ -95,22 +78,92 @@ double ClockServer::temperature()
 {
     return current_temp; //rtc.getTemp();
 }
+
+void ClockServer::sendResult(const String& response, bool restart)
+{
+
+    m_server.send(200, "text/plain", response.c_str());
+
+    if (restart) {
+        //SPIFFS.end();
+
+        ESP.restart();
+        while(true) {
+          delay(1000);
+        }
+    }
+}
+
+void ClockServer::handleWifiConfig()
+{
+
+
+  if (m_server.args()==2) {
+
+    String ssid=m_server.arg("ssid");
+    String pass=m_server.arg("pass");
+    ssid.trim();
+    pass.trim();
+
+    if (ssid.length()<1 || pass.length()<1) {
+        sendResult("ssid and pass parameters are empty");
+        return;
+    }
+    SPIFFS.remove("/wificonfig.txt");
+    File file = SPIFFS.open("/wificonfig.txt", "w");
+    if (!file) {
+      sendResult("Unable to write to wificonfig.txt");
+      return;
+    }
+
+    file.print(ssid);
+    file.print('\n');
+    file.print(pass);
+    file.print('\n');
+    file.close();
+
+    sendResult("Wifi configuration updated. Restarting ... ", true);
+
+  } //args==2
+  else if (m_server.args()==1) {
+      String argName = m_server.argName(0);
+
+      if (argName.equalsIgnoreCase("reset")) {
+          SPIFFS.remove("/wificonfig.txt");
+
+          sendResult("Wifi configuration erased. Restarting ...", true);
+          return;
+      }
+
+  }
+  else {
+      //show current config
+      File file = SPIFFS.open("/wificonfig.txt", "r");
+      if (!file) {
+          sendResult("Unable to open wificonfig.txt for reading");
+          return;
+      }
+      String ssid = file.readStringUntil('\n');
+      String pass = file.readStringUntil('\n');
+      String result = String("Current wifi client settings:\n");
+      result+= String("SSID: " + ssid);
+      result+= String("\nPassword: " + pass);
+      sendResult(result);
+      file.close();
+  }
+}
+
+
 void ClockServer::handleGetTime()
 {
-    char buffer[20];
-
-    sprintf( buffer, "%02d:%02d:%02d", current_time.hour(), current_time.minute(), current_time.second());
-
-    m_server.send(200, "text/plain", buffer);
+    String result = String("Current Time: ") + current_time.hour() + ":" + current_time.minute() +":" + current_time.second();
+    sendResult(result);
 }
 
 void ClockServer::handleGetTemperature()
 {
-    char buffer[20];
-
-    sprintf( buffer, "%0.2f", current_temp);
-
-    m_server.send(200, "text/plain", buffer);
+    String result = String("Current Temperature: ") + current_temp;
+    sendResult(result);
 }
 
 void ClockServer::handleSetTime()
@@ -124,20 +177,17 @@ void ClockServer::handleSetTime()
 
     rtc.adjust(adjust);
 
-    m_server.send(200, "text/plain", "Time set successfully.");
+    sendResult("Time set successfully.");
 
-    Serial.println("RTC DateTime adjusted: ");
+    Serial.println(F("RTC adjusted: "));
     this->print(rtc.now());
 
 }
 
 void ClockServer::handleGetDate()
 {
-    char buffer[20];
-
-    sprintf( buffer, "%04d/%02d/%02d", current_time.year(), current_time.month(), current_time.day());
-
-    m_server.send(200, "text/plain", buffer);
+    String result = String("Current Date: ") + current_time.year() + "/" + current_time.month() + "/" + current_time.day();
+    sendResult(result);
 
 }
 
@@ -151,9 +201,9 @@ void ClockServer::handleSetDate()
                   current_time.hour(), current_time.minute(), current_time.second());
     rtc.adjust(adjust);
 
-    m_server.send(200, "text/plain", "Date set successfully.");
+    sendResult("Date set successfully.");
 
-    Serial.println("RTC DateTime adjusted: ");
+    Serial.println(F("RTC adjusted: "));
     this->print(rtc.now());
 }
 
@@ -174,4 +224,21 @@ void ClockServer::handleNotFound()
   }
   m_server.send(404, "text/plain", message);
 
+}
+void ClockServer::print(const DateTime& dateTime)
+{
+    Serial.print(dateTime.year(), DEC);
+    Serial.print('/');
+    Serial.print(dateTime.month(), DEC);
+    Serial.print('/');
+    Serial.print(dateTime.day(), DEC);
+    Serial.print(" (");
+    Serial.print(daysOfTheWeek[dateTime.dayOfTheWeek()]);
+    Serial.print(") ");
+    Serial.print(dateTime.hour(), DEC);
+    Serial.print(':');
+    Serial.print(dateTime.minute(), DEC);
+    Serial.print(':');
+    Serial.print(dateTime.second(), DEC);
+    Serial.println();
 }
