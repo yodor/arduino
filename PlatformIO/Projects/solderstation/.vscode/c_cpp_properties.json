@@ -1,0 +1,68 @@
+//
+// !!! WARNING !!! AUTO-GENERATED FILE!
+// PLEASE DO NOT MODIFY IT AND USE "platformio.ini":
+// https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
+//
+{
+    "configurations": [
+        {
+            "name": "PlatformIO",
+            "includePath": [
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/include",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/src",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/ezButton/src",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/PID Controller",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/PID Autotuner",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/MAX6675/src",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/cores/arduino",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/variants/standard",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/LiquidCrystal",
+                "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/LiquidCrystal_I2C",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                ""
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "path": [
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/include",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/src",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/EEPROM/src",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/Wire/src",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/ezButton/src",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/PID Controller",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/PID Autotuner",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/MAX6675/src",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/SPI/src",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/cores/arduino",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/variants/standard",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/LiquidCrystal",
+                    "/storage/work/Documents/PlatformIO/Projects/solderstation/.pio/libdeps/uno/LiquidCrystal_I2C",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/HID/src",
+                    "/home/yodor/.platformio/packages/framework-arduino-avr/libraries/SoftwareSerial/src",
+                    ""
+                ]
+            },
+            "defines": [
+                "PLATFORMIO=60104",
+                "ARDUINO_AVR_UNO",
+                "F_CPU=16000000L",
+                "ARDUINO_ARCH_AVR",
+                "ARDUINO=10808",
+                "__AVR_ATmega328P__",
+                ""
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "compilerPath": "/home/yodor/.platformio/packages/toolchain-atmelavr/bin/avr-gcc",
+            "compilerArgs": [
+                "-mmcu=atmega328p",
+                ""
+            ]
+        }
+    ],
+    "version": 4
+}

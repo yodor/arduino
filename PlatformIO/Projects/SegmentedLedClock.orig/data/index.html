@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, user-scalable=yes">
+<style>
+.content {
+    width:100%;
+    text-align:center;
+}
+.time {
+    display:block;
+    font-size:3em;
+    padding:0.5em;
+}
+.date {
+    display:block;
+    font-size:1em;
+    padding:0.5em;
+}
+.buttons {
+    padding:1em;
+}
+</style>
+<script>
+
+function pad(num, size) {
+    num = num.toString();
+    while (num.length < size) num = "0" + num;
+    return num;
+}
+
+function httpGetAsync(theUrl, callback)
+{
+    var xmlHttp = new XMLHttpRequest();
+    xmlHttp.onreadystatechange = function() { 
+        if (xmlHttp.readyState == 4 && xmlHttp.status == 200)
+            callback(xmlHttp.responseText);
+    }
+    xmlHttp.open("GET", theUrl, true); // true for asynchronous 
+    xmlHttp.send(null);
+}
+function httpCallback(response)
+{
+    alert(response);
+}
+
+function synchronize()
+{
+    let now = new Date();
+    httpGetAsync("/setTime?hour="+now.getHours()+"&minute="+now.getMinutes()+"&second="+now.getSeconds(), httpCallback);
+    httpGetAsync("/setDate?day="+now.getDate()+"&month="+(now.getMonth()+1)+"&year="+now.getFullYear(), httpCallback);
+}
+function update()
+{
+    let now = new Date();
+    const timeField = document.querySelector('.time');
+    const dateField = document.querySelector('.date');
+    
+    let hour = ""+pad(now.getHours(),2);
+    let minute = ""+pad(now.getMinutes(),2);
+    let second = ""+pad(now.getSeconds(),2);
+    let currentTime = hour+":"+minute+":"+second;
+    
+    // request a weekday along with a long date
+    let options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    let currentDate = new Intl.DateTimeFormat('en-US', options).format(now);
+
+    dateField.innerText = currentDate;
+    timeField.innerText = currentTime;
+    setInterval(update, 1000);
+}
+
+window.addEventListener("load", function(){
+    update();
+});
+
+</script>
+</head>
+<body>
+<div class='content'>
+    <div class='time'>00:00:00</div>
+    <div class='date'></div>
+    <div class='buttons'>
+        <button onClick='synchronize()'>Synchronize</button>
+    </div>
+</div>
+</body>
+</html>

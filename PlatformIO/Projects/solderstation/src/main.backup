@@ -1,0 +1,129 @@
+#include <Arduino.h>
+
+#include "max6675.h"
+
+/* YourDuino.com Example Software Sketch
+ 16 character 2 line I2C Display
+ NEW TYPE Marked "Arduino-IIC-LCD GY-LCD-V1"
+ terry@yourduino.com */
+/*-----( Import needed libraries )-----*/
+#include <Wire.h>
+#include <LCD.h>
+#include <LiquidCrystal_I2C.h>  // F Malpartida's NewLiquidCrystal library
+
+#include <ezButton.h>
+
+/*-----( Declare Constants )-----*/
+#define I2C_ADDR    0x20  // Define I2C Address for the PCF8574A
+//---(Following are the PCF8574 pin assignments to LCD connections )----
+// This are different than earlier/different I2C LCD displays
+#define BACKLIGHT_PIN  7
+#define En_pin  4
+#define Rw_pin  5
+#define Rs_pin  6
+#define D4_pin  0
+#define D5_pin  1
+#define D6_pin  2
+#define D7_pin  3
+
+#define LED_OFF  0
+#define LED_ON  1
+
+#define FET_CTRL 10
+
+#define BUTTON_CTRL 11
+
+
+/*-----( Declare objects )-----*/
+LiquidCrystal_I2C  lcd(I2C_ADDR,En_pin,Rw_pin,Rs_pin,D4_pin,D5_pin,D6_pin,D7_pin);
+
+//thermocouple
+int thermoDO = 4;
+int thermoCS = 5;
+int thermoCLK = 6;
+
+MAX6675 thermocouple(thermoCLK, thermoCS, thermoDO);
+
+//button debouncer
+ezButton button(BUTTON_CTRL);
+
+void setup()
+{
+  pinMode(FET_CTRL, OUTPUT);
+  digitalWrite(FET_CTRL, LOW);
+
+  pinMode(BUTTON_CTRL, INPUT);
+  digitalWrite(BUTTON_CTRL, HIGH);
+
+  button.setDebounceTime(50); // set debounce time to 50 milliseconds
+
+  // initialize the lcd
+  lcd.begin (16,2);
+  // Switch on the backlight
+  lcd.setBacklightPin(BACKLIGHT_PIN,NEGATIVE);
+  lcd.setBacklight(LED_ON);
+
+
+  Serial.begin(9600);
+
+  // Reset the display
+  lcd.clear();
+  lcd.home();
+
+  lcd.backlight();  //Backlight ON if under program control
+  lcd.setCursor(0,0); //Start at character 0 on line 0
+  lcd.print("Hello, world!");
+  delay(1000);
+  Serial.println("Hello World");
+}
+
+int selectedIndex = 0;
+int tempSelect[] = {0, 180, 220, 300, 350, 400};
+
+void loop()
+{
+
+  button.loop(); // MUST call the loop() function first
+  //int btnState = button.getState();
+
+  if(button.isPressed()) {
+     selectedIndex ++;
+     if (selectedIndex>5) {
+        selectedIndex = 0;
+     }
+
+  }
+
+  double currentTemp = thermocouple.readCelsius();
+  currentTemp/=1.9;
+
+  int dialedTemp = tempSelect[selectedIndex];
+
+  Serial.println(currentTemp);
+
+  if (selectedIndex>0) {
+    if (currentTemp < (dialedTemp-10)) {
+        digitalWrite(FET_CTRL, HIGH);
+    }
+    else {
+        digitalWrite(FET_CTRL, LOW);
+    }
+  }
+
+
+
+  //update display
+  clearOLED();
+  if (selectedIndex>0) {
+    setCursor(0,0); //Start at character 0 on line 0
+    printOLED(currentTemp);
+    setCursor(0,1); //Start at character 0 on line 1
+    printOLED(dialedTemp);
+  }
+  else {
+    setCursor(0,0);
+    printOLED("Off");
+  }
+
+  delay(500);
+} // END Loop
