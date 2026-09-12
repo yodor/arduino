@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <SPI.h>
 
-#define TMC2130STEPPER_VERSION 0x020500 // v2.5.0
+#define TMC2130STEPPER_VERSION 0x020501 // v2.5.1
 
 class TMC2130Stepper {
 	public:
@@ -293,8 +293,8 @@ class TMC2130Stepper {
 		inline void 		mode_sw_speed(		uint32_t value)	__attribute__((always_inline)) {				THIGH(value); 							}
 		// RW: XDIRECT
 		inline int16_t 	coil_A_current()									__attribute__((always_inline)) { return coil_A(); 									}
-		inline void 		coil_A_current(		 int16_t value)	__attribute__((always_inline)) {				coil_B(value); 							}
-		inline int16_t 	coil_B_current()									__attribute__((always_inline)) { return coil_A(); 									}
+		inline void 		coil_A_current(		 int16_t value)	__attribute__((always_inline)) {				coil_A(value); 							}
+		inline int16_t 	coil_B_current()									__attribute__((always_inline)) { return coil_B(); 									}
 		inline void 		coil_B_current(		 int16_t value)	__attribute__((always_inline)) {				coil_B(value); 							}
 		// W
 		inline uint32_t DCstep_min_speed()								__attribute__((always_inline)) { return VDCMIN(); 									}

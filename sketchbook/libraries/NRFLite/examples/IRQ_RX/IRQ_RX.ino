@@ -14,8 +14,8 @@ GND   -> GND
 
 */
 
-#include <SPI.h>
-#include <NRFLite.h>
+#include "SPI.h"
+#include "NRFLite.h"
 
 const static uint8_t RADIO_ID = 0;
 const static uint8_t PIN_RADIO_CE = 9;
@@ -23,7 +23,13 @@ const static uint8_t PIN_RADIO_CSN = 10;
 const static uint8_t PIN_RADIO_IRQ = 3;
 
 NRFLite _radio;
-uint8_t _data;
+volatile uint8_t _hadIrq; // Note usage of volatile since the variable is used in the radio interrupt
+                          // while also being used outside the interrupt.
+
+void radioInterrupt()
+{
+    _hadIrq = 1;
+}
 
 void setup()
 {
@@ -34,29 +40,36 @@ void setup()
         Serial.println("Cannot communicate with radio");
         while (1); // Wait here forever.
     }
-    
+
     attachInterrupt(digitalPinToInterrupt(PIN_RADIO_IRQ), radioInterrupt, FALLING);
 }
 
-void loop() {}
-
-void radioInterrupt() 
+void loop()
 {
-    // Ask the radio what caused the interrupt.
-    // txOk = the radio successfully transmitted data.
-    // txFail = the radio failed to transmit data.
-    // rxReady = the radio has received data.
-    uint8_t txOk, txFail, rxReady;
-    _radio.whatHappened(txOk, txFail, rxReady);
-
-    if (rxReady)
+    if (_hadIrq)
     {
-        // Use 'hasDataISR' rather than 'hasData' when using interrupts.
-        while (_radio.hasDataISR())
-        { 
-            _radio.readData(&_data);
-            Serial.print("Received ");
-            Serial.println(_data);      
+        _hadIrq = 0;
+
+        // Ask the radio what caused the interrupt.
+        // This resets the radio's IRQ pin so a new interrupt can be triggered.
+        // It also removes any packets from the radio if one could not be sent.
+        uint8_t txOk, txFail, rxReady;
+        _radio.whatHappened(txOk, txFail, rxReady);
+
+        // txOk = the radio successfully transmitted data.
+        // txFail = the radio failed to transmit data.
+        // rxReady = the radio received data.
+
+        if (rxReady)
+        {
+            // Use 'hasDataISR' rather than 'hasData' when using interrupts.
+            while (_radio.hasDataISR())
+            {
+                uint8_t data;
+                _radio.readData(&data);
+                Serial.print("Received ");
+                Serial.println(data);
+            }
         }
     }
 }

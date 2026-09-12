@@ -1,13 +1,12 @@
 {
-  "name": "RTCLib",
-  "keywords": "RTC, DS1302, DS1307, DS3231, PCF8583, PCF8563, RTC_Millis, DateTime",
-  "description": "A library that makes interfacing many Real Time Clock modules easy. With same DateTime class which supports all standart conversions.",
-  "repository":
-  {
-    "type": "git",
-    "url": "https://github.com/NeiroNx/RTCLib.git"
-  },
-  "version": "1.5.4",
-  "frameworks": "arduino",
-  "platforms": "*"
+    "name": "RTCLib by NeiroN",
+    "keywords": "RTC, DS1302, DS1307, DS3231, PCF8583, PCF8563, RTC-Millis, DateTime",
+    "description": "A library that makes interfacing many Real Time Clock modules easy. With same DateTime class which supports all standard conversions.",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/NeiroNx/RTCLib.git"
+    },
+    "version": "1.6.3",
+    "frameworks": "arduino",
+    "platforms": "*"
 }

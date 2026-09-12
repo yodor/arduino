@@ -1,8 +1,10 @@
 /*
 
-Demonstrates simple RX and TX operation using 2 pins for the radio.
-Only AVR architectures (ATtiny/ATmega) support 2 pin operation.
-Please read the notes in NRFLite.h for a description of all library features.
+Demonstrates simple RX and TX operation using 2 pins for the radio.  This greatly slows down the communication speed between
+the microcontroller and radio compared to using the SPI and USI peripherials of the ATmega and ATtiny microcontrollers.
+Only AVR architectures (ATMega/ATtiny) support 2 pin operation.
+
+Any of the Basic_RX examples can be used as a receiver.
 
 Radio circuit
 * Follow the 2-Pin Hookup Guide on https://github.com/dparson55/NRFLite
@@ -13,10 +15,10 @@ Connections
 
 */
 
-#include <NRFLite.h>
+#include "NRFLite.h"
 
-const static uint8_t RADIO_ID = 2;             // Our radio's id.
-const static uint8_t DESTINATION_RADIO_ID = 0; // Id of the radio we will transmit to.
+const static uint8_t RADIO_ID = 2;
+const static uint8_t DESTINATION_RADIO_ID = 0;
 const static uint8_t PIN_RADIO_MOMI = 9;
 const static uint8_t PIN_RADIO_SCK = 10;
 
@@ -34,7 +36,7 @@ void setup()
 {
     Serial.begin(115200);
 
-    if (!_radio.initTwoPin(RADIO_ID, PIN_RADIO_MOMI, PIN_RADIO_SCK))
+    if (!_radio.initTwoPin(RADIO_ID, PIN_RADIO_MOMI, PIN_RADIO_SCK)) // Note usage of 'initTwoPin' rather than 'init'.
     {
         Serial.println("Cannot communicate with radio");
         while (1); // Wait here forever.
@@ -51,7 +53,7 @@ void loop()
     Serial.print(_radioData.OnTimeMillis);
     Serial.print(" ms");
 
-    if (_radio.send(DESTINATION_RADIO_ID, &_radioData, sizeof(_radioData))) // Note how '&' must be placed in front of the variable name.
+    if (_radio.send(DESTINATION_RADIO_ID, &_radioData, sizeof(_radioData)))
     {
         Serial.println("...Success");
     }

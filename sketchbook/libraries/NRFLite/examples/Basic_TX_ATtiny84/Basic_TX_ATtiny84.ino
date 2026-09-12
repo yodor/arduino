@@ -1,7 +1,11 @@
 /*
 
-Demonstrates transmitting data with an ATtiny84.  ATtiny's have a Universal Serial Interface 
-peripheral (USI) that can be used for SPI communication, and NRFLite utilizes this capability.
+Arduino 1.x IDE may be required if using the ATtiny board library https://github.com/damellis/attiny.
+
+Demonstrates simple TX operation with an ATtiny84.  Note in this example the same pin is used for CE and CSN.
+This slows the communication between the microcontroller and radio, but it frees up one pin.
+
+Any of the Basic_RX examples can be used as a receiver.
 
 Radio    ATtiny84
 CE    -> Physical Pin 10, Arduino 3
@@ -15,10 +19,10 @@ GND   -> GND
 
 */
 
-#include <NRFLite.h>
+#include "NRFLite.h"
 
-const static uint8_t RADIO_ID = 3;             // Our radio's id.
-const static uint8_t DESTINATION_RADIO_ID = 0; // Id of the radio we will transmit to.
+const static uint8_t RADIO_ID = 3;
+const static uint8_t DESTINATION_RADIO_ID = 0;
 const static uint8_t PIN_RADIO_CE = 3;
 const static uint8_t PIN_RADIO_CSN = 3;
 
@@ -46,7 +50,7 @@ void loop()
 {
     _radioData.OnTimeMillis = millis();
 
-    if (!_radio.send(DESTINATION_RADIO_ID, &_radioData, sizeof(_radioData))) // Note how '&' must be placed in front of the variable name.
+    if (!_radio.send(DESTINATION_RADIO_ID, &_radioData, sizeof(_radioData)))
     {
         _radioData.FailedTxCount++;
     }
