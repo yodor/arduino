@@ -58,11 +58,12 @@ static size_t     g_screenIdxBeforeMenu = 0;
 
 void setup() {
     if (CUSTOM_CLOCKS_ENABLED) {
-        // 1. Overclock the RP2040 core
+        // Overclock the CPU core(s).
         set_sys_clock_khz(CPU_SPEED_KHZ, true);
 
-        // 2. Explicitly bind the peripheral clock back to the system clock.
-        // This scales clk_peri to 240 MHz, unlocking your SPI dividers!
+        // Explicitly bind the peripheral clock back to the system clock.
+        // This scales clk_peri to match CPU_SPEED_KHZ, unlocking finer SPI
+        // dividers than the fixed 48MHz clk_peri default would allow.
         uint32_t freq = clock_get_hz(clk_sys);
         clock_configure(
             clk_peri,

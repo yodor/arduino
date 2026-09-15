@@ -3,67 +3,36 @@
 #include "Config.hpp"
 #include "hardware/adc.h"
 #include "hardware/dma.h"
-#include "../lib/kissfft/kiss_fftr.h"
+#include "Bar9Pipeline.hpp"
+#include "OctavePipeline.hpp"
+#include "WaveformPipeline.hpp"
 
+// Owns the physical ADC/DMA capture (the one piece of hardware every
+// pipeline shares) and three independent pipeline objects, each with its
+// own window size and refresh cadence. Every physical capture chunk gets
+// handed to all three; each decides internally what to do with it (see
+// Bar9Pipeline/OctavePipeline/WaveformPipeline). No FFT/aggregation logic
+// lives here anymore -- this class is purely capture + dispatch.
 class AudioEngine {
 public:
     static AudioEngine& instance();
 
     void runCore1();
-    void getFFTBins(float* dest, size_t count) const;
     void getSpectrumBars(float* leftBars, float* rightBars) const;
     void getOctaveBars(float* leftBars, float* rightBars) const;
     void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const;
 
 private:
-    AudioEngine();
-    ~AudioEngine();
+    AudioEngine() = default;
 
-    void initHanningWindow();
-    void recomputeBinRanges();
-    void recomputeOctaveBinRanges();
+    // Aligned to its own size (CAPTURE_CHUNK_SAMPLES * 2 bytes) -- required
+    // for the DMA ring-wrap addressing used to capture into this buffer
+    // continuously (see runCore1()): the ring hardware wraps by masking
+    // low address bits, which only works correctly if the buffer actually
+    // starts on that same boundary.
+    alignas(CAPTURE_CHUNK_SAMPLES * sizeof(uint16_t)) uint16_t m_audioBuffer[2][CAPTURE_CHUNK_SAMPLES] = {};
 
-    uint16_t         m_audioBuffer[2][TOTAL_SAMPLES] = {};
-    volatile uint8_t m_activeAudioBuf = 0;
-    int              m_adcDmaChan = -1;
-
-    // Left Channel FFT
-    kiss_fftr_cfg    m_fftCfgL = nullptr;
-    kiss_fft_scalar* m_fftInL  = nullptr;
-    kiss_fft_cpx*    m_fftOutL = nullptr;
-
-    // Right Channel FFT
-    kiss_fftr_cfg    m_fftCfgR = nullptr;
-    kiss_fft_scalar* m_fftInR  = nullptr;
-    kiss_fft_cpx*    m_fftOutR = nullptr;
-
-    float*           m_fftBinsL = nullptr;
-    float*           m_fftBinsR = nullptr;
-    float            m_hanningTable[FFT_SIZE] = {};
-
-    // Raw, DC-removed (but not windowed) samples from the most recent capture,
-    // kept around purely so the UI can render an oscilloscope-style waveform.
-    int16_t          m_waveL[FFT_SIZE] = {};
-    int16_t          m_waveR[FFT_SIZE] = {};
-
-    mutable float    m_barsL[NUM_BARS] = {};
-    mutable float    m_barsR[NUM_BARS] = {};
-
-    // Precomputed [start, end) FFT bin range for each bar (bin count
-    // doubles per bar: 1,2,4,8,...). Computed once by recomputeBinRanges()
-    // rather than every audio frame, since bin boundaries never change
-    // after that.
-    size_t           m_barStartBin[NUM_BARS] = {};
-    size_t           m_barEndBin[NUM_BARS]   = {};
-
-    // Same idea as m_barStartBin/m_barEndBin above, but for OctaveScreen's
-    // fixed 1/3-octave ISO bands -- a separate table since the band
-    // boundaries and count are unrelated to the 9-bar doubling scheme.
-    // Aggregated via RMS (not peak, see recomputeOctaveBinRanges()'s
-    // companion aggregation code in runCore1()) since these bands can span
-    // many more bins than a doubling-scheme bar.
-    mutable float    m_octaveBarsL[OCTAVE_BAND_COUNT] = {};
-    mutable float    m_octaveBarsR[OCTAVE_BAND_COUNT] = {};
-    size_t           m_octaveStartBin[OCTAVE_BAND_COUNT] = {};
-    size_t           m_octaveEndBin[OCTAVE_BAND_COUNT]   = {};
+    Bar9Pipeline     m_bar9;
+    OctavePipeline   m_octave;
+    WaveformPipeline m_waveform;
 };

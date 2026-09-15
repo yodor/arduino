@@ -140,7 +140,10 @@ constexpr uint16_t MENU_ROW_HEIGHT = 26;
 // overhead -- not pixel volume -- is what's limiting waveform frame rate.
 // Halving this roughly halves that call count. Lower = faster, less
 // horizontal detail; raise back toward SCREEN_WIDTH for max resolution if
-// you don't need the frame rate.
+// you don't need the frame rate. This is the DISPLAY-side decimation
+// target -- how many points getWaveform() decimates down to for drawing --
+// distinct from WAVEFORM_WINDOW_SAMPLES below, which is the ENGINE-side
+// raw capture window getWaveform() decimates FROM.
 constexpr uint16_t WAVEFORM_SAMPLES = SCREEN_WIDTH / 2;
 
 // Waveform erase/redraw is processed in chunks of this many samples rather
@@ -156,7 +159,7 @@ constexpr size_t WAVE_CHUNK_SAMPLES = 8;
 // ADC round-robin crosstalk on a channel that isn't carrying a real signal --
 // it won't hide genuine crosstalk larger than the gate, since that's the ADC
 // actually reading something real.
-constexpr int16_t WAVE_NOISE_GATE = 12;
+constexpr int16_t WAVE_NOISE_GATE = 0;
 
 // FFT bin magnitude (post Hann-coherent-gain-corrected scale) below which a
 // bar reads as silent rather than showing residual noise/crosstalk. Like
@@ -164,6 +167,19 @@ constexpr int16_t WAVE_NOISE_GATE = 12;
 // carrying real signal -- it won't hide genuine content louder than the
 // gate, since that's the ADC actually reading something real.
 constexpr float BAR_NOISE_GATE = 0.01f;
+
+// Same idea as BAR_NOISE_GATE, but for OctaveScreen's bands specifically --
+// deliberately a SEPARATE constant, not shared with BAR_NOISE_GATE. Octave
+// bands are aggregated by summing bin magnitudes (quadrature sum, not an
+// average -- see AudioEngine's octave aggregation for why), so a wide band
+// (the top band alone spans ~93 bins) has a genuinely higher noise floor in
+// this sum domain than a narrow one, roughly scaling with sqrt(bin count)
+// the same way real summed signal does. BAR_NOISE_GATE was tuned against
+// the 9-bar screen's single-bin-ish peak values, an entirely different
+// scale, so reusing it here would be arbitrary. This starting value is an
+// educated guess, not yet calibrated against real hardware noise --
+// retune by ear/scope once back on the bench.
+constexpr float OCTAVE_NOISE_GATE = 0.01f;
 
 // Target frame period. The main loop paces itself against this instead of
 // an unconditional delay, so measured FPS reflects the real budget rather
@@ -178,9 +194,59 @@ constexpr uint32_t TARGET_FRAME_US = 10000; // ~90 fps
 constexpr uint32_t FPS_REPORT_INTERVAL_MS = 1000;
 
 // Audio & FFT Parameters
-constexpr uint16_t FFT_SIZE      = 1024;
-constexpr uint16_t TOTAL_SAMPLES = FFT_SIZE * 2; // Interleaved L/R
-constexpr uint8_t NUM_BARS  =    9;
+//
+// Three independent consumers, each with its own capture window size,
+// decoupled from each other so none is held hostage by another's needs:
+//  - WaveformScreen wants a SMALL window for an oscilloscope-like "a few
+//    cycles" look, refreshed as fast as possible -- it never needs FFT at
+//    all, only raw samples.
+//  - The 9-bar doubling-scheme screen (BarSpectrumScreen) doesn't need
+//    fine low-frequency resolution, so it runs its own smaller, faster-
+//    refreshing FFT independent of the octave screen's needs.
+//  - The 31-band 1/3-octave screen (OctaveScreen) needs a much larger FFT
+//    for the low-frequency resolution its narrowest bands require (see
+//    OCTAVE_BAND_COUNT's comment) -- and accepts a much slower refresh
+//    rate as the tradeoff for that resolution.
+//
+// All three are fed from the SAME physical ADC/DMA capture stream (there's
+// only one ADC), continuously appended to at CAPTURE_CHUNK_SAMPLES
+// granularity -- see AudioEngine::runCore1(). Each FFT-based consumer only
+// actually runs its FFT once enough new samples have accumulated to
+// justify it (their own 50% overlap point); the waveform window just
+// always has fresh data ready, no FFT gating needed.
+
+// Smallest physical DMA capture unit, interleaved L+R samples. This is
+// the single source both FFT windows AND the waveform window are built
+// from -- small enough to give WaveformScreen very fast, snappy refresh
+// without needing a separate physical capture path of its own. Must stay
+// a power of two (DMA ring-wrap requirement) and must evenly divide both
+// FFT sizes' half-window overlap points below, so neither ever needs an
+// awkward partial-chunk shift.
+constexpr uint16_t CAPTURE_CHUNK_SAMPLES = 256; // 128 samples/channel, ~2.9ms/chunk at 44.1kHz/channel
+
+// WaveformScreen's own sliding window (samples/channel) -- sized for a
+// "few cycles" oscilloscope look, NOT spectral resolution, and completely
+// independent of either FFT size below. At 512 samples/channel and
+// 44.1kHz, this spans ~11.6ms of audio -- about 5 cycles of a 440Hz tone.
+// Tune by eye once you can see it on real hardware.
+constexpr uint16_t WAVEFORM_WINDOW_SAMPLES = 512;
+
+// FFT size for the 9-bar doubling-scheme screen (BarSpectrumScreen).
+constexpr uint16_t BAR9_FFT_SIZE = 2048;
+
+// FFT size for the 31-band 1/3-octave screen (OctaveScreen). Bin
+// resolution at this size and AUDIO_SAMPLE_RATE_HZ below is ~5.4Hz/bin --
+// several of the lowest bands are still narrower than that single bin's
+// width (see OCTAVE_BAND_COUNT's comment) but far better resolved than at
+// BAR9_FFT_SIZE's ~43Hz/bin.
+constexpr uint16_t OCTAVE_FFT_SIZE = 2048;
+
+static_assert((BAR9_FFT_SIZE / 2) % (CAPTURE_CHUNK_SAMPLES / 2) == 0,
+              "BAR9_FFT_SIZE/2 must be an exact multiple of the per-channel capture chunk size");
+static_assert((OCTAVE_FFT_SIZE / 2) % (CAPTURE_CHUNK_SAMPLES / 2) == 0,
+              "OCTAVE_FFT_SIZE/2 must be an exact multiple of the per-channel capture chunk size");
+
+constexpr uint8_t NUM_BARS = 10;
 
 // FFT bin-to-bar mapping: bin count doubles per bar (1,2,4,8,...), skipping
 // bins 0-1 (DC and the bin needing different scaling). An alternative
@@ -196,13 +262,9 @@ constexpr uint8_t NUM_BARS  =    9;
 // if the ADC clock divider ever changes.
 constexpr float AUDIO_SAMPLE_RATE_HZ = 44100.0f;
 
-// Number of 1/3-octave ISO bands OctaveScreen displays (20Hz-20kHz plus a
-// 0-20Hz sub-bass catch-all, 31 bands total). Bin resolution at FFT_SIZE=
-// 1024 and AUDIO_SAMPLE_RATE_HZ above is ~43Hz/bin -- several of the
-// lowest bands (up to roughly 80-100Hz) are narrower than that single
-// bin's width and will read nearly identically to their neighbors; this is
-// a real resolution limit of a 1024-point FFT at this sample rate, not a
-// bug in the band-to-bin mapping.
+// Number of 1/3-octave ISO bands OctaveScreen displays (20Hz-20kHz, 31
+// bands total). See OCTAVE_FFT_SIZE above for the resulting bin
+// resolution and its effect on the lowest bands.
 constexpr uint8_t OCTAVE_BAND_COUNT = 31;
 
 constexpr bool CUSTOM_CLOCKS_ENABLED = true;

@@ -14,10 +14,11 @@
 // convention -- the "mirror around center" concept has no meaning with
 // only one channel's data.
 //
-// Aggregation is RMS-based (not peak, see AudioEngine::getOctaveBars()),
-// since these bands can span far more FFT bins than a BarSpectrumScreen
-// bar. Same ColorTheme integration (FLAT_ZONES/SMOOTH/PER_BAR_FREQUENCY)
-// as BarSpectrumScreen, just applied to differently-shaped bars.
+// Aggregation is quadrature-sum based (not peak, not average -- see
+// AudioEngine::getOctaveBars()), since these bands can span far more FFT
+// bins than a BarSpectrumScreen bar. Same ColorTheme integration
+// (FLAT_ZONES/SMOOTH/PER_BAR_FREQUENCY) as BarSpectrumScreen, just applied
+// to differently-shaped bars.
 class OctaveScreen : public Screen {
 public:
     void onEnter() override;
