@@ -18,8 +18,8 @@ public:
 
 private:
 
-    // Horizontal analogues of BarSpectrumScreen's fillGradientRange/
-    // updateBarColumn: same green/yellow/red zone logic and same
+    // Horizontal analogues of SpectrumScreen's fillGradientRangeUp/
+    // updateBarColumnUp: same green/yellow/red zone logic and same
     // reclaim-one-unit-to-cover-a-pinned-peak-erase trick, just filling
     // left-to-right instead of bottom-to-top.
     void fillGradientRangeHorizontal(uint16_t y, uint16_t barHeight, uint16_t loWidth, uint16_t hiWidth, uint16_t maxBarWidth);

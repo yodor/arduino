@@ -3,24 +3,35 @@
 #include "Config.hpp"
 #include "hardware/adc.h"
 #include "hardware/dma.h"
-#include "Bar9Pipeline.hpp"
-#include "OctavePipeline.hpp"
+#include "SpectrumPipeline.hpp"
 #include "WaveformPipeline.hpp"
 
 // Owns the physical ADC/DMA capture (the one piece of hardware every
-// pipeline shares) and three independent pipeline objects, each with its
+// pipeline shares) and two independent pipeline objects, each with its
 // own window size and refresh cadence. Every physical capture chunk gets
-// handed to all three; each decides internally what to do with it (see
-// Bar9Pipeline/OctavePipeline/WaveformPipeline). No FFT/aggregation logic
-// lives here anymore -- this class is purely capture + dispatch.
+// handed to both; each decides internally what to do with it (see
+// SpectrumPipeline/WaveformPipeline). No FFT/aggregation logic lives here
+// anymore -- this class is purely capture + dispatch.
 class AudioEngine {
 public:
     static AudioEngine& instance();
 
     void runCore1();
     void getSpectrumBars(float* leftBars, float* rightBars) const;
-    void getOctaveBars(float* leftBars, float* rightBars) const;
+    size_t getSpectrumBandCount() const;
     void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const;
+
+    // Menu-facing forwarders -- set from core0, applied on core1 inside
+    // SpectrumPipeline::pushChunk() (see that class's comment for why this
+    // is safe without locking on this platform).
+    void setSpectrumBandLayoutMode(SpectrumPipeline::BandLayoutMode mode);
+    void setSpectrumEnergyMode(SpectrumPipeline::EnergyMode mode);
+    SpectrumPipeline::BandLayoutMode getSpectrumBandLayoutMode() const;
+    SpectrumPipeline::EnergyMode     getSpectrumEnergyMode() const;
+
+    // Same pattern, for WaveformPipeline's Window Mode setting.
+    void setWaveformWindowMode(WaveformPipeline::WindowMode mode);
+    WaveformPipeline::WindowMode getWaveformWindowMode() const;
 
 private:
     AudioEngine() = default;
@@ -32,7 +43,6 @@ private:
     // starts on that same boundary.
     alignas(CAPTURE_CHUNK_SAMPLES * sizeof(uint16_t)) uint16_t m_audioBuffer[2][CAPTURE_CHUNK_SAMPLES] = {};
 
-    Bar9Pipeline     m_bar9;
-    OctavePipeline   m_octave;
+    SpectrumPipeline m_spectrum;
     WaveformPipeline m_waveform;
 };

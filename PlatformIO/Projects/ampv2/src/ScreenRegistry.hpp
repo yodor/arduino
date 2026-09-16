@@ -8,10 +8,9 @@
 // kScreenCount, so a mismatch fails to compile rather than silently
 // pointing "Starting Screen" options at the wrong screen.
 constexpr const char* kScreenNames[] = {
-    "Spectrum Bars",
+    "Spectrum",
     "Waveform",
     "Analog VU",
     "Digital VU",
-    "Octave RTA",
 };
 constexpr size_t kScreenCount = sizeof(kScreenNames) / sizeof(kScreenNames[0]);

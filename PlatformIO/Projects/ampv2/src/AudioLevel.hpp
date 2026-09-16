@@ -6,9 +6,9 @@
 // to a 0..1 value using the same -50..0dB convention used throughout the
 // display screens. Used by every screen that needs a level-to-display
 // mapping -- AnalogVuScreen and DigitalVuMeterScreen call computeRms()
-// directly (their level source is raw waveform RMS); BarSpectrumScreen and
-// OctaveScreen only use dbNormalize() (their level source is already an
-// FFT-bin-derived magnitude/RMS from AudioEngine, not raw samples).
+// directly (their level source is raw waveform RMS); SpectrumScreen only
+// uses dbNormalize() (its level source is already an FFT-bin-derived
+// magnitude/RMS from AudioEngine, not raw samples).
 //
 // Deliberately kept in its own lightweight header rather than folded into
 // AudioEngine (which pulls in the RP2040 hardware headers and kissfft) --

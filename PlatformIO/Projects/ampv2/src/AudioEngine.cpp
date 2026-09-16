@@ -1,5 +1,6 @@
 #include "AudioEngine.hpp"
 #include "hardware/clocks.h"
+#include "PersistentSettings.hpp"
 
 namespace {
 // Computes log2(n) for a power-of-two n at compile time -- used to derive
@@ -90,8 +91,7 @@ void AudioEngine::runCore1() {
     // see exactly which pipeline (or the DMA wait itself, by elimination)
     // actually accounts for the time.
     uint32_t waveformAccumUs = 0;
-    uint32_t bar9AccumUs     = 0;
-    uint32_t octaveAccumUs   = 0;
+    uint32_t spectrumAccumUs = 0;
 
     // Dispatch sum alone didn't add up to chunk avg -- isolating the wait
     // and the RawADC scan directly (the two remaining unmeasured pieces)
@@ -166,22 +166,18 @@ void AudioEngine::runCore1() {
             Serial.println(")");
         }
 
-        // Dispatch this chunk to all three independent pipelines. Each
-        // decides internally whether/how to act on it -- WaveformPipeline
-        // always updates immediately; Bar9Pipeline/OctavePipeline only
-        // actually run their FFT once enough samples have accumulated
-        // (see FftEngine::pushChunk()).
+        // Dispatch this chunk to both independent pipelines. Each decides
+        // internally whether/how to act on it -- WaveformPipeline always
+        // updates immediately; SpectrumPipeline only actually runs its
+        // FFT once enough samples have accumulated (see FftEngine::
+        // pushChunk()).
         uint32_t waveformStartUs = micros();
         m_waveform.pushChunk(captureBuf);
         waveformAccumUs += micros() - waveformStartUs;
 
-        uint32_t bar9StartUs = micros();
-        m_bar9.pushChunk(captureBuf);
-        bar9AccumUs += micros() - bar9StartUs;
-
-        uint32_t octaveStartUs = micros();
-        m_octave.pushChunk(captureBuf);
-        octaveAccumUs += micros() - octaveStartUs;
+        uint32_t spectrumStartUs = micros();
+        m_spectrum.pushChunk(captureBuf);
+        spectrumAccumUs += micros() - spectrumStartUs;
 
         uint32_t transferCountAtDispatchEnd = dma_channel_hw_addr(justStartedChannel)->transfer_count;
         // transfer_count COUNTS DOWN as the channel progresses, so a
@@ -234,12 +230,9 @@ void AudioEngine::runCore1() {
             float avgWaveformUs = (chunkCountSinceRpt > 0)
                                        ? static_cast<float>(waveformAccumUs) / static_cast<float>(chunkCountSinceRpt)
                                        : 0.0f;
-            float avgBar9Us = (chunkCountSinceRpt > 0)
-                                   ? static_cast<float>(bar9AccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                   : 0.0f;
-            float avgOctaveUs = (chunkCountSinceRpt > 0)
-                                     ? static_cast<float>(octaveAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                     : 0.0f;
+            float avgSpectrumUs = (chunkCountSinceRpt > 0)
+                                       ? static_cast<float>(spectrumAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                       : 0.0f;
             float avgWaitUs = (chunkCountSinceRpt > 0)
                                    ? static_cast<float>(waitAccumUs) / static_cast<float>(chunkCountSinceRpt)
                                    : 0.0f;
@@ -251,28 +244,22 @@ void AudioEngine::runCore1() {
             Serial.print(avgChunkUs / 1000.0f, 3);
             Serial.print("ms (~");
             Serial.print(avgChunkUs > 0.0f ? 1000000.0f / avgChunkUs : 0.0f, 1);
-            Serial.print("Hz) | bar9 fft=");
-            Serial.print(m_bar9.lastFftDurationUs() / 1000.0f, 2);
+            Serial.print("Hz) | spectrum fft=");
+            Serial.print(m_spectrum.lastFftDurationUs() / 1000.0f, 2);
             Serial.print("ms @ ");
-            Serial.print(m_bar9.observedRefreshHz(), 1);
-            Serial.print("Hz | octave fft=");
-            Serial.print(m_octave.lastFftDurationUs() / 1000.0f, 2);
-            Serial.print("ms @ ");
-            Serial.print(m_octave.observedRefreshHz(), 1);
+            Serial.print(m_spectrum.observedRefreshHz(), 1);
             Serial.println("Hz");
 
             Serial.print("[Timing] per-chunk dispatch avg -- waveform=");
             Serial.print(avgWaveformUs / 1000.0f, 3);
-            Serial.print("ms | bar9=");
-            Serial.print(avgBar9Us / 1000.0f, 3);
-            Serial.print("ms | octave=");
-            Serial.print(avgOctaveUs / 1000.0f, 3);
+            Serial.print("ms | spectrum=");
+            Serial.print(avgSpectrumUs / 1000.0f, 3);
             Serial.print("ms | wait=");
             Serial.print(avgWaitUs / 1000.0f, 3);
             Serial.print("ms | rawAdcScan=");
             Serial.print(avgRawAdcUs / 1000.0f, 3);
             Serial.print("ms | sum=");
-            Serial.print((avgWaveformUs + avgBar9Us + avgOctaveUs + avgWaitUs + avgRawAdcUs) / 1000.0f, 3);
+            Serial.print((avgWaveformUs + avgSpectrumUs + avgWaitUs + avgRawAdcUs) / 1000.0f, 3);
             Serial.println("ms");
 
             // Direct DMA hardware probe: how many of the just-started
@@ -286,7 +273,7 @@ void AudioEngine::runCore1() {
             float avgTransferProgress = (chunkCountSinceRpt > 0)
                                              ? static_cast<float>(transferProgressAccum) / static_cast<float>(chunkCountSinceRpt)
                                              : 0.0f;
-            float avgDispatchUs = avgWaveformUs + avgBar9Us + avgOctaveUs + avgRawAdcUs;
+            float avgDispatchUs = avgWaveformUs + avgSpectrumUs + avgRawAdcUs;
             float expectedProgress = avgDispatchUs * (88073.4f / 1000000.0f);
 
             Serial.print("[Timing] DMA overlap check -- actual capture progress during dispatch=");
@@ -300,23 +287,52 @@ void AudioEngine::runCore1() {
             chunkAccumUs           = 0;
             chunkCountSinceRpt     = 0;
             waveformAccumUs        = 0;
-            bar9AccumUs            = 0;
-            octaveAccumUs          = 0;
+            spectrumAccumUs        = 0;
             waitAccumUs            = 0;
             rawAdcAccumUs          = 0;
             transferProgressAccum  = 0;
         }
+
+        // Safe checkpoint for a pending flash write (settings save) --
+        // between chunk dispatches, no DMA/FFT work mid-flight. See
+        // PersistentSettings::checkAndPauseForFlashWrite()'s own comment
+        // for why this must stay a cheap, RAM-resident check.
+        PersistentSettings::checkAndPauseForFlashWrite();
     }
 }
 
 void AudioEngine::getSpectrumBars(float* leftBars, float* rightBars) const {
-    m_bar9.getBars(leftBars, rightBars);
+    m_spectrum.getBars(leftBars, rightBars);
 }
 
-void AudioEngine::getOctaveBars(float* leftBars, float* rightBars) const {
-    m_octave.getBars(leftBars, rightBars);
+size_t AudioEngine::getSpectrumBandCount() const {
+    return m_spectrum.bandCount();
+}
+
+void AudioEngine::setSpectrumBandLayoutMode(SpectrumPipeline::BandLayoutMode mode) {
+    m_spectrum.setBandLayoutMode(mode);
+}
+
+void AudioEngine::setSpectrumEnergyMode(SpectrumPipeline::EnergyMode mode) {
+    m_spectrum.setEnergyMode(mode);
+}
+
+SpectrumPipeline::BandLayoutMode AudioEngine::getSpectrumBandLayoutMode() const {
+    return m_spectrum.getBandLayoutMode();
+}
+
+SpectrumPipeline::EnergyMode AudioEngine::getSpectrumEnergyMode() const {
+    return m_spectrum.getEnergyMode();
 }
 
 void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const {
     m_waveform.getWaveform(leftWave, rightWave, count);
+}
+
+void AudioEngine::setWaveformWindowMode(WaveformPipeline::WindowMode mode) {
+    m_waveform.setWindowMode(mode);
+}
+
+WaveformPipeline::WindowMode AudioEngine::getWaveformWindowMode() const {
+    return m_waveform.getWindowMode();
 }

@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 // Runtime-selectable color scheme for the low/mid/high level-gradient used
-// by bar-style meters (BarSpectrumScreen, DigitalVuMeterScreen). Other
+// by bar-style meters (SpectrumScreen, DigitalVuMeterScreen). Other
 // screens' colors (waveform trace, analog VU needle/scale) aren't themed
 // yet -- extending them the same way later is straightforward.
 enum class ColorPreset : uint8_t {

@@ -19,7 +19,7 @@ void DigitalVuMeterScreen::resetBarState(BarPhysicsState& state) {
 void DigitalVuMeterScreen::onEnter() {
     Renderer::instance().clear();
     // Deliberately not resetting decay/peak/peakTimer -- same reasoning as
-    // BarSpectrumScreen: audio-reactive smoothing carries over continuously
+    // SpectrumScreen: audio-reactive smoothing carries over continuously
     // across screen switches and channel-mode toggles.
     resetBarState(m_left);
     resetBarState(m_right);

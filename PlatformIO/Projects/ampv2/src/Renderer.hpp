@@ -6,7 +6,7 @@
 
 // Thin hardware layer: owns SPI/panel setup and the underlying Arduino_GFX
 // handle. Deliberately has NO per-visualization state or drawing logic --
-// that all lives in individual Screen subclasses (BarSpectrumScreen,
+// that all lives in individual Screen subclasses (SpectrumScreen,
 // WaveformScreen, etc), which call gfx() to get the raw drawing primitives
 // they need.
 class Renderer {

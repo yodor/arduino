@@ -7,6 +7,12 @@
 // item array (defined elsewhere, in main.cpp, since it needs to reference
 // things like available screens that only main.cpp has visibility into).
 //
+// Supports arbitrary-depth SUBMENU nesting (up to kMaxDepth) via a fixed-
+// size navigation stack, with VALUE_CHOICE always treated as a leaf
+// overlay on top of whichever stack level is currently focused, rather
+// than a stack entry of its own -- a value-choice options list never
+// itself nests further, matching how this kind of menu always behaves.
+//
 // Not part of the normal screen cycle (main.cpp handles switching in/out
 // of it separately via UIEvent::MENU_TOGGLE) but still implements Screen
 // for the same onEnter()/render() conventions.
@@ -24,26 +30,38 @@ public:
     const char* name() const override { return "MENU"; }
 
     void moveFocus(int delta); // -1 = up, +1 = down (wraps at the ends)
-    void enter();              // RIGHT: performs the focused ACTION, or drills into a VALUE_CHOICE's options, or selects a focused option and returns to root
+    void enter();              // RIGHT: performs the focused ACTION, drills into a VALUE_CHOICE's options or a SUBMENU's items, or selects a focused option and returns to its own list
 
-    // LEFT: backs out one level. Returns true if the menu is still open
-    // (was in the options list, now back at root); returns false if
-    // already at the root list, meaning the caller should close the menu
+    // LEFT: backs out one level (closing an open VALUE_CHOICE, or popping
+    // one SUBMENU level, whichever is currently deepest). Returns true if
+    // the menu is still open; returns false if already at the root list
+    // with no value-choice open, meaning the caller should close the menu
     // entirely.
     bool back();
 
 private:
-    enum class Level : uint8_t { ROOT, ITEM_OPTIONS };
+    // Root, plus up to 3 nested SUBMENU levels (Root -> Theme -> FFT ->
+    // one more if ever needed) -- generous headroom without the
+    // complexity of a dynamically-sized stack, matching this project's
+    // avoidance of heap allocation.
+    static constexpr size_t kMaxDepth = 4;
+
+    struct StackFrame {
+        const MenuItem* items      = nullptr;
+        size_t          itemCount  = 0;
+        size_t          focusedIdx = 0;
+    };
 
     void drawFull();
 
-    const MenuItem* m_rootItems = nullptr;
-    size_t           m_rootCount = 0;
+    StackFrame m_stack[kMaxDepth];
+    size_t     m_stackDepth = 1; // always >= 1; index 0 is the root list
 
-    Level  m_level         = Level::ROOT;
-    size_t m_rootIdx        = 0; // focused item within the root list
-    size_t m_activeItemIdx  = 0; // which root item we've drilled into (valid when m_level == ITEM_OPTIONS)
-    size_t m_optionIdx      = 0; // focused option within the active item's list
+    // True when browsing the VALUE_CHOICE options of the item currently
+    // focused at the TOP of m_stack -- an overlay on the current stack
+    // level, not a level of its own.
+    bool   m_inValueChoice = false;
+    size_t m_optionIdx     = 0;
 
     bool m_dirty = true;
 };

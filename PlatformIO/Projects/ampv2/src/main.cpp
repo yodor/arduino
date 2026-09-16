@@ -1,19 +1,23 @@
 #include <Arduino.h>
+
+#include "hardware/clocks.h"
+#include "hardware/structs/sysinfo.h" // Fixes the 'sysinfo_hw' declaration error
+
 #include "Config.hpp"
 #include "AudioEngine.hpp"
 #include "InputEngine.hpp"
 #include "Renderer.hpp"
 #include "VolumeControl.hpp"
 #include "Screen.hpp"
-#include "BarSpectrumScreen.hpp"
+#include "SpectrumScreen.hpp"
 #include "WaveformScreen.hpp"
 #include "AnalogVuScreen.hpp"
 #include "DigitalVuMeterScreen.hpp"
-#include "OctaveScreen.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
 #include "MenuContent.hpp"
+#include "PersistentSettings.hpp"
 #include "ScreenRegistry.hpp"
 
 void setup1() {
@@ -30,18 +34,16 @@ void loop1() {
 // ScreenRegistry.hpp's kScreenNames[] exactly (enforced below), since
 // MenuContent.cpp's "Starting Screen" options select by index into this
 // same array.
-static BarSpectrumScreen     g_barSpectrumScreen;
+static SpectrumScreen        g_spectrumScreen;
 static WaveformScreen        g_waveformScreen;
 static AnalogVuScreen        g_analogVuScreen;
 static DigitalVuMeterScreen  g_digitalVuMeterScreen;
-static OctaveScreen          g_octaveScreen;
 
 static Screen* g_screens[] = {
-    &g_barSpectrumScreen,
+    &g_spectrumScreen,
     &g_waveformScreen,
     &g_analogVuScreen,
     &g_digitalVuMeterScreen,
-    &g_octaveScreen,
 };
 constexpr size_t kNumScreens = sizeof(g_screens) / sizeof(g_screens[0]);
 
@@ -56,7 +58,57 @@ static MenuScreen g_menuScreen;
 static bool       g_menuOpen = false;
 static size_t     g_screenIdxBeforeMenu = 0;
 
+void bootInfo() {
+
+    Serial.println("\n--- HARDWARE & CLOCK VALIDATION ---");
+
+    // 1. Compile-time check
+    #if defined(PICO_RP2350) && PICO_RP2350
+        Serial.println("Compile Target: RP2350 Core (Pico 2)");
+        
+        // 2. Runtime Chip Revision via Hardware Registers
+        // This confirms the exact silicon version running live on your board
+        uint8_t chip_rev = (sysinfo_hw->chip_id >> 28) & 0xF; 
+        Serial.print("Silicon Revision: RP2350 A");
+        Serial.println(chip_rev); // e.g., 2 for A2, 4 for A4
+
+        #if defined(__riscv) || defined(__riscv__)
+                Serial.println("Arch: NATIVE RISC-V (Hazard3 Core Active!)");
+        #elif defined(__arm__)
+            Serial.println("Arch: NATIVE ARM (Cortex-M33 Core Active)");
+        #else
+            Serial.println("Arch: Unknown Core Architecture");
+        #endif
+
+    #else
+        Serial.println("Compile Target: Older RP2040 Core (Pico 1)");
+    #endif
+
+    // 3. Confirm Flash ID from the core helper wrapper
+    Serial.print("Unique Flash ID: ");
+    Serial.println(rp2040.getChipID());
+
+    // 4. Verify Clock Mappings (Confirming your overclock configurations)
+    Serial.print("Active CPU Clock: ");
+    Serial.print(rp2040.f_cpu() / 1000000);
+    Serial.println(" MHz");
+
+    Serial.print("Peripheral Clock (clk_peri): ");
+    Serial.print(clock_get_hz(clk_peri) / 1000000);
+    Serial.println(" MHz");
+    
+    Serial.print("ADC Clock (clk_adc): ");
+    Serial.print(clock_get_hz(clk_adc) / 1000000);
+    Serial.println(" MHz");
+}
+
 void setup() {
+
+    // Force the internal SMPS out of PFM mode into low-noise PWM mode
+    pinMode(REGULATOR_MODE_PIN, OUTPUT);
+    digitalWrite(REGULATOR_MODE_PIN, HIGH);
+
+
     if (CUSTOM_CLOCKS_ENABLED) {
         // Overclock the CPU core(s).
         set_sys_clock_khz(CPU_SPEED_KHZ, true);
@@ -73,18 +125,16 @@ void setup() {
             freq                                       // Output frequency target
         );
     }
+
     Serial.begin(115200);
 
-    // Force the internal SMPS out of PFM mode into low-noise PWM mode
-    pinMode(REGULATOR_MODE_PIN, OUTPUT);
-    digitalWrite(REGULATOR_MODE_PIN, HIGH);
-    
     uint32_t timeout = millis();
     while (!Serial && (millis() - timeout < 3000)) {
         delay(10);
     }
 
-    Serial.println("\n=== RP2040 Booting ===");
+    bootInfo();
+    
 
     Renderer::instance().init();
     Serial.println("[OK] Renderer initialized.");
@@ -96,6 +146,11 @@ void setup() {
     Serial.println("[OK] VolumeControl initialized.");
 
     g_menuScreen.init(getRootMenuItems(), getRootMenuItemCount());
+
+    // Applies any saved settings (falls back to defaults if none are
+    // valid) before anything below reads them -- in particular, before
+    // g_currentScreenIdx picks up the starting screen just below.
+    PersistentSettings::instance().loadAndApply();
 
     g_currentScreenIdx = DisplaySettings::instance().getStartingScreenIndex();
     if (g_currentScreenIdx >= kNumScreens) g_currentScreenIdx = 0; // safety clamp
@@ -118,6 +173,11 @@ static void closeMenu() {
     g_currentScreenIdx = g_screenIdxBeforeMenu;
     g_screens[g_currentScreenIdx]->onEnter();
     Serial.println("[Menu] Closed");
+
+    // Only actually touches flash if something changed while the menu was
+    // open (see PersistentSettings::markDirty()) -- one commit per menu
+    // session, not one per individual setting change.
+    PersistentSettings::instance().saveIfDirty();
 }
 
 void loop() {

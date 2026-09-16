@@ -23,7 +23,12 @@ void Renderer::init() {
     // That makes 48MHz/2 = 24MHz the fastest SPI rate achievable without
     // reconfiguring clk_peri itself. Requesting anything higher (we tried
     // 41.67MHz) just gets silently clamped back down to this same ceiling.
-    m_tft->begin(SPI_SPEED_HZ);
+    if (CUSTOM_CLOCKS_ENABLED && SPI_SPEED_HZ>0) {
+        m_tft->begin(SPI_SPEED_HZ);
+    }
+    else {
+        m_tft->begin();
+    }
 
     uint32_t actualHz = spi_get_baudrate(spi0);
     Serial.print("[SPI] Requested ");

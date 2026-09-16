@@ -11,7 +11,7 @@ struct BarPhysicsState {
 
 // Frame-rate-independent audio-reactive bar physics (attack smoothing,
 // release/decay speed, peak-hold drop speed), shared by every bar-style
-// screen (BarSpectrumScreen, DigitalVuMeterScreen, OctaveScreen) instead
+// screen (SpectrumScreen, DigitalVuMeterScreen) instead
 // of each hardcoding its own separate copy.
 //
 // The three baseline constants below were tuned by ear at 60fps

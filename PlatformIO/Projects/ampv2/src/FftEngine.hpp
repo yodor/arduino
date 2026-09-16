@@ -4,19 +4,15 @@
 
 // Reusable real-FFT engine: sliding-window capture + DC removal + Hann
 // windowing + FFT + magnitude computation, parameterized by window size
-// at CONSTRUCTION time (a runtime parameter, not a C++ template) --
-// Bar9Pipeline and OctavePipeline each own an INSTANCE of this SAME
-// class, differing only in the size passed to their constructors (1024
-// vs 8192), not in any code. A template would compile two separate
-// copies of identical logic; this is genuinely one shared implementation,
+// at CONSTRUCTION time (a runtime parameter, not a C++ template).
+// SpectrumPipeline owns one instance of this class (sized via FFT_SIZE),
 // matching this project's established pattern of one runtime-
-// parameterized engine reused across multiple call sites (see BarPhysics
-// for the same idea applied to bar-drawing ballistics).
+// parameterized engine reused across call sites (see BarPhysics for the
+// same idea applied to bar-drawing ballistics).
 //
-// Deliberately does NOT know about bar/band aggregation, noise gates, or
-// bin-range tables -- those differ meaningfully between the two FFT-based
-// screens and stay in Bar9Pipeline/OctavePipeline, which each own an
-// instance of this engine and read its magnitude output.
+// Deliberately does NOT know about band aggregation, noise gates, or
+// bin-range tables -- those live in SpectrumPipeline, which owns an
+// instance of this engine and reads its magnitude output.
 //
 // Does NOT own or know about DMA/ADC capture -- AudioEngine owns the
 // physical capture and feeds every pipeline (including this engine, via
@@ -75,9 +71,9 @@ private:
     // right before the FFT that will actually consume it. Shifting the
     // main window on every small chunk (as an earlier version of this
     // did) meant most of that data got shifted again on the NEXT chunk
-    // before any FFT ever read it -- for OCTAVE_FFT_SIZE specifically,
-    // that was ~32 shifts of ~8064 elements per refresh cycle where one
-    // shift of 4096 does the same job.
+    // before any FFT ever read it -- the larger fftSize is relative to
+    // CAPTURE_CHUNK_SAMPLES, the more redundant repeated-shifting this
+    // avoids.
     uint16_t* m_stagingL = nullptr;
     uint16_t* m_stagingR = nullptr;
     size_t    m_stagedSamples = 0;
