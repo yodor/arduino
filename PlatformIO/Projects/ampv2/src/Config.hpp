@@ -283,8 +283,7 @@ static_assert((FFT_SIZE / 2) % (CAPTURE_CHUNK_SAMPLES / 2) == 0,
 // this if the ADC clock divider ever changes.
 constexpr float AUDIO_SAMPLE_RATE_HZ = 44100.0f;
 
-constexpr bool CUSTOM_CLOCKS_ENABLED = false;
+constexpr bool CUSTOM_CLOCKS_ENABLED = true;
 
-//constexpr uint32_t SPI_SPEED_HZ = 50000000;
-constexpr uint32_t SPI_SPEED_HZ = -1;
+constexpr uint32_t SPI_SPEED_HZ = 50000000;
 constexpr uint32_t CPU_SPEED_KHZ = 200000;

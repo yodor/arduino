@@ -6,13 +6,13 @@ constexpr uint8_t REGULATOR_MODE_PIN = 23;
 /** 
  * TFT Display pins 
  */
-constexpr uint8_t TFT_DC   = 4;
-constexpr uint8_t TFT_CS   = 5;
-constexpr uint8_t TFT_SCK  = 2;
-constexpr uint8_t TFT_MOSI = 3;
+constexpr uint8_t TFT_DC   = 16;
+constexpr uint8_t TFT_CS   = 17;
+constexpr uint8_t TFT_SCK  = 18;
+constexpr uint8_t TFT_MOSI = 19;
 constexpr uint8_t TFT_MISO = (uint8_t)-1;
-constexpr uint8_t TFT_RST  = 6;
-constexpr uint8_t TFT_BL   = 7;
+constexpr uint8_t TFT_RST  = 20;
+constexpr uint8_t TFT_BL   = 21;
 
 /** 
  * ADC sampling pins
@@ -38,7 +38,7 @@ constexpr uint8_t BTN_LT_PIN = 15;
  */
 
 // TSOP31238 output pin
-constexpr uint8_t IR_PIN  = 18; 
+constexpr uint8_t IR_PIN  = 19; 
 
 // DRV8833 motor driver pins, driving a motorized volume potentiometer.
 constexpr uint8_t DRV8833_IN1_PIN = 16;

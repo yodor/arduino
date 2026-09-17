@@ -7,6 +7,7 @@
 #include "SpectrumPipeline.hpp"
 #include "WaveformPipeline.hpp"
 #include "PersistentSettings.hpp"
+#include "Renderer.hpp"
 #include <Arduino.h>
 
 namespace {
@@ -69,6 +70,21 @@ void menuSet_MirrorOn()  { DisplaySettings::instance().setMirrorLeftBars(true); 
 void menuSet_MirrorOff() { DisplaySettings::instance().setMirrorLeftBars(false); PersistentSettings::instance().markDirty(); }
 bool menuIsActive_MirrorOn()  { return DisplaySettings::instance().getMirrorLeftBars(); }
 bool menuIsActive_MirrorOff() { return !DisplaySettings::instance().getMirrorLeftBars(); }
+
+// Brightness: unlike every other setting above, this one has no per-frame
+// screen render() that would pick up a stored value on its own -- the
+// setter has to also push it to hardware immediately, right here, not
+// just record it for later. Template rather than four near-identical
+// functions, same reasoning as menuSet_StartScreen below.
+template <uint8_t Pct>
+void menuSet_Brightness() {
+    DisplaySettings::instance().setBrightnessPercent(Pct);
+    Renderer::instance().setBacklightPercent(Pct);
+    PersistentSettings::instance().markDirty();
+}
+
+template <uint8_t Pct>
+bool menuIsActive_Brightness() { return DisplaySettings::instance().getBrightnessPercent() == Pct; }
 
 // Wave Window Mode: Oscilloscope (kOscilloscopeSamples, a genuine "few
 // cycles" view of waveform shape) vs Track Preview (kTrackPreviewSamples,
@@ -167,8 +183,16 @@ const MenuItem kThemeSubmenuItems[] = {
 };
 constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
 
+const MenuValueOption kBrightnessOptions[] = {
+    { "25%",  menuSet_Brightness<25>,  menuIsActive_Brightness<25>  },
+    { "50%",  menuSet_Brightness<50>,  menuIsActive_Brightness<50>  },
+    { "75%",  menuSet_Brightness<75>,  menuIsActive_Brightness<75>  },
+    { "100%", menuSet_Brightness<100>, menuIsActive_Brightness<100> },
+};
+
 const MenuItem kRootMenuItems[] = {
     { "Starting Screen", MenuItemType::VALUE_CHOICE, nullptr,              kStartScreenOptions, kScreenCount },
+    { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr,              kBrightnessOptions,  4 },
     { "Theme",           MenuItemType::SUBMENU,      nullptr,              nullptr, 0, kThemeSubmenuItems, kThemeSubmenuItemCount },
     { "Calibration",     MenuItemType::ACTION,       menuAction_Calibrate, nullptr, 0 },
 };

@@ -32,9 +32,7 @@ public:
         m_channelMode = (m_channelMode == ChannelMode::STEREO) ? ChannelMode::MONO : ChannelMode::STEREO;
     }
 
-    // Index into main.cpp's g_screens[] array to boot into. Not persisted
-    // across power cycles yet (resets to 0 on every boot) -- add flash/
-    // EEPROM storage later if that's wanted.
+    // Index into main.cpp's g_screens[] array to boot into.
     uint8_t getStartingScreenIndex() const { return m_startingScreenIndex; }
     void setStartingScreenIndex(uint8_t idx) { m_startingScreenIndex = idx; }
 
@@ -56,10 +54,26 @@ public:
     bool getMirrorLeftBars() const { return m_mirrorLeftBars; }
     void setMirrorLeftBars(bool mirror) { m_mirrorLeftBars = mirror; }
 
+    // Backlight brightness, stored as a percentage (0-100) rather than a
+    // raw PWM duty value -- a meaningful, portable unit that stays valid
+    // even if the hardware's PWM resolution ever changes, converted to
+    // the actual 0-255 duty value only at the point of writing it
+    // (Renderer::setBacklightPercent()). Deliberately just storage here --
+    // this class stays hardware-agnostic like every other setting in it;
+    // whoever changes this value (currently only MenuContent.cpp's
+    // brightness setters and PersistentSettings::loadAndApply()) is
+    // responsible for also calling Renderer::instance().setBacklightPercent()
+    // to actually push it to the pin, since unlike every other setting
+    // here, there's no per-frame screen render() that would otherwise
+    // pick this up on its own.
+    uint8_t getBrightnessPercent() const { return m_brightnessPercent; }
+    void setBrightnessPercent(uint8_t pct) { m_brightnessPercent = (pct > 100) ? 100 : pct; }
+
 private:
     DisplaySettings() = default;
     ChannelMode  m_channelMode         = ChannelMode::STEREO;
     uint8_t      m_startingScreenIndex = 0;
     StereoLayout m_stereoLayout        = StereoLayout::SIDE_BY_SIDE;
     bool         m_mirrorLeftBars      = true; // matches the old MIRROR_LEFT_CHANNEL_BARS default
+    uint8_t      m_brightnessPercent   = 100;  // matches the original always-on digitalWrite(HIGH) behavior
 };

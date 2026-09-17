@@ -21,6 +21,14 @@ public:
     // knows about any of that.
     void clear();
 
+    // Sets the backlight (TFT_BL, PWM) to a percentage of full brightness
+    // (0-100, clamped). The only place in this codebase that writes to
+    // the pin -- the actual stored setting lives in DisplaySettings, and
+    // whoever changes it there is responsible for also calling this to
+    // push the change to hardware (see DisplaySettings::setBrightnessPercent()'s
+    // comment for why that split exists).
+    void setBacklightPercent(uint8_t percent);
+
     // Raw Arduino_GFX handle for screens to draw with directly (fillRect,
     // drawLine, drawFastHLine, setCursor/print for text, etc) rather than
     // Renderer re-exposing every primitive as its own wrapper.

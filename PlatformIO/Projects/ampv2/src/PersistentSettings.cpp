@@ -4,6 +4,7 @@
 #include "AudioEngine.hpp"
 #include "SpectrumPipeline.hpp"
 #include "WaveformPipeline.hpp"
+#include "Renderer.hpp"
 #include "hardware/flash.h"
 #include "pico/platform.h"
 #include <cstring>
@@ -11,7 +12,7 @@
 namespace {
 
 constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 2;          // bump whenever PersistentData's layout changes incompatibly -- 2: added waveformWindowMode
+constexpr uint8_t  kVersion = 3;          // bump whenever PersistentData's layout changes incompatibly -- 3: added brightnessPercent
 
 // Last flash sector -- same convention the Arduino-Pico EEPROM library
 // itself uses, chosen so this doesn't collide with program flash or a
@@ -32,6 +33,7 @@ struct PersistentData {
     uint8_t  bandLayoutMode;
     uint8_t  energyMode;
     uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
@@ -81,6 +83,8 @@ void PersistentSettings::loadAndApply() {
     AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(stored->bandLayoutMode));
     AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(stored->energyMode));
     AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(stored->waveformWindowMode));
+    DisplaySettings::instance().setBrightnessPercent(stored->brightnessPercent);
+    Renderer::instance().setBacklightPercent(stored->brightnessPercent); // Renderer::init() already ran with a temporary default -- this pushes the real saved value to the pin
 
     Serial.println("[Settings] Loaded saved settings from flash");
 }
@@ -103,6 +107,7 @@ void PersistentSettings::commitToFlash() {
     data.bandLayoutMode      = static_cast<uint8_t>(AudioEngine::instance().getSpectrumBandLayoutMode());
     data.energyMode          = static_cast<uint8_t>(AudioEngine::instance().getSpectrumEnergyMode());
     data.waveformWindowMode  = static_cast<uint8_t>(AudioEngine::instance().getWaveformWindowMode());
+    data.brightnessPercent   = DisplaySettings::instance().getBrightnessPercent();
     data.checksum            = computeChecksum(data);
 
     // flash_range_program() requires a page-aligned, page-sized source --
