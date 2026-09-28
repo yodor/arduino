@@ -12,12 +12,13 @@ enum class DaughterCmdStatus : uint8_t {
 };
 
 // Non-blocking, line-based text protocol link to a daughter board over
-// UART0 (remapped to GPIO12/13). Only one command is ever in flight at a
-// time -- send*() calls fail immediately (returning false, transmitting
-// nothing) if a previous command is still pending a reply, or if we're
-// within the post-CAL hold window. update() must be called every loop()
-// iteration to service incoming bytes and time out stalled commands;
-// nothing here ever blocks waiting on the UART.
+// UART0 (pins configurable via init() -- see Pins.hpp's DAUGHTER_UART_TX_PIN/
+// RX_PIN for the actual current assignment). Only one command is ever in
+// flight at a time -- send*() calls fail immediately (returning false,
+// transmitting nothing) if a previous command is still pending a reply, or
+// if we're within the post-CAL hold window. update() must be called every
+// loop() iteration to service incoming bytes and time out stalled
+// commands; nothing here ever blocks waiting on the UART.
 class DaughterBoardLink {
 public:
     static DaughterBoardLink& instance();

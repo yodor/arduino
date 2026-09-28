@@ -2,6 +2,7 @@
 #include <Arduino.h>
 
 constexpr uint8_t REGULATOR_MODE_PIN = 23;
+constexpr uint8_t DIAGNOSTIC_LED_PIN = 25;
 
 /** 
  * TFT Display pins 
@@ -27,10 +28,10 @@ constexpr uint8_t AUDIO_PIN_R = 27; // ADC1
  * running for as long as the button stays down 
  * unlike BTN_LT_PIN/BTN_RT_PIN (edge-triggered, one action per press)
  */
-constexpr uint8_t BTN_UP_PIN = 0;
-constexpr uint8_t BTN_RT_PIN = 1;
-constexpr uint8_t BTN_DN_PIN = 14;
-constexpr uint8_t BTN_LT_PIN = 15;
+constexpr uint8_t BTN_UP_PIN = 2;
+constexpr uint8_t BTN_RT_PIN = 3;
+constexpr uint8_t BTN_DN_PIN = 13;
+constexpr uint8_t BTN_LT_PIN = 12;
 
 
 /** 
@@ -38,19 +39,31 @@ constexpr uint8_t BTN_LT_PIN = 15;
  */
 
 // TSOP31238 output pin
-constexpr uint8_t IR_PIN  = 19; 
+constexpr uint8_t IR_PIN  = 11; 
 
 // DRV8833 motor driver pins, driving a motorized volume potentiometer.
-constexpr uint8_t DRV8833_IN1_PIN = 16;
-constexpr uint8_t DRV8833_IN2_PIN = 17;
+constexpr uint8_t DRV8833_IN1_PIN = 6;
+constexpr uint8_t DRV8833_IN2_PIN = 7;
 
 // 4n25 mute pin
-constexpr uint8_t MUTE_PIN  = 20; 
+constexpr uint8_t MUTE_PIN  = 8; 
 
 /**
  * UART link to a daughter board handling mute/volume/calibration, using
- * RP2040 UART0's alternate pin location (GPIO12=TX, GPIO13=RX) rather than
- * its default GPIO0/1.
+ * RP2040 UART0 on its default pin location (GPIO0=TX, GPIO1=RX).
  */
-constexpr uint8_t DAUGHTER_UART_TX_PIN = 12;
-constexpr uint8_t DAUGHTER_UART_RX_PIN = 13;
+constexpr uint8_t DAUGHTER_UART_TX_PIN = 0;
+constexpr uint8_t DAUGHTER_UART_RX_PIN = 1;
+
+/**
+ * Power Control 
+ */
+constexpr uint8_t RELAY_CTRL_PIN = 5;
+constexpr uint8_t PWR_BTN_LED_PIN = 9;
+constexpr uint8_t PWR_BTN_PIN = 10;
+
+/**
+ * I2C ext (bus i2c1)
+ */
+constexpr uint8_t SDA_PIN = 14;
+constexpr uint8_t SCL_PIN = 15;

@@ -104,10 +104,14 @@ void bootInfo() {
 
 void setup() {
 
-    // Force the internal SMPS out of PFM mode into low-noise PWM mode
-    pinMode(REGULATOR_MODE_PIN, OUTPUT);
-    digitalWrite(REGULATOR_MODE_PIN, HIGH);
+    //ensure startup local mute state
+    //this routine will be moved to the actual daughterboard firmware once ready
+    digitalWrite(MUTE_PIN, (MUTE_ACTIVE_HIGH) ? HIGH : LOW);
+    pinMode(MUTE_PIN, OUTPUT);
 
+    // Force the internal SMPS out of PFM mode into low-noise PWM mode
+    digitalWrite(REGULATOR_MODE_PIN, HIGH);
+    pinMode(REGULATOR_MODE_PIN, OUTPUT);
 
     if (CUSTOM_CLOCKS_ENABLED) {
         // Overclock the CPU core(s).
@@ -135,6 +139,8 @@ void setup() {
 
     bootInfo();
     
+    pinMode(DIAGNOSTIC_LED_PIN, OUTPUT);
+    digitalWrite(DIAGNOSTIC_LED_PIN, HIGH);
 
     Renderer::instance().init();
     Serial.println("[OK] Renderer initialized.");
@@ -319,6 +325,9 @@ void loop() {
         Serial.print(avgLoopMs, 2);
         Serial.print("ms avg | screen: ");
         Serial.println(g_menuOpen ? g_menuScreen.name() : g_screens[g_currentScreenIdx]->name());
+
+        int led_state = digitalRead(DIAGNOSTIC_LED_PIN);
+        digitalWrite(DIAGNOSTIC_LED_PIN, !led_state);
 
         g_frameCount      = 0;
         g_renderTimeSumUs = 0;
