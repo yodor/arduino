@@ -12,7 +12,7 @@ void Renderer::init() {
 
     // Instantiate NV3007 display panel driver using Config.hpp parameters
     m_tft = new Arduino_NV3007(
-        m_bus, TFT_RST, 1 /* Rotation */, false /* IPS */, SCREEN_HEIGHT, SCREEN_WIDTH,
+        m_bus, TFT_RST, 3 /* Rotation */, false /* IPS */, SCREEN_HEIGHT, SCREEN_WIDTH,
         12, 0, 14, 0, nv3007_279_init_operations, sizeof(nv3007_279_init_operations)
     );
 
