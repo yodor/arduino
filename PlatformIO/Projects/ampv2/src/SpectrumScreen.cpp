@@ -161,20 +161,28 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
     if (growUp) {
         updateBarColumnUp(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
 
+        // Peak indicators use fillRect (a 1px-tall rect) rather than
+        // drawFastHLine -- diagnostic swap for a rotation-3 glitch that
+        // only affected peak markers, never the fillRect-painted bar
+        // bodies right above this. If this fixes it, the cause is almost
+        // certainly the NV3007 driver's fast-line address-window
+        // computation under this specific rotation, not anything in this
+        // file -- keeping fillRect here sidesteps that entirely rather
+        // than patching third-party driver code.
         if (state.prevPeakUnits > h) {
-            gfx->drawFastHLine(x, baseline - state.prevPeakUnits, barWidth, COLOR_BLACK);
+            gfx->fillRect(x, baseline - state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
         }
         if (peakH >= h && peakH > 0) {
-            gfx->drawFastHLine(x, baseline - peakH, barWidth, COLOR_WHITE);
+            gfx->fillRect(x, baseline - peakH, barWidth, 1, COLOR_WHITE);
         }
     } else {
         updateBarColumnDown(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
 
         if (state.prevPeakUnits > h) {
-            gfx->drawFastHLine(x, baseline + state.prevPeakUnits, barWidth, COLOR_BLACK);
+            gfx->fillRect(x, baseline + state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
         }
         if (peakH >= h && peakH > 0) {
-            gfx->drawFastHLine(x, baseline + peakH, barWidth, COLOR_WHITE);
+            gfx->fillRect(x, baseline + peakH, barWidth, 1, COLOR_WHITE);
         }
     }
 

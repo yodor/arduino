@@ -55,7 +55,7 @@ constexpr uint32_t MUTE_BOOT_HOLD_MS = 3000;
 constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
 
 constexpr uint8_t DAUGHTER_VOL_MIN = 1;
-constexpr uint8_t DAUGHTER_VOL_MAX = 64;
+constexpr uint8_t DAUGHTER_VOL_MAX = 32; // matches the daughter's actual LUT size (NUM_VOLUME_STEPS_DEFAULT on that side) -- protocol v1 assumed 64 before the real hardware settled on this
 
 // How often to re-fire VOL UP/DOWN while a volume button is held, since
 // each command is a single discrete step on the daughter board rather than
@@ -67,16 +67,18 @@ constexpr uint32_t DAUGHTER_VOL_REPEAT_MS = 250;
 // giving up and reporting a timeout.
 constexpr uint32_t DAUGHTER_RESPONSE_TIMEOUT_MS = 500;
 
-// CAL's behavior toward other commands sent during calibration isn't
-// finalized on the daughter board yet (may reply ERR, may reply nothing at
-// all). Rather than depend on either possibility, the link holds off
-// sending anything new for this long after CAL's initial "OK" ack (which
-// only means calibration STARTED, not that it's finished), then resumes
-// normal traffic. This is a placeholder guess, not a real completion
-// signal -- replace with something that actually knows when calibration
-// finished (an unsolicited "done" message, or a defined polling behavior)
-// once the daughter board protocol settles on one.
-constexpr uint32_t DAUGHTER_CAL_HOLD_MS = 8000;
+// Protocol v2: calibration now sends a real, unsolicited "CAL DONE" /
+// "CAL FAIL <reason>" when it actually finishes -- the link waits for
+// that, not a fixed timer (see DaughterBoardLink::update()). This
+// constant is now purely a crash/disconnection safety net: if the
+// daughter board hangs or the link drops mid-calibration and DONE/FAIL
+// never arrives, this bounds how long isCalibrating() stays stuck true
+// forever. Real interleaved two-channel characterization on actual
+// hardware has measured anywhere from ~15s to over a minute, so this is
+// set generously above that, not tuned to it -- reaching this timeout in
+// normal operation would itself be a sign something went wrong, not an
+// expected outcome.
+constexpr uint32_t DAUGHTER_CAL_SAFETY_TIMEOUT_MS = 180000; // 3 minutes
 
 
 
@@ -284,6 +286,6 @@ static_assert((FFT_SIZE / 2) % (CAPTURE_CHUNK_SAMPLES / 2) == 0,
 constexpr float AUDIO_SAMPLE_RATE_HZ = 44100.0f;
 
 constexpr bool CUSTOM_CLOCKS_ENABLED = true;
-
+//constexpr int SPI_SPEED_HZ = 33333333;
 constexpr uint32_t SPI_SPEED_HZ = 50000000;
 constexpr uint32_t CPU_SPEED_KHZ = 200000;

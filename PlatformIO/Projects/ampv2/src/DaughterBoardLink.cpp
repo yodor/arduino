@@ -24,7 +24,7 @@ bool DaughterBoardLink::isCalibrating() const {
 
 bool DaughterBoardLink::sendLine(const char* line) {
     if (m_status == DaughterCmdStatus::PENDING) return false; // one command in flight at a time
-    if (m_calibrating) return false;                          // see DAUGHTER_CAL_HOLD_MS in Config.hpp
+    if (m_calibrating) return false;                          // see DAUGHTER_CAL_SAFETY_TIMEOUT_MS in Config.hpp
 
     Serial1.print(line);
     Serial1.print('\n');
@@ -88,25 +88,50 @@ bool DaughterBoardLink::sendCalibrate() {
     return true;
 }
 
+bool DaughterBoardLink::sendAmpMuteOn() {
+    if (!sendLine("AMP_MUTE ON")) return false;
+    m_pending = PendingCmd::AMP_MUTE_ON;
+    return true;
+}
+
+bool DaughterBoardLink::sendAmpMuteOff() {
+    if (!sendLine("AMP_MUTE OFF")) return false;
+    m_pending = PendingCmd::AMP_MUTE_OFF;
+    return true;
+}
+
+bool DaughterBoardLink::sendGetAmpMute() {
+    if (!sendLine("GET AMP_MUTE")) return false;
+    m_pending = PendingCmd::GET_AMP_MUTE;
+    return true;
+}
+
 void DaughterBoardLink::handleResponseLine(const char* line) {
+    // Calibration's real, async completion (protocol v2) -- unsolicited,
+    // arrives well after m_pending already went back to NONE (from the
+    // initial "OK" that only meant "started"). Checked first and each
+    // returns immediately rather than falling through to the generic
+    // m_pending-clearing logic below, matching how CAL DONE was already
+    // handled in v1.
     if (strcmp(line, "CAL DONE") == 0) {
-        // Unsolicited: arrives whenever calibration genuinely finishes,
-        // independent of any pending command (there normally isn't one at
-        // this point -- we're just idly waiting). Ends the hold window
-        // immediately rather than waiting out the rest of
-        // DAUGHTER_CAL_HOLD_MS. This is a proposed addition to the
-        // protocol -- if the daughter board doesn't send this, the hold
-        // window's timeout is still the fallback that ends calibration.
         m_calibrating = false;
+        m_status      = DaughterCmdStatus::OK;
+        return;
+    }
+    if (strncmp(line, "CAL FAIL", 8) == 0) {
+        m_calibrating = false;
+        strncpy(m_lastError, line, sizeof(m_lastError) - 1);
+        m_lastError[sizeof(m_lastError) - 1] = '\0';
+        m_status = DaughterCmdStatus::ERROR;
         return;
     }
 
     if (strcmp(line, "OK") == 0) {
         if (m_pending == PendingCmd::CAL) {
-            // This OK only means calibration STARTED, not finished -- hold
-            // off sending anything else for a while. See DAUGHTER_CAL_HOLD_MS
-            // in Config.hpp for why this is a placeholder, not a real
-            // completion signal.
+            // This OK only means calibration STARTED, not finished -- real
+            // completion is the CAL DONE/FAIL handling above, which can
+            // arrive anywhere from ~15s to a couple of minutes later (see
+            // DAUGHTER_CAL_SAFETY_TIMEOUT_MS's comment in Config.hpp).
             m_calibrating = true;
             m_calStartMs  = millis();
         }
@@ -115,6 +140,12 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         strncpy(m_lastError, line, sizeof(m_lastError) - 1);
         m_lastError[sizeof(m_lastError) - 1] = '\0';
         m_status = DaughterCmdStatus::ERROR;
+    } else if (strncmp(line, "AMP_MUTE=", 9) == 0) {
+        // Checked before the plain "MUTE=" prefix below -- not that it's
+        // ambiguous (the two strings differ at the very first character),
+        // just documenting that order here isn't incidental.
+        m_lastAmpMute = (line[9] == '1');
+        m_status      = DaughterCmdStatus::OK;
     } else if (strncmp(line, "MUTE=", 5) == 0) {
         m_lastMute = (line[5] == '1');
         m_status   = DaughterCmdStatus::OK;
@@ -123,9 +154,11 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         m_status  = DaughterCmdStatus::OK;
     } else {
         // Unrecognized line -- log it for visibility but don't treat it as
-        // a hard error. The daughter board protocol is still being
-        // designed, so this could be debug chatter mixed into the link
-        // rather than a real protocol violation.
+        // a hard error. Notably, this is where a "CAL INIT ..." reply
+        // would land if one ever arrived (sendCalInit() isn't implemented
+        // here yet -- INIT/RTOTAL/MODE/FIXEDSERIES are a separate,
+        // not-yet-wired-up piece of protocol v2), so seeing one logged
+        // here isn't itself a sign of a protocol violation.
         Serial.print("[Daughter] Unrecognized reply: ");
         Serial.println(line);
     }
@@ -154,7 +187,13 @@ void DaughterBoardLink::update() {
         m_pending = PendingCmd::NONE;
     }
 
-    if (m_calibrating && (millis() - m_calStartMs > DAUGHTER_CAL_HOLD_MS)) {
+    if (m_calibrating && (millis() - m_calStartMs > DAUGHTER_CAL_SAFETY_TIMEOUT_MS)) {
+        // Pure crash/disconnection guard -- DONE/FAIL should always arrive
+        // well before this in normal operation. Reaching it means
+        // something went wrong on the link or the daughter board itself,
+        // not a normal completion path -- see this constant's comment in
+        // Config.hpp.
         m_calibrating = false;
+        m_status      = DaughterCmdStatus::TIMEOUT;
     }
 }

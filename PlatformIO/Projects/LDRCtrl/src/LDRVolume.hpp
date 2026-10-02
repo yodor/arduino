@@ -6,6 +6,7 @@
 #include "LdrSensor.hpp"
 #include "Calibration.hpp"
 #include "CalStorage.hpp"
+#include "Board.hpp"
 
 // ============================================================================
 // LDRVolume
@@ -36,11 +37,11 @@ public:
   // the caller always states them explicitly, typically from Config.hpp.
   // Both adjustable afterwards (setRTotalOhms()/CALRTOTAL,
   // setRangeDb()/CALRANGE) without recompiling.
-  LDRVolume(DriverChannels &driver, uint8_t relayPin,
+  LDRVolume(DriverChannels &driver, Board &board, uint8_t relayPin,
             DriverChannels::Channel seriesCh, DriverChannels::Channel shuntCh,
             TwoWire &i2cBus, uint8_t sdaPin, uint8_t sclPin,
             const char *calStoragePath, float rRefOhms, float rTotalOhms, float rangeDb)
-      : driver_(driver), seriesCh_(seriesCh), shuntCh_(shuntCh),
+      : driver_(driver), board_(board), seriesCh_(seriesCh), shuntCh_(shuntCh),
         relay_(relayPin), sensor_(i2cBus, sdaPin, sclPin, 0x48, rRefOhms),
         calPath_(calStoragePath), rTotalOhms_(rTotalOhms), rangeDb_(rangeDb) {}
 
@@ -52,9 +53,26 @@ public:
   // so this is a one-time cost, not a per-boot one.
   void begin();
 
+  // Scans the current LUT for the lowest valid step and applies it, or
+  // falls back to mute() if none exist (or no LUT at all) -- unmuting
+  // first so the write can never be silently swallowed by a stray
+  // muted_ state. Called at the end of begin(), AND at the end of any
+  // calibration run (CALAUTO/runAutoCalibration, DualCalibration)
+  // regardless of whether it was triggered at boot or mid-session: a
+  // fresh characterization leaves raw duty at its own last sweep point,
+  // not any calibrated step's real target, and currentStep_ does not
+  // get reset to reflect that mismatch on its own.
+  void applyDefinedStartupState();
+
   // --- Raw relay + i2c control ----------------------------------------
   // true = energize (calibration mode) + activate the i2c bus.
   // false = de-energize (audio mode) + fully deactivate the i2c bus.
+  // Brackets the actual relay transition with a forced amp mute (held for
+  // RELAY_POP_SETTLE_MS) regardless of direction -- the JFET buffer's DC
+  // bias otherwise pops through the relay contacts on either transition.
+  // Restores whatever amp-mute state was in effect before the call, so
+  // this never forces an unmute if the amp was already (separately)
+  // muted for some other reason.
   void relayEnergize(bool on);
   bool relayEnergized() const { return relay_.isEnergized(); }
 
@@ -107,6 +125,11 @@ public:
   bool adcRead(float &vRefOut, float &rsOut, float &rshOut) {
     return sensor_.read(vRefOut, rsOut, rshOut);
   }
+
+  // Cheap I2C-address-ACK check, no conversion started. Used by
+  // DualCalibration to decide whether a channel can participate in an
+  // interleaved sweep before touching its relay at all.
+  bool adsPresent() { return sensor_.isPresent(); }
 
   // See LdrSensor::setRRefOhms -- affects future measurements only.
   void setRRefOhms(float ohms) { sensor_.setRRefOhms(ohms); }
@@ -203,7 +226,23 @@ public:
   }
 
   // --- Volume control (consumes the solved LUT) ----------------------------
+  // hasLut() only means the LUT ARRAY was populated (numSteps() entries
+  // exist) -- it says nothing about whether any of them actually solved.
+  // A degenerate calibration (e.g. no ADC data during the sweep) can
+  // still produce a full-size LUT with every single entry marked
+  // OUT OF RANGE -- confirmed on real hardware. hasLut() alone is NOT
+  // sufficient to decide "did this calibration actually succeed" --
+  // use hasUsableLut() for that; hasLut() remains for callers that
+  // genuinely only care whether the array exists (e.g. before indexing
+  // into it at all).
   bool hasLut() const { return lut().numSteps() > 0; }
+  bool hasUsableLut() const {
+    uint8_t n = lut().numSteps();
+    for (uint8_t i = 0; i < n; i++) {
+      if (lut().step(i).valid) return true;
+    }
+    return false;
+  }
   uint8_t numSteps() const { return lut().numSteps(); }
   uint8_t currentStep() const { return currentStep_; }
 
@@ -218,6 +257,7 @@ public:
 
 private:
   DriverChannels &driver_;
+  Board &board_;
   DriverChannels::Channel seriesCh_;
   DriverChannels::Channel shuntCh_;
   Relay relay_;

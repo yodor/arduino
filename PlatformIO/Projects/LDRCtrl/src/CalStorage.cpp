@@ -11,7 +11,23 @@ constexpr uint32_t MAGIC = 0x4C445243; // 'LDRC'
 // header so settings persist alongside the data that depends on them.
 // A v1 file fails this version check and is correctly treated as "no
 // valid saved calibration" rather than misread.
-constexpr uint16_t FORMAT_VERSION = 2;
+// Bumped 2 -> 3 alongside DriverChannels::WRAP going from 4095 to 1023:
+// a v2 file's saved duties are scaled against the OLD 12-bit range and
+// would silently misapply (clamped, wrong steps) if loaded as-is against
+// the new 10-bit PWM. Bumping this makes calLoad() reject any old file
+// automatically, falling through to LDRVolume::begin()'s existing
+// fresh-calibration path -- no manual flash-clearing required.
+// Bumped 3 -> 4 alongside DriverChannels::WRAP going from 1023 to 749
+// (200kHz PWM): same reasoning as the earlier 2->3 bump -- a v3 file's
+// saved duties are scaled against the old 1023-max range and would
+// silently misapply (clamped, wrong steps) if loaded as-is. This makes
+// calLoad() reject the old file automatically, falling through to a
+// fresh characterization -- no manual flash-clearing required.
+// Bumped 4 -> 5 alongside DriverChannels::WRAP going from 749 back to
+// 4095 (full 12-bit resolution, for current-driver-stage bench testing).
+// Same reasoning as every prior bump: a v4 file's saved duties are scaled
+// against the 749-max range and would silently misapply if loaded as-is.
+constexpr uint16_t FORMAT_VERSION = 5;
 
 struct Header {
   uint32_t magic;

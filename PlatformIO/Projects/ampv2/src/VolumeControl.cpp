@@ -49,6 +49,16 @@ void VolumeControl::toggleMute() {
     }
 }
 
+void VolumeControl::ampMuteOn() {
+    DaughterBoardLink::instance().sendAmpMuteOn(); // no-op if nothing's listening; see getLastStatus() for the ERR case (e.g. daughter's own boot hold)
+    m_ampMuted = true;
+}
+
+void VolumeControl::ampMuteOff() {
+    DaughterBoardLink::instance().sendAmpMuteOff();
+    m_ampMuted = false;
+}
+
 void VolumeControl::calibrate() {
     DaughterBoardLink::instance().sendCalibrate(); // no-op if nothing's listening
     // No defined calibration procedure exists yet for the motor/mute path.
@@ -73,6 +83,30 @@ void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
     // arrives, no harm done).
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.update();
+
+    // Logs calibration's real outcome exactly once, right when
+    // isCalibrating() transitions back to false -- protocol v2 made this a
+    // genuine async DONE/FAIL (or a safety-timeout fallback), worth
+    // surfacing now that there's an actual result to report instead of a
+    // blind fixed-wait guess.
+    bool isCalibratingNow = link.isCalibrating();
+    if (m_wasCalibrating && !isCalibratingNow) {
+        switch (link.getLastStatus()) {
+            case DaughterCmdStatus::OK:
+                Serial.println("[Calibration] Completed successfully.");
+                break;
+            case DaughterCmdStatus::ERROR:
+                Serial.print("[Calibration] Failed: ");
+                Serial.println(link.getLastError());
+                break;
+            case DaughterCmdStatus::TIMEOUT:
+                Serial.println("[Calibration] Safety timeout -- no DONE/FAIL reply ever arrived; check the link/daughter board.");
+                break;
+            default:
+                break;
+        }
+    }
+    m_wasCalibrating = isCalibratingNow;
 
     uint32_t now = millis();
     bool readyToSend = !link.isBusy() && (now - m_lastVolCommandMs >= DAUGHTER_VOL_REPEAT_MS);

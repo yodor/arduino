@@ -78,12 +78,17 @@ void DigitalVuMeterScreen::processAndDrawBar(BarPhysicsState& state, float val, 
     // ==========================================
     updateBarRow(y, barHeight, state.prevUnits, w, maxBarWidth);
 
+    // Peak indicator uses fillRect (a 1px-wide rect) rather than
+    // drawFastVLine -- diagnostic swap for a rotation-3 glitch that only
+    // affected peak markers, never the fillRect-painted bar body above.
+    // See SpectrumScreen::processAndDrawBar()'s matching comment for the
+    // reasoning -- same swap, same hypothesis, same fallback choice.
     if (state.prevPeakUnits > w) {
-        gfx->drawFastVLine(kBarX + state.prevPeakUnits, y, barHeight, COLOR_BLACK);
+        gfx->fillRect(kBarX + state.prevPeakUnits, y, 1, barHeight, COLOR_BLACK);
     }
-    
+
     if (peakW >= w && peakW > 0) {
-        gfx->drawFastVLine(kBarX + peakW, y, barHeight, COLOR_WHITE);
+        gfx->fillRect(kBarX + peakW, y, 1, barHeight, COLOR_WHITE);
     }
 
     // 3. Cache state track points for the next loop frame step

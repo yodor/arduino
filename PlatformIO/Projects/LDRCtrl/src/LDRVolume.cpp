@@ -231,15 +231,74 @@ void LDRVolume::begin() {
     Serial.println(F(") -- running CALAUTO FULL..."));
     runAutoCalibration(CalMode::FULL);
   }
+
+  applyDefinedStartupState();
+}
+
+void LDRVolume::applyDefinedStartupState() {
+  // Neither calLoad() nor runAutoCalibration() actually drives any step's
+  // duties to hardware -- the latter leaves the PWM wherever the last
+  // characterization point put it (typically near full brightness, not
+  // any step's real target). Without this, GET VOL/currentStep() would
+  // report success while the real hardware state doesn't match it at
+  // all, until the next VOL command happens to differ from currentStep_
+  // by coincidence.
+  //
+  // applyDuties() (which setStep() goes through) silently no-ops on
+  // actual hardware writes if muted_ is already true -- it just
+  // remembers the target for later instead of driving it, by design, so
+  // a volume change made while muted takes effect instantly on unmute.
+  // That's correct for normal operation, but it's exactly the wrong
+  // behavior to inherit here: if muted_ is somehow already true at this
+  // point (stray state from anywhere), setStep() below would silently
+  // fail to drive hardware while still reporting success. Force a known,
+  // clean starting state so that can't happen.
+  unmute();
+
+  // Step 0 isn't guaranteed to be VALID -- the auto-computed range
+  // deliberately sits right at the edge of the measurable floor on both
+  // ends, so the one step that failed to solve can just as easily be the
+  // quietest one as the loudest. setStep() silently no-ops on an invalid
+  // step (by design, so a bad GET/VOL request never drives garbage) --
+  // which means hardcoding setStep(0) here would silently fail exactly
+  // when that happens, reproducing the undefined-state problem via a
+  // different route. Scan for the lowest step that's actually valid and
+  // apply that instead, so this always lands on a real, defined,
+  // intentional volume.
+  if (hasLut()) {
+    uint8_t n = numSteps();
+    uint8_t startStep = 0;
+    while (startStep < n && !lut().step(startStep).valid) startStep++;
+    if (startStep < n) {
+      setStep(startStep);
+    } else {
+      // Every step came back invalid (a degenerate calibration) -- no
+      // real volume to offer. Fall back to the LDR network's own
+      // always-available mute primitive (series->0, shunt->max) instead
+      // of leaving hardware at an undefined leftover duty.
+      mute();
+    }
+  } else {
+    // No calibration at all. Same fallback -- mute() works regardless
+    // of whether a LUT exists.
+    mute();
+  }
 }
 
 void LDRVolume::relayEnergize(bool on) {
+  bool wasMuted = board_.ampMuted();
+  board_.setAmpMute(true); // force mute across the transition (no-op if boot hold already has it muted)
+  board_.setRelayActive(on); // tell Board a calibration/relay op is (or isn't) in flight on this channel
+
   relay_.energize(on);
   if (on) {
     sensor_.activate();
   } else {
     sensor_.deactivate();
   }
+
+  delay(RELAY_POP_SETTLE_MS);
+  board_.setAmpMute(wasMuted); // restore -- don't force-unmute if it was already muted beforehand
 }
 
 void LDRVolume::calBegin() {
@@ -355,7 +414,16 @@ void LDRVolume::runAutoCalibration(CalMode mode, Stream &out) {
     }
     if (out.available()) {
       char c = out.read();
-      if (c != '\r' && c != '\n') { out.println(F("CALAUTO aborted.")); return; }
+      if (c != '\r' && c != '\n') {
+        out.println(F("CALAUTO aborted."));
+        // Previously missing: this left the relay energized (audio path
+        // disconnected) indefinitely on an abort. Restore audio mode and
+        // re-sync hardware to whatever LUT is actually current, same as
+        // every other exit path from a calibration attempt.
+        relayEnergize(false);
+        applyDefinedStartupState();
+        return;
+      }
       // else: a stray CR/LF left over from the command that invoked this
       // (e.g. terminal sends \r and \n as separate packets) -- not a
       // real abort request, keep going.
@@ -386,7 +454,12 @@ void LDRVolume::runAutoCalibration(CalMode mode, Stream &out) {
     }
     if (out.available()) {
       char c = out.read();
-      if (c != '\r' && c != '\n') { out.println(F("CALAUTO aborted.")); return; }
+      if (c != '\r' && c != '\n') {
+        out.println(F("CALAUTO aborted."));
+        relayEnergize(false);
+        applyDefinedStartupState();
+        return;
+      }
       // else: a stray CR/LF left over from the command that invoked this
       // (e.g. terminal sends \r and \n as separate packets) -- not a
       // real abort request, keep going.
@@ -416,6 +489,12 @@ void LDRVolume::runAutoCalibration(CalMode mode, Stream &out) {
                         : F("WARN: failed to save calibration to flash."));
 
   relayEnergize(false); // back to normal audio mode -- verify with RELAY ON + ADCREAD if needed
+
+  // A manually-triggered CALAUTO (mid-session, not at boot) needs the
+  // exact same re-sync begin() already does on its own -- without this,
+  // hardware stays at the sweep's raw leftover duty until the next VOL
+  // command happens to differ from the stale currentStep_ by coincidence.
+  applyDefinedStartupState();
 }
 
 void LDRVolume::mute() {

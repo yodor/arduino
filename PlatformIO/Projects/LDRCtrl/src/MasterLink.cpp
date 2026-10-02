@@ -1,5 +1,7 @@
 #include "MasterLink.hpp"
 #include "Config.hpp"
+#include "DualCalibration.hpp"
+#include "VolumeRamp.hpp"
 
 namespace {
 
@@ -96,6 +98,20 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     return;
   }
 
+  // MUTE_BOOT_HOLD_MS is a blanket window, not just an AMP_MUTE-specific
+  // gate: refuse EVERY strict-protocol command (VOL, MUTE, CAL, GET*,
+  // AMP_MUTE included) until it expires, so nothing can disturb the
+  // controlled startup sequence while it's still settling. DEBUG is
+  // deliberately exempt (checked above, already returned) -- a
+  // technician needs to be able to reach the bench console at any time,
+  // hold or no hold.
+  if (board_.bootHoldRemainingMs() > 0) {
+    stream_.print(F("ERR boot mute hold active, "));
+    stream_.print(board_.bootHoldRemainingMs());
+    stream_.println(F("ms remaining"));
+    return;
+  }
+
   if (upper == "AMP_MUTE ON" || upper == "AMP_MUTE 1" ||
       upper == "AMP_MUTE OFF" || upper == "AMP_MUTE 0") {
     bool wantMuted = (upper == "AMP_MUTE ON" || upper == "AMP_MUTE 1");
@@ -136,9 +152,10 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     if (n < 1 || n > 32) {
       stream_.println(F("ERR VOL out of range (1-32)"));
     } else {
-      bool okL = left_.setStep((uint8_t)(n - 1));
-      bool okR = right_.setStep((uint8_t)(n - 1));
-      stream_.println((okL && okR) ? F("OK") : F("ERR step invalid or no calibration loaded"));
+      LDRVolume *both[2] = {&left_, &right_};
+      bool ok[2];
+      VolumeRamp::rampTo(both, 2, (uint8_t)(n - 1), ok);
+      stream_.println((ok[0] && ok[1]) ? F("OK") : F("ERR step invalid or no calibration loaded"));
     }
 
   } else if (upper == "GET MUTE") {
@@ -158,8 +175,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     // is made (cheap: re-solves against these same curves, no re-sweep).
     stream_.println(F("OK"));
     NullStream nullOut;
-    left_.runAutoCalibration(LDRVolume::CalMode::FULL, nullOut);
-    right_.runAutoCalibration(LDRVolume::CalMode::FULL, nullOut);
+    DualCalibration::runBoth(left_, right_, LDRVolume::CalMode::FULL, nullOut);
 
     bool haveCurvesL = !left_.seriesCurve().empty() && !left_.shuntCurve().empty();
     bool haveCurvesR = !right_.seriesCurve().empty() && !right_.shuntCurve().empty();
@@ -196,9 +212,13 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     LDRVolume::CalMode mode = (upper == "CAL FAST") ? LDRVolume::CalMode::FAST : LDRVolume::CalMode::FULL;
     stream_.println(F("OK"));
     NullStream nullOut;
-    left_.runAutoCalibration(mode, nullOut);
-    right_.runAutoCalibration(mode, nullOut);
-    if (left_.hasLut() && right_.hasLut()) {
+    DualCalibration::runBoth(left_, right_, mode, nullOut);
+    // hasLut() alone isn't enough here -- a degenerate calibration (no
+    // ADC data during the sweep) can still produce a full-size LUT with
+    // every entry marked OUT OF RANGE, which hasLut() can't distinguish
+    // from a real success. hasUsableLut() checks for at least one
+    // genuinely valid step on each channel.
+    if (left_.hasUsableLut() && right_.hasUsableLut()) {
       stream_.println(F("CAL DONE"));
     } else {
       stream_.println(F("CAL FAIL insufficient valid steps or no ADS1115 detected on one or both channels"));

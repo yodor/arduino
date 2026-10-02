@@ -2,7 +2,12 @@
 #include "hardware/clocks.h"
 #include "Pins.hpp"
 #include "Config.hpp"
+#include "DriverChannels.hpp"
 #include <LittleFS.h>
+#ifdef LDR_BOARD_IS_PICO_W
+#include <WiFi.h>
+#include "pico/cyw43_arch.h"
+#endif
 
 void Board::bootInfo() {
   Serial.println("\n--- HARDWARE & CLOCK VALIDATION ---");
@@ -23,6 +28,30 @@ void Board::bootInfo() {
     Serial.println("Compile Target: RP2040 Core (Pico)");
   #endif
 
+  // BOARD_NAME is defined automatically by the Arduino-Pico build system
+  // for whichever specific board PlatformIO is targeting (pico, rpipicow,
+  // rpipico2, rpipico2w, ...) -- this stays correct on its own for any
+  // future board swap, no per-variant list to maintain here.
+  Serial.print("Board: ");
+  #ifdef BOARD_NAME
+    Serial.println(BOARD_NAME);
+  #else
+    Serial.println("(unknown -- BOARD_NAME not defined by this platform package)");
+  #endif
+
+  // LDR_BOARD_IS_PICO_W is OUR OWN flag (set in platformio.ini, not a
+  // core-internal one) confirming whether the wireless-chip-specific code
+  // path (WiFi.end() + cyw43_arch_gpio_put regulator fix, WL_GPIO0/1 pin
+  // mapping) is actually compiled into THIS build -- the one thing that
+  // directly affects this firmware's own behavior, as distinct from just
+  // knowing which physical chip is on the board.
+  Serial.print("Wireless-chip code path active (LDR_BOARD_IS_PICO_W): ");
+  #ifdef LDR_BOARD_IS_PICO_W
+    Serial.println("YES");
+  #else
+    Serial.println("NO");
+  #endif
+
   Serial.print("Unique Flash ID: ");
   Serial.println(rp2040.getChipID());
 
@@ -37,9 +66,16 @@ void Board::bootInfo() {
   Serial.print("ADC Clock (clk_adc): ");
   Serial.print(clock_get_hz(clk_adc) / 1000000);
   Serial.println(" MHz");
+
+  Serial.print("LED driver PWM frequency: ");
+  Serial.print(DriverChannels::frequencyHz());
+  Serial.println(" Hz");
 }
 
 void Board::begin() {
+
+  delay(1000);
+  
   bootMillis_ = millis();
   ampMuted_ = true;
 
@@ -49,10 +85,37 @@ void Board::begin() {
   digitalWrite(AMP_MUTE_PIN, (MUTE_ACTIVE_HIGH) ? HIGH : LOW);
   pinMode(AMP_MUTE_PIN, OUTPUT);
 
+#ifdef LDR_BOARD_IS_PICO_W
+  // Confirmed on real hardware: a bare digitalWrite() on the WL_GPIO1
+  // pseudo-pin alone made no audible difference, and -- also confirmed by
+  // testing -- neither did adding WiFi.mode(WIFI_OFF)/WiFi.end() ahead of
+  // that same wrapper-based call. What actually fixed the white noise is
+  // this exact combination: WiFi.end() first to park the radio in a
+  // clean, deliberate "off" state, THEN the raw SDK call
+  // (cyw43_arch_gpio_put) directly -- not the digitalWrite(33, ...)
+  // wrapper around it. The two are supposed to be equivalent per the
+  // core's own wrapper source, but empirically, on this hardware, they
+  // are not -- trust this result over that reasoning.
+  WiFi.mode(WIFI_OFF);
+  WiFi.end();
+
+  //regulator fix
+  cyw43_arch_gpio_put(1, 1);
+#else
   // Force the local SMPS out of PFM (light-load, noisier) mode into
-  // low-noise fixed-frequency PWM mode.
+  // low-noise fixed-frequency PWM mode -- REGULATOR_MODE_PIN (23) is a
+  // real GPIO on this board.
   digitalWrite(REGULATOR_MODE_PIN, HIGH);
   pinMode(REGULATOR_MODE_PIN, OUTPUT);
+#endif
+
+
+
+  // DIAGNOSTIC_LED_PIN is 25 (real GPIO) on the original Pico, or 32
+  // (WL_GPIO0, routed through the wireless chip) on Pico W -- see
+  // Pins.hpp. Default OFF state.
+  digitalWrite(DIAGNOSTIC_LED_PIN, LOW);
+  pinMode(DIAGNOSTIC_LED_PIN, OUTPUT);
 
   if (CUSTOM_CLOCKS_ENABLED) {
     set_sys_clock_khz(CPU_SPEED_KHZ, true);
@@ -92,10 +155,6 @@ void Board::begin() {
     Serial.println(F("LittleFS mounted."));
   }
 
-  pinMode(DIAGNOSTIC_LED_PIN, OUTPUT);
-  digitalWrite(DIAGNOSTIC_LED_PIN, HIGH);
-  ledOn_ = true;
-  lastBlinkMs_ = millis();
 }
 
 unsigned long Board::bootHoldRemainingMs() const {
@@ -113,21 +172,27 @@ bool Board::setAmpMute(bool muted) {
   return true;
 }
 
-void Board::update() {
-  unsigned long now = millis();
-  if (now - lastBlinkMs_ >= DIAG_LED_BLINK_MS) {
-    lastBlinkMs_ = now;
-    ledOn_ = !ledOn_;
-    digitalWrite(DIAGNOSTIC_LED_PIN, ledOn_ ? HIGH : LOW);
+void Board::setRelayActive(bool active) {
+  if (active) {
+    relayActiveCount_++;
+  } else if (relayActiveCount_ > 0) {
+    relayActiveCount_--;
   }
+}
 
+void Board::setDiagLedEnabled(bool enabled) {
+  diagLedEnabled_ = enabled;
+  digitalWrite(DIAGNOSTIC_LED_PIN, enabled ? HIGH : LOW);
+}
+
+void Board::update() {
   // One-shot: the instant the boot hold expires, auto-release the amp
   // mute with no command required. Written directly (not via
   // setAmpMute()) since that method's own gate would otherwise still
   // see 0ms remaining and work fine -- but being explicit here makes
   // the one-shot intent unambiguous rather than relying on that
   // coincidence.
-  if (!bootHoldReleased_ && bootHoldRemainingMs() == 0) {
+  if (!bootHoldReleased_ && bootHoldRemainingMs() == 0 && !anyRelayActive()) {
     bootHoldReleased_ = true;
     bool driveHigh = !MUTE_ACTIVE_HIGH; // the "unmuted" drive level
     digitalWrite(AMP_MUTE_PIN, driveHigh ? HIGH : LOW);

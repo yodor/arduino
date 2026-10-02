@@ -75,8 +75,8 @@ mechanism below instead of the 500ms timeout.**
 | `MUTE OFF` | `OK` / `ERR ...` | Restores whatever was active (or last requested, if a `VOL` came in while muted) on both channels. |
 | `VOL UP` | `OK` / `ERR ...` | One LUT step louder, both channels, clamped at 32. |
 | `VOL DOWN` | `OK` / `ERR ...` | One LUT step quieter, both channels, clamped at 1. |
-| `VOL <n>` | `OK` / `ERR ...` | `<n>` is 1–32 (maps to internal 0-indexed step `n-1`). `ERR` if no calibration is loaded on either channel, or if that step is marked invalid on either channel's LUT (see below). |
-| `AMP_MUTE ON` / `AMP_MUTE OFF` | `OK` / `ERR boot mute hold active, <n>ms remaining` | Engages/disengages the amp's own mute (4N25 opto, independent circuit from the LDR network) -- **regardless of either channel's own `MUTE` state**. **Both directions are gated during the boot hold** (`MUTE_BOOT_HOLD_MS`): the pin is left untouched and `ERR` is returned either way -- not just for unmuting. The daughter still replies (never silently drops the reply itself, even though the pin is deliberately silent) so the master's timeout logic always has something to parse. Once the hold expires, **the amp auto-unmutes on its own, with no command needed** -- a real master generally doesn't need to send `AMP_MUTE OFF` at all unless it deliberately re-muted for its own reasons after boot. |
+| `VOL <n>` | `OK` / `ERR ...` | `<n>` is 1–32 (maps to internal 0-indexed step `n-1`). `ERR` if no calibration is loaded on either channel, or if that step is marked invalid on either channel's LUT (see below). **A jump of more than one step auto-ramps through every intermediate step** (confirmed on real hardware: applying a large jump in one shot produces an audible pop) -- a couple of ms per intermediate step, worst case ~60-250ms depending on firmware tuning for a full-range jump. Still comfortably inside the normal 500ms response timeout, but don't assume `VOL <n>`'s reply is instantaneous the way `VOL UP`/`VOL DOWN` are. |
+| `AMP_MUTE ON` / `AMP_MUTE OFF` | `OK` / `ERR boot mute hold active, <n>ms remaining` | Engages/disengages the amp's own mute (4N25 opto, independent circuit from the LDR network) -- **regardless of either channel's own `MUTE` state**. Once the hold expires, **the amp auto-unmutes on its own, with no command needed** -- a real master generally doesn't need to send `AMP_MUTE OFF` at all unless it deliberately re-muted for its own reasons after boot. (The boot-hold `ERR` behavior described here now applies to every command, not just this one -- see the new section below.) |
 | `GET AMP_MUTE` | `AMP_MUTE=1` / `AMP_MUTE=0` | |
 | `GET MUTE` | `MUTE=1` / `MUTE=0` | |
 | `GET VOL` | `VOL=<n>` | Reports the shared step, 1–32. |
@@ -87,6 +87,33 @@ mechanism below instead of the 500ms timeout.**
 | `CAL MODE RTOTAL` | `OK` | Switches both channels to the constant-impedance scheme (default). Same immediate-resolve-if-possible behavior as `CAL RTOTAL`. |
 | `CAL MODE FIXEDSERIES` | `OK` | Switches both channels to the fixed-series scheme, keeping whatever fixed series duty is already set. **Only meaningful if that duty was already tuned** -- see `CAL FIXEDSERIES` below, or `DEBUG` mode's `CALSERIESDUTY` for manual tuning. |
 | `CAL FIXEDSERIES <ohms>` | `OK` / `ERR <reason>` | Switches both channels to the fixed-series scheme, picking each channel's own fixed duty as whatever best achieves the given target resistance on its own characterized series curve (so the master only ever deals in ohms, never raw duty). `ERR` if the target falls outside a channel's characterized range -- run `CAL INIT`/`FULL` first. |
+
+## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks EVERY command, not just `AMP_MUTE`
+
+This is a real behavioral change worth being precise about: during the
+boot-mute hold window, the daughter refuses **every** strict-protocol
+command -- `VOL`, `MUTE`, `CAL` and all its variants, every `GET*` --
+replying `ERR boot mute hold active, <n>ms remaining` to each one, not
+just to `AMP_MUTE`. This is a deliberate blanket window so nothing can
+disturb the controlled startup sequence while it's settling. `DEBUG` is
+the one exception (a technician needs to reach the bench console
+regardless of hold state) -- sending it during the hold still works
+normally and is not itself subject to this gate.
+
+A master that sends anything during this window should expect this
+specific `ERR` text and simply retry after the reported remaining time,
+rather than treating it as a protocol fault.
+
+## What state exists right after `CAL DONE` (or at boot)
+
+Both at boot and at the end of any successful `CAL`, the daughter
+automatically lands on a real, defined volume state with no command
+needed: the lowest LUT step that's actually valid, if one exists, or the
+LDR's own hard mute (not `AMP_MUTE` -- the series/shunt network itself)
+if a channel's calibration came back degenerate (zero usable steps). A
+master doesn't need to send an explicit `VOL` after `CAL DONE` just to
+get hardware into a sane state -- `GET VOL` will already report something
+real and intentional, not leftover/undefined duty from the sweep itself.
 
 ## Calibration (`CAL`) — now fully settled
 
@@ -100,13 +127,17 @@ mechanism below instead of the 500ms timeout.**
 3. On success: `CAL DONE`. The daughter has solved a new LUT for each
    channel, verified/trimmed it against live measurement, and saved it to
    flash — it's immediately usable via `VOL`.
-4. On failure: `CAL FAIL <reason>`. Known reasons from the current
-   implementation: no ADS1115 detected on a channel's bus (board not
-   attached), or too few valid LUT steps solved to be usable. The exact
-   wording and the partial-failure policy (what happens if one channel
-   succeeds and the other doesn't) is an implementation detail still to be
-   finalized when the UART0 handler is written — don't hardcode parsing
-   beyond "did I get DONE or FAIL" on the master side yet.
+4. On failure: `CAL FAIL insufficient valid steps or no ADS1115 detected
+   on one or both channels` -- this exact wording, now settled. **Either
+   channel** coming back with zero genuinely usable LUT steps triggers
+   `FAIL` for the whole request, even if the other channel solved fine --
+   there's no partial-success reply. (Worth knowing why this check is
+   trustworthy: a degenerate calibration can still produce a full-size,
+   32-entry LUT with every single entry marked invalid -- confirmed on
+   real hardware -- so this check specifically looks for at least one
+   *valid* step per channel, not just that the LUT array exists.) Master
+   parsing should still only rely on "did I get `DONE` or `FAIL`", not on
+   matching this exact string, in case the wording is refined later.
 5. **`VOL`/`MUTE` sent before a `CAL DONE` should be rejected or queued**,
    not silently misapplied — the daughter's relay is energized and its
    driver outputs are in calibration-sweep states throughout, not in a

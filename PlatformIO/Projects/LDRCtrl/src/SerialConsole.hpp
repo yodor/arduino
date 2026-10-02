@@ -3,6 +3,8 @@
 #include "DriverChannels.hpp"
 #include "LDRVolume.hpp"
 #include "Board.hpp"
+#include "DualCalibration.hpp"
+#include "VolumeRamp.hpp"
 
 // ============================================================================
 // SerialConsole
@@ -51,7 +53,21 @@ private:
   void printStatus();
   void doSweep(DriverChannels::Channel ch, int startPct, int endPct, int stepPct, unsigned long dwellMs);
 
-  LDRVolume *resolveSide(const String &token); // nullptr + ERR printed on bad token
   void printCurve(const char *label, const LdrCurve &curve);
   void printLut(const VolumeLut &lut);
+
+  // Every <L|R>-taking command accepts an OMITTED side meaning "both
+  // channels" -- resolveOptionalSide inspects tok[1]: if it's "L" or
+  // "R", that single channel is selected and the command's own
+  // arguments start at tok[2] (argBase=2, unchanged single-channel
+  // behavior). Otherwise (tok[1] is the command's own first argument, or
+  // there's no tok[1] at all), BOTH channels are selected and arguments
+  // start at tok[1] (argBase=1).
+  struct SideSelection {
+    LDRVolume *items[2];
+    uint8_t count;
+    int argBase;
+  };
+  SideSelection resolveOptionalSide(const String tok[], int n);
+  const char *sideLabel(LDRVolume *v) { return (v == &left_) ? "L" : "R"; }
 };

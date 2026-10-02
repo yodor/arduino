@@ -17,9 +17,9 @@ public:
   // Config.hpp, and prints the boot diagnostics block. Call once from setup().
   void begin();
 
-  // Non-blocking. Call every loop() iteration. Toggles the diagnostic LED
-  // roughly every DIAG_LED_BLINK_MS -- a simple "firmware is alive and
-  // loop() isn't stuck" heartbeat.
+  // Non-blocking. Call every loop() iteration -- currently only handles
+  // the one-shot boot-mute auto-release (see setAmpMute). The diagnostic
+  // LED no longer blinks here (see setDiagLedEnabled).
   void update();
 
   // Direct control of the amp's own mute circuit (4N25 opto, AMP_MUTE_PIN)
@@ -42,12 +42,29 @@ public:
   // for an ERR message's "<n>ms remaining" detail.
   unsigned long bootHoldRemainingMs() const;
 
+  // Bench diagnostic LED: steady on/off, no blinking -- confirmed on real
+  // hardware that the GPIO toggling itself couples audible noise into the
+  // audio path, so there's no heartbeat behavior to preserve; this is
+  // just a plain indicator you explicitly turn on when you want it.
+  void setDiagLedEnabled(bool enabled);
+  bool diagLedEnabled() const { return diagLedEnabled_; }
+
+  // Called by LDRVolume::relayEnergize() on every transition (true =
+  // energized, false = de-energized) so Board knows whether a
+  // calibration/relay operation is currently in flight on either
+  // channel. The boot-hold auto-release (see update()) waits for this
+  // to clear in addition to the timer -- otherwise a fresh (uncalibrated)
+  // board whose first characterization sweep runs past the hold window
+  // would have the amp auto-unmute straight into an active sweep.
+  void setRelayActive(bool active);
+  bool anyRelayActive() const { return relayActiveCount_ > 0; }
+
 private:
   void bootInfo();
 
-  unsigned long lastBlinkMs_ = 0;
-  bool ledOn_ = false;
   unsigned long bootMillis_ = 0;
   bool ampMuted_ = true;        // matches the boot pre-latch -- starts muted
+  bool diagLedEnabled_ = false; // off by default -- DIAGLED ON to enable for bring-up/debug
+  uint8_t relayActiveCount_ = 0; // how many channels currently have their relay energized
   bool bootHoldReleased_ = false; // one-shot: has the auto-unmute already fired?
 };

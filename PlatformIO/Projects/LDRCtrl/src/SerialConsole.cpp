@@ -1,5 +1,6 @@
 #include "SerialConsole.hpp"
 #include "Config.hpp"
+#include "DualCalibration.hpp"
 
 void SerialConsole::begin() {
   stream_.println();
@@ -43,50 +44,58 @@ void SerialConsole::printHelp() {
   stream_.println(F("  OFF                  all channels to 0"));
   stream_.println(F("<ch> is SHUNT_L, SER_L, SHUNT_R, SER_R, or 0-3."));
   stream_.println();
+  stream_.println(F("[L|R] is optional on every command below -- omit it to apply to BOTH channels."));
+  stream_.println();
   stream_.println(F("Relay:"));
-  stream_.println(F("  RELAY <L|R> <ON|OFF> energize/de-energize a board's calibration relay directly"));
+  stream_.println(F("  RELAY [L|R] <ON|OFF> energize/de-energize a board's calibration relay directly"));
   stream_.println(F("  AMPMUTE [ON|OFF]     get/set the amp's own mute (4N25 opto) -- independent of"));
   stream_.println(F("                       any channel's own MUTE; OFF refused during the boot hold"));
+  stream_.println(F("  DIAGLED <ON|OFF>     steady on/off for the diagnostic LED (no blinking --"));
+  stream_.println(F("                       GPIO toggling was audible as noise on real hardware)"));
   stream_.println();
-  stream_.println(F("Calibration (bench scaffolding -- no ADS1115 yet, points fed manually):"));
-  stream_.println(F("  CALSTART <L|R>                energize relay, clear curves"));
-  stream_.println(F("  CALEND <L|R>                  de-energize relay"));
-  stream_.println(F("  CALRESET <L|R>                clear curves + LUT, de-energize"));
-  stream_.println(F("  CALDRIVE <L|R> <SER|SHUNT> <duty>"));
+  stream_.println(F("Calibration (CALAUTO is the normal path; CALDRIVE/CALPOINT/CALSOLVE are for"));
+  stream_.println(F("manual point-by-point work, e.g. with a bench DMM instead of the ADS1115):"));
+  stream_.println(F("  CALSTART [L|R]                energize relay, clear curves"));
+  stream_.println(F("  CALEND [L|R]                  de-energize relay"));
+  stream_.println(F("  CALRESET [L|R]                clear curves + LUT, de-energize"));
+  stream_.println(F("  CALDRIVE [L|R] <SER|SHUNT> <duty>"));
   stream_.println(F("                                drive a duty, leave it, so you can measure"));
-  stream_.println(F("  CALPOINT <L|R> <SER|SHUNT> <duty> <ohms>"));
+  stream_.println(F("  CALPOINT [L|R] <SER|SHUNT> <duty> <ohms>"));
   stream_.println(F("                                record a characterization point"));
-  stream_.println(F("  CALSOLVE <L|R> [steps] [rangeDb] [rTotalOhms]"));
+  stream_.println(F("  CALSOLVE [L|R] [steps] [rangeDb] [rTotalOhms]"));
   stream_.println(F("                                solve the LUT from curves so far"));
-  stream_.println(F("  CALDUMP <L|R>                 print curves + solved LUT"));
-  stream_.println(F("  CALTRIM <L|R>                 verify+trim every LUT step against a live"));
+  stream_.println(F("  CALDUMP [L|R]                 print curves + solved LUT"));
+  stream_.println(F("  CALTRIM [L|R]                 verify+trim every LUT step against a live"));
   stream_.println(F("                                measurement, re-saves when done"));
-  stream_.println(F("  CALAUTO <L|R> <FULL|FAST>     automatic sweep + solve, no manual points"));
+  stream_.println(F("  CALAUTO [L|R] <FULL|FAST>     automatic sweep + solve, no manual points"));
+  stream_.println(F("                                both channels (no L|R) run INTERLEAVED,"));
+  stream_.println(F("                                roughly halving total sweep time"));
   stream_.println(F("                                dense sweep=~29pt, fast=8pt drift touch-up"));
   stream_.println(F("                                auto-saves to flash, returns to audio mode"));
   stream_.println(F("                                skips (no-op) if no ADS1115 is detected"));
-  stream_.println(F("  CALSCAN <L|R>                 diagnostic: fine 2-way scan of the ~22-28%"));
+  stream_.println(F("  CALSCAN [L|R]                 diagnostic: fine 2-way scan of the ~22-28%"));
   stream_.println(F("                                duty window, 5 raw samples/point -- does NOT"));
   stream_.println(F("                                touch saved curves/LUT, paste output back"));
-  stream_.println(F("  CALREF <L|R> [ohms]           get/set Rref used for this channel's readings"));
-  stream_.println(F("  CALRTOTAL <L|R> [ohms]        get/set Rs+Rsh target (default from Config.hpp)"));
-  stream_.println(F("  CALRANGE <L|R> [db|AUTO]      get/set total dB span, or AUTO to recompute it"));
+  stream_.println(F("  CALREF [L|R] [ohms]           get/set Rref used for this channel's readings"));
+  stream_.println(F("  CALRTOTAL [L|R] [ohms]        get/set Rs+Rsh target (default from Config.hpp)"));
+  stream_.println(F("  CALRANGE [L|R] [db|AUTO]      get/set total dB span, or AUTO to recompute it"));
   stream_.println(F("                                from measured floors + Rtotal on every solve"));
-  stream_.println(F("  CALMODE <L|R> [RTOTAL|FIXEDSERIES]  get/set attenuation mode"));
-  stream_.println(F("  CALSERIESDUTY <L|R> [duty]    get/set fixed series duty (FIXEDSERIES mode only)"));
+  stream_.println(F("  CALMODE [L|R] [RTOTAL|FIXEDSERIES]  get/set attenuation mode"));
+  stream_.println(F("  CALSERIESDUTY [L|R] [duty]    get/set fixed series duty (FIXEDSERIES mode only)"));
   stream_.println(F("                                (affects future reads only; re-run CALAUTO after)"));
-  stream_.println(F("  CALSAVE <L|R>                 manually save current curves+LUT to flash"));
-  stream_.println(F("  CALLOAD <L|R>                 manually (re)load from flash"));
+  stream_.println(F("  CALSAVE [L|R]                 manually save current curves+LUT to flash"));
+  stream_.println(F("  CALLOAD [L|R]                 manually (re)load from flash"));
   stream_.println();
   stream_.println(F("Volume (uses the solved LUT):"));
-  stream_.println(F("  VOL <L|R> <step>      apply LUT step (0 = quietest)"));
-  stream_.println(F("  VOLUP <L|R>           one step louder"));
-  stream_.println(F("  VOLDOWN <L|R>         one step quieter"));
-  stream_.println(F("  MUTE <L|R> <ON|OFF>   fast mute / unmute (works even before calibration)"));
+  stream_.println(F("  VOL [L|R] <step>      apply LUT step (0 = quietest) -- jumps of more than"));
+  stream_.println(F("                        one step auto-ramp through the intermediate ones"));
+  stream_.println(F("  VOLUP [L|R]           one step louder"));
+  stream_.println(F("  VOLDOWN [L|R]         one step quieter"));
+  stream_.println(F("  MUTE [L|R] <ON|OFF>   fast mute / unmute (works even before calibration)"));
   stream_.println();
   stream_.println(F("ADS1115 (i2c bus is deactivated except while that side's relay is energized):"));
-  stream_.println(F("  I2CSCAN <L|R>          scan for ACKing addresses (works regardless of relay)"));
-  stream_.println(F("  ADCREAD <L|R>          read Vref/Rs/Rsh -- requires relay ON first"));
+  stream_.println(F("  I2CSCAN [L|R]          scan for ACKing addresses (works regardless of relay)"));
+  stream_.println(F("  ADCREAD [L|R]          read Vref/Rs/Rsh -- requires relay ON first"));
   stream_.println(F("--------------------------------------------------------"));
 }
 
@@ -122,6 +131,13 @@ void SerialConsole::printStatus() {
       stream_.print(v.numSteps());
       stream_.print(F(" steps, step="));
       stream_.print(v.currentStep());
+      const VolumeLut::Entry &e = v.lut().step(v.currentStep());
+      stream_.print(F("  Rs="));
+      stream_.print(e.targetRs, 1);
+      stream_.print(F(" ohm  Rsh="));
+      stream_.print(e.targetRsh, 1);
+      stream_.print(F(" ohm"));
+      if (!e.valid) stream_.print(F("  (OUT OF RANGE)"));
     } else {
       stream_.print(F("none"));
     }
@@ -159,13 +175,6 @@ void SerialConsole::doSweep(DriverChannels::Channel ch, int startPct, int endPct
     }
   }
   stream_.println(F("Sweep complete."));
-}
-
-LDRVolume *SerialConsole::resolveSide(const String &token) {
-  if (token.equalsIgnoreCase("L")) return &left_;
-  if (token.equalsIgnoreCase("R")) return &right_;
-  stream_.println(F("ERR side must be L or R"));
-  return nullptr;
 }
 
 void SerialConsole::printCurve(const char *label, const LdrCurve &curve) {
@@ -258,6 +267,13 @@ void SerialConsole::handleLine(String line) {
     if (ch < 0) { stream_.println(F("ERR unknown channel")); return; }
     doSweep(static_cast<DriverChannels::Channel>(ch), tok[2].toInt(), tok[3].toInt(), tok[4].toInt(), (unsigned long)tok[5].toInt());
 
+  } else if (cmd == "DIAGLED" && n >= 2) {
+    bool on = tok[1].equalsIgnoreCase("ON");
+    bool off = tok[1].equalsIgnoreCase("OFF");
+    if (!on && !off) { stream_.println(F("ERR expected ON or OFF")); return; }
+    board_.setDiagLedEnabled(on);
+    stream_.println(F("OK"));
+
   } else if (cmd == "AMPMUTE") {
     if (n >= 2) {
       bool on = tok[1].equalsIgnoreCase("ON");
@@ -275,262 +291,315 @@ void SerialConsole::handleLine(String line) {
       stream_.println(board_.ampMuted() ? F("AMPMUTE=1") : F("AMPMUTE=0"));
     }
 
-  } else if (cmd == "RELAY" && n >= 3) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    bool on = tok[2].equalsIgnoreCase("ON");
-    bool off = tok[2].equalsIgnoreCase("OFF");
+  } else if (cmd == "RELAY") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 1) { stream_.println(F("ERR expected ON or OFF")); return; }
+    bool on = tok[sel.argBase].equalsIgnoreCase("ON");
+    bool off = tok[sel.argBase].equalsIgnoreCase("OFF");
     if (!on && !off) { stream_.println(F("ERR expected ON or OFF")); return; }
-    v->relayEnergize(on);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->relayEnergize(on);
     stream_.println(F("OK"));
 
-  } else if (cmd == "CALSTART" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->calBegin();
+  } else if (cmd == "CALSTART") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->calBegin();
     stream_.println(F("OK relay energized, curves cleared"));
 
-  } else if (cmd == "CALEND" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->calEnd();
+  } else if (cmd == "CALEND") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->calEnd();
     stream_.println(F("OK relay de-energized"));
 
-  } else if (cmd == "CALRESET" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->calReset();
+  } else if (cmd == "CALRESET") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->calReset();
     stream_.println(F("OK curves and LUT cleared"));
 
-  } else if (cmd == "CALDRIVE" && n >= 4) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    uint16_t duty = (uint16_t)tok[3].toInt();
-    if (tok[2].equalsIgnoreCase("SER")) {
-      v->calDriveSeries(duty);
-    } else if (tok[2].equalsIgnoreCase("SHUNT")) {
-      v->calDriveShunt(duty);
-    } else {
-      stream_.println(F("ERR expected SER or SHUNT"));
-      return;
+  } else if (cmd == "CALDRIVE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 2) { stream_.println(F("ERR expected SER|SHUNT and a duty")); return; }
+    bool isSer = tok[sel.argBase].equalsIgnoreCase("SER");
+    bool isShunt = tok[sel.argBase].equalsIgnoreCase("SHUNT");
+    if (!isSer && !isShunt) { stream_.println(F("ERR expected SER or SHUNT")); return; }
+    uint16_t duty = (uint16_t)tok[sel.argBase + 1].toInt();
+    for (uint8_t i = 0; i < sel.count; i++) {
+      if (isSer) sel.items[i]->calDriveSeries(duty); else sel.items[i]->calDriveShunt(duty);
     }
     stream_.print(F("OK duty="));
     stream_.print(duty);
     stream_.println(F("  <- measure now, then CALPOINT with this same duty"));
 
-  } else if (cmd == "CALPOINT" && n >= 5) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    uint16_t duty = (uint16_t)tok[3].toInt();
-    float ohms = tok[4].toFloat();
-    bool ok;
-    if (tok[2].equalsIgnoreCase("SER")) {
-      ok = v->calFeedSeriesPoint(duty, ohms);
-    } else if (tok[2].equalsIgnoreCase("SHUNT")) {
-      ok = v->calFeedShuntPoint(duty, ohms);
-    } else {
-      stream_.println(F("ERR expected SER or SHUNT"));
-      return;
+  } else if (cmd == "CALPOINT") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 3) { stream_.println(F("ERR expected SER|SHUNT, duty, ohms")); return; }
+    bool isSer = tok[sel.argBase].equalsIgnoreCase("SER");
+    bool isShunt = tok[sel.argBase].equalsIgnoreCase("SHUNT");
+    if (!isSer && !isShunt) { stream_.println(F("ERR expected SER or SHUNT")); return; }
+    uint16_t duty = (uint16_t)tok[sel.argBase + 1].toInt();
+    float ohms = tok[sel.argBase + 2].toFloat();
+    for (uint8_t i = 0; i < sel.count; i++) {
+      bool ok = isSer ? sel.items[i]->calFeedSeriesPoint(duty, ohms) : sel.items[i]->calFeedShuntPoint(duty, ohms);
+      if (sel.count == 2) { stream_.print(sideLabel(sel.items[i])); stream_.print(F(": ")); }
+      stream_.println(ok ? F("OK point added") : F("ERR duty must be strictly greater than the last point added"));
     }
-    stream_.println(ok ? F("OK point added") : F("ERR duty must be strictly greater than the last point added"));
 
-  } else if (cmd == "CALSOLVE" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    uint8_t steps = (n >= 3) ? (uint8_t)tok[2].toInt() : NUM_VOLUME_STEPS_DEFAULT;
-    float rangeDb = (n >= 4) ? tok[3].toFloat() : v->rangeDb();
-    float rTotal  = (n >= 5) ? tok[4].toFloat() : v->rTotalOhms();
-    uint8_t valid = v->calSolve(steps, rangeDb, rTotal, stream_);
-    stream_.print(F("OK solved "));
-    stream_.print(valid);
-    stream_.print('/');
-    stream_.print(steps);
-    stream_.println(F(" steps in range (see CALDUMP for details)"));
+  } else if (cmd == "CALSOLVE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      uint8_t steps = (n >= sel.argBase + 1) ? (uint8_t)tok[sel.argBase].toInt() : NUM_VOLUME_STEPS_DEFAULT;
+      float rangeDb = (n >= sel.argBase + 2) ? tok[sel.argBase + 1].toFloat() : v->rangeDb();
+      float rTotal  = (n >= sel.argBase + 3) ? tok[sel.argBase + 2].toFloat() : v->rTotalOhms();
+      uint8_t valid = v->calSolve(steps, rangeDb, rTotal, stream_);
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      stream_.print(F("OK solved "));
+      stream_.print(valid);
+      stream_.print('/');
+      stream_.print(steps);
+      stream_.println(F(" steps in range (see CALDUMP for details)"));
+    }
 
-  } else if (cmd == "CALAUTO" && n >= 3) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
+  } else if (cmd == "CALAUTO") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 1) { stream_.println(F("ERR expected FULL or FAST")); return; }
     LDRVolume::CalMode mode;
-    if (tok[2].equalsIgnoreCase("FULL")) mode = LDRVolume::CalMode::FULL;
-    else if (tok[2].equalsIgnoreCase("FAST")) mode = LDRVolume::CalMode::FAST;
+    if (tok[sel.argBase].equalsIgnoreCase("FULL")) mode = LDRVolume::CalMode::FULL;
+    else if (tok[sel.argBase].equalsIgnoreCase("FAST")) mode = LDRVolume::CalMode::FAST;
     else { stream_.println(F("ERR expected FULL or FAST")); return; }
-    v->runAutoCalibration(mode, stream_);
-
-  } else if (cmd == "CALRANGE" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (n >= 3) {
-      if (tok[2].equalsIgnoreCase("AUTO")) {
-        v->setAutoRange(true);
-        stream_.println(F("OK range = AUTO (recomputed from measured floors on every solve)."));
-        stream_.println(F("Re-run CALSOLVE/CALAUTO to apply."));
-      } else {
-        float db = tok[2].toFloat();
-        if (db <= 0.0f) { stream_.println(F("ERR range must be positive")); return; }
-        v->setRangeDb(db);
-        stream_.print(F("OK range set to "));
-        stream_.print(db, 2);
-        stream_.println(F("dB (fixed). Re-run CALSOLVE/CALAUTO to apply."));
-      }
+    if (sel.count == 2) {
+      DualCalibration::runBoth(*sel.items[0], *sel.items[1], mode, stream_);
     } else {
-      stream_.print(F("Range = "));
-      stream_.print(v->rangeDb(), 2);
-      stream_.print(F("dB"));
-      stream_.println(v->autoRange() ? F(" (AUTO -- last computed value shown)") : F(" (fixed)"));
+      sel.items[0]->runAutoCalibration(mode, stream_);
     }
 
-  } else if (cmd == "CALMODE" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (n >= 3) {
-      if (tok[2].equalsIgnoreCase("RTOTAL")) {
-        v->setMode(LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
-        stream_.println(F("OK mode = CONSTANT_RTOTAL. Re-run CALSOLVE/CALAUTO to apply."));
-      } else if (tok[2].equalsIgnoreCase("FIXEDSERIES")) {
-        v->setMode(LDRVolume::AttenuationMode::FIXED_SERIES);
-        stream_.println(F("OK mode = FIXED_SERIES. Re-run CALSOLVE/CALAUTO to apply."));
+  } else if (cmd == "CALRANGE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool hasValue = (n >= sel.argBase + 1);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (hasValue) {
+        if (tok[sel.argBase].equalsIgnoreCase("AUTO")) {
+          v->setAutoRange(true);
+          stream_.println(F("OK range = AUTO. Re-run CALSOLVE/CALAUTO to apply."));
+        } else {
+          float db = tok[sel.argBase].toFloat();
+          if (db <= 0.0f) { stream_.println(F("ERR range must be positive")); continue; }
+          v->setRangeDb(db);
+          stream_.print(F("OK range set to "));
+          stream_.print(db, 2);
+          stream_.println(F("dB (fixed). Re-run CALSOLVE/CALAUTO to apply."));
+        }
       } else {
-        stream_.println(F("ERR expected RTOTAL or FIXEDSERIES"));
+        stream_.print(F("Range = "));
+        stream_.print(v->rangeDb(), 2);
+        stream_.print(F("dB"));
+        stream_.println(v->autoRange() ? F(" (AUTO -- last computed value shown)") : F(" (fixed)"));
       }
-    } else {
+    }
+
+  } else if (cmd == "CALMODE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool hasValue = (n >= sel.argBase + 1);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (hasValue) {
+        if (tok[sel.argBase].equalsIgnoreCase("RTOTAL")) {
+          v->setMode(LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
+          stream_.println(F("OK mode = CONSTANT_RTOTAL. Re-run CALSOLVE/CALAUTO to apply."));
+        } else if (tok[sel.argBase].equalsIgnoreCase("FIXEDSERIES")) {
+          v->setMode(LDRVolume::AttenuationMode::FIXED_SERIES);
+          stream_.println(F("OK mode = FIXED_SERIES. Re-run CALSOLVE/CALAUTO to apply."));
+        } else {
+          stream_.println(F("ERR expected RTOTAL or FIXEDSERIES"));
+        }
+      } else {
+        stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
+                            ? F("Mode = FIXED_SERIES")
+                            : F("Mode = CONSTANT_RTOTAL"));
+      }
+    }
+
+  } else if (cmd == "CALSERIESDUTY") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool hasValue = (n >= sel.argBase + 1);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (hasValue) {
+        v->setFixedSeriesDuty((uint16_t)tok[sel.argBase].toInt());
+        stream_.print(F("OK fixedSeriesDuty = "));
+        stream_.print(v->fixedSeriesDuty());
+        stream_.println(F(". Re-run CALSOLVE/CALAUTO to apply."));
+      } else {
+        stream_.print(F("fixedSeriesDuty = "));
+        stream_.println(v->fixedSeriesDuty());
+      }
+    }
+
+  } else if (cmd == "CALRTOTAL") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool hasValue = (n >= sel.argBase + 1);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (hasValue) {
+        float ohms = tok[sel.argBase].toFloat();
+        if (ohms <= 0.0f) { stream_.println(F("ERR Rtotal must be positive")); continue; }
+        v->setRTotalOhms(ohms);
+        stream_.print(F("OK Rtotal set to "));
+        stream_.print(ohms, 1);
+        stream_.println(F(" ohm. Affects future CALSOLVE/CALAUTO -- re-run to apply to the saved LUT."));
+      } else {
+        stream_.print(F("Rtotal = "));
+        stream_.print(v->rTotalOhms(), 1);
+        stream_.println(F(" ohm"));
+      }
+    }
+
+  } else if (cmd == "CALTRIM") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->runTrimPass(stream_);
+
+  } else if (cmd == "CALSCAN") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->runDiagnosticScan(stream_);
+
+  } else if (cmd == "CALREF") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool hasValue = (n >= sel.argBase + 1);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (hasValue) {
+        float ohms = tok[sel.argBase].toFloat();
+        if (ohms <= 0.0f) { stream_.println(F("ERR Rref must be positive")); continue; }
+        v->setRRefOhms(ohms);
+        stream_.print(F("OK Rref set to "));
+        stream_.print(ohms, 1);
+        stream_.println(F(" ohm. Applies to future reads only -- re-run CALAUTO to bake it into a saved calibration."));
+      } else {
+        stream_.print(F("Rref = "));
+        stream_.print(v->rRefOhms(), 1);
+        stream_.println(F(" ohm"));
+      }
+    }
+
+  } else if (cmd == "CALSAVE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      stream_.println(v->calSave() ? F("OK saved") : F("ERR save failed"));
+    }
+
+  } else if (cmd == "CALLOAD") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      stream_.println(v->calLoad() ? F("OK loaded") : F("ERR no valid saved calibration"));
+    }
+
+  } else if (cmd == "CALDUMP") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(F("=== ")); stream_.print(sideLabel(v)); stream_.println(F(" ===")); }
       stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
-                          ? F("Mode = FIXED_SERIES")
-                          : F("Mode = CONSTANT_RTOTAL"));
+                          ? F("Mode: FIXED_SERIES")
+                          : F("Mode: CONSTANT_RTOTAL"));
+      printCurve("Series", v->seriesCurve());
+      printCurve("Shunt", v->shuntCurve());
+      printLut(v->lut());
     }
 
-  } else if (cmd == "CALSERIESDUTY" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (n >= 3) {
-      v->setFixedSeriesDuty((uint16_t)tok[2].toInt());
-      stream_.print(F("OK fixedSeriesDuty = "));
-      stream_.print(v->fixedSeriesDuty());
-      stream_.println(F(". Re-run CALSOLVE/CALAUTO to apply."));
-    } else {
-      stream_.print(F("fixedSeriesDuty = "));
-      stream_.println(v->fixedSeriesDuty());
-    }
+  } else if (cmd == "VOL") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 1) { stream_.println(F("ERR expected a step number")); return; }
+    uint8_t step = (uint8_t)tok[sel.argBase].toInt();
+    bool ok[2];
+    VolumeRamp::rampTo(sel.items, sel.count, step, ok);
+    bool allOk = ok[0] && (sel.count < 2 || ok[1]);
+    stream_.println(allOk ? F("OK") : F("ERR step out of range, no LUT, or that step is out of the curve's range"));
 
-  } else if (cmd == "CALRTOTAL" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (n >= 3) {
-      float ohms = tok[2].toFloat();
-      if (ohms <= 0.0f) { stream_.println(F("ERR Rtotal must be positive")); return; }
-      v->setRTotalOhms(ohms);
-      stream_.print(F("OK Rtotal set to "));
-      stream_.print(ohms, 1);
-      stream_.println(F(" ohm. Affects future CALSOLVE/CALAUTO -- re-run to apply to the saved LUT."));
-    } else {
-      stream_.print(F("Rtotal = "));
-      stream_.print(v->rTotalOhms(), 1);
-      stream_.println(F(" ohm"));
-    }
+  } else if (cmd == "VOLUP") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool allOk = true;
+    for (uint8_t i = 0; i < sel.count; i++) if (!sel.items[i]->stepUp()) allOk = false;
+    stream_.print(allOk ? F("OK step=") : F("ERR step="));
+    stream_.println(sel.items[0]->currentStep());
 
-  } else if (cmd == "CALTRIM" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->runTrimPass(stream_);
+  } else if (cmd == "VOLDOWN") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    bool allOk = true;
+    for (uint8_t i = 0; i < sel.count; i++) if (!sel.items[i]->stepDown()) allOk = false;
+    stream_.print(allOk ? F("OK step=") : F("ERR step="));
+    stream_.println(sel.items[0]->currentStep());
 
-  } else if (cmd == "CALSCAN" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->runDiagnosticScan(stream_);
-
-  } else if (cmd == "CALREF" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (n >= 3) {
-      float ohms = tok[2].toFloat();
-      if (ohms <= 0.0f) { stream_.println(F("ERR Rref must be positive")); return; }
-      v->setRRefOhms(ohms);
-      stream_.print(F("OK Rref set to "));
-      stream_.print(ohms, 1);
-      stream_.println(F(" ohm. Applies to future reads only -- re-run CALAUTO to bake it into a saved calibration."));
-    } else {
-      stream_.print(F("Rref = "));
-      stream_.print(v->rRefOhms(), 1);
-      stream_.println(F(" ohm"));
-    }
-
-  } else if (cmd == "CALSAVE" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    stream_.println(v->calSave() ? F("OK saved") : F("ERR save failed"));
-
-  } else if (cmd == "CALLOAD" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    stream_.println(v->calLoad() ? F("OK loaded") : F("ERR no valid saved calibration"));
-
-  } else if (cmd == "CALDUMP" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
-                        ? F("Mode: FIXED_SERIES")
-                        : F("Mode: CONSTANT_RTOTAL"));
-    printCurve("Series", v->seriesCurve());
-    printCurve("Shunt", v->shuntCurve());
-    printLut(v->lut());
-
-  } else if (cmd == "VOL" && n >= 3) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    bool ok = v->setStep((uint8_t)tok[2].toInt());
-    stream_.println(ok ? F("OK") : F("ERR step out of range, no LUT, or that step is out of the curve's range"));
-
-  } else if (cmd == "VOLUP" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    bool ok = v->stepUp();
-    stream_.print(ok ? F("OK step=") : F("ERR step="));
-    stream_.println(v->currentStep());
-
-  } else if (cmd == "VOLDOWN" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    bool ok = v->stepDown();
-    stream_.print(ok ? F("OK step=") : F("ERR step="));
-    stream_.println(v->currentStep());
-
-  } else if (cmd == "MUTE" && n >= 3) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    bool on = tok[2].equalsIgnoreCase("ON");
-    bool off = tok[2].equalsIgnoreCase("OFF");
+  } else if (cmd == "MUTE") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    if (n < sel.argBase + 1) { stream_.println(F("ERR expected ON or OFF")); return; }
+    bool on = tok[sel.argBase].equalsIgnoreCase("ON");
+    bool off = tok[sel.argBase].equalsIgnoreCase("OFF");
     if (!on && !off) { stream_.println(F("ERR expected ON or OFF")); return; }
-    if (on) v->mute(); else v->unmute();
+    for (uint8_t i = 0; i < sel.count; i++) { if (on) sel.items[i]->mute(); else sel.items[i]->unmute(); }
     stream_.println(F("OK"));
 
-  } else if (cmd == "I2CSCAN" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    v->i2cScan(); // activates/deactivates around the scan itself; relay state untouched
-
-  } else if (cmd == "ADCREAD" && n >= 2) {
-    LDRVolume *v = resolveSide(tok[1]);
-    if (!v) return;
-    if (!v->relayEnergized()) {
-      stream_.println(F("ERR relay not energized -- i2c bus is deactivated while de-energized."));
-      stream_.println(F("    RELAY <L|R> ON (or CALSTART <L|R>) first."));
-      return;
+  } else if (cmd == "I2CSCAN") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      if (sel.count == 2) { stream_.print(sideLabel(sel.items[i])); stream_.println(':'); }
+      sel.items[i]->i2cScan(); // activates/deactivates around the scan itself; relay state untouched
     }
-    float vRef, rs, rsh;
-    bool ok = v->adcRead(vRef, rs, rsh);
-    stream_.print(F("Vref="));
-    stream_.print(vRef, 4);
-    stream_.print(F("V"));
-    if (!ok) {
-      stream_.println(F("  ERR Vref <= 0 -- both LDRs likely dark (outside the ~10k operating range)"));
-    } else {
-      stream_.print(F("  Rs="));
-      stream_.print(rs, 1);
-      stream_.print(F(" ohm  Rsh="));
-      stream_.print(rsh, 1);
-      stream_.println(F(" ohm"));
+
+  } else if (cmd == "ADCREAD") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    for (uint8_t i = 0; i < sel.count; i++) {
+      LDRVolume *v = sel.items[i];
+      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+      if (!v->relayEnergized()) {
+        stream_.println(F("ERR relay not energized -- i2c bus is deactivated while de-energized."));
+        if (sel.count == 1) stream_.println(F("    RELAY ON (or CALSTART) first."));
+        continue;
+      }
+      float vRef, rs, rsh;
+      bool ok = v->adcRead(vRef, rs, rsh);
+      stream_.print(F("Vref="));
+      stream_.print(vRef, 4);
+      stream_.print(F("V"));
+      if (!ok) {
+        stream_.println(F("  ERR Vref <= 0 -- both LDRs likely dark (outside the ~10k operating range)"));
+      } else {
+        stream_.print(F("  Rs="));
+        stream_.print(rs, 1);
+        stream_.print(F(" ohm  Rsh="));
+        stream_.print(rsh, 1);
+        stream_.println(F(" ohm"));
+      }
     }
 
   } else {
     stream_.println(F("ERR unrecognized command, try HELP"));
   }
+}
+
+SerialConsole::SideSelection SerialConsole::resolveOptionalSide(const String tok[], int n) {
+  SideSelection sel;
+  if (n >= 2 && tok[1].equalsIgnoreCase("L")) {
+    sel.items[0] = &left_;
+    sel.count = 1;
+    sel.argBase = 2;
+  } else if (n >= 2 && tok[1].equalsIgnoreCase("R")) {
+    sel.items[0] = &right_;
+    sel.count = 1;
+    sel.argBase = 2;
+  } else {
+    sel.items[0] = &left_;
+    sel.items[1] = &right_;
+    sel.count = 2;
+    sel.argBase = 1;
+  }
+  return sel;
 }

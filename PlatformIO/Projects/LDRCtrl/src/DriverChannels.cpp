@@ -1,6 +1,7 @@
 #include "DriverChannels.hpp"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
+#include "hardware/gpio.h"
 #include "Pins.hpp"
 
 // Channel order must match the DriverChannels::Channel enum.
@@ -22,6 +23,20 @@ void DriverChannels::begin() {
   for (uint8_t i = 0; i < NUM_CHANNELS; i++) {
     uint8_t pin = PINS[i];
     gpio_set_function(pin, GPIO_FUNC_PWM);
+
+    // Deliberately slow the pad's own edge rate (dv/dt), independent of
+    // PWM carrier frequency entirely -- testing whether the audible noise
+    // is driven by edge SPEED (e.g. capacitive coupling through the
+    // NSL-32SR3's own LED-to-photocell isolation barrier, which scales
+    // with dv/dt regardless of switching rate) rather than edge RATE
+    // (which the earlier 10-bit/146kHz change addressed instead, and
+    // evidently didn't fully resolve). Confirmed by mute() -- which
+    // halts switching entirely while current still flows -- eliminating
+    // the noise completely, ruling out anything current/brightness-
+    // driven and pointing specifically at the transitions themselves.
+    gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
+    gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
+
     uint slice = pwm_gpio_to_slice_num(pin);
     pwm_set_wrap(slice, WRAP);
     pwm_set_clkdiv(slice, CLKDIV);

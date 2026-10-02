@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "Config.hpp"
 
 // ============================================================================
 // DriverChannels
@@ -27,8 +28,14 @@ public:
     NUM_CHANNELS
   };
 
-  static constexpr uint16_t WRAP = 4095;  // 12-bit PWM
-  static constexpr float CLKDIV = 1.0f;   // fastest achievable divider at WRAP=4095
+  // Resolution/frequency tradeoff lives in Config.hpp (LED_PWM_WRAP /
+  // LED_PWM_CLKDIV) -- that's the one place to change it for bench
+  // testing. Kept as DriverChannels::WRAP/CLKDIV here since that's the
+  // symbol used throughout the rest of this codebase (DualCalibration,
+  // LDRVolume, SerialConsole) wherever duty needs converting to/from a
+  // percentage or raw count.
+  static constexpr uint16_t WRAP = LED_PWM_WRAP;
+  static constexpr float CLKDIV = LED_PWM_CLKDIV;
 
   // Configures all four channels' GPIOs for PWM output and starts each at
   // duty=0 (dark). Call once from setup().

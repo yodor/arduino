@@ -27,10 +27,10 @@ static DriverChannels driver;
 // Each LDRVolume owns its relay, its ADS1115 (via an internal LdrSensor),
 // and its calibration/volume state. Left uses i2c0 (Wire), right uses
 // i2c1 (Wire1). Rref = 10k 1% on both boards per the LDR board design.
-static LDRVolume leftChannel(driver, COIL_CTRL_L, DriverChannels::SER_L, DriverChannels::SHUNT_L,
+static LDRVolume leftChannel(driver, board, COIL_CTRL_L, DriverChannels::SER_L, DriverChannels::SHUNT_L,
                               Wire, SDA_LEFT_PIN, SCL_LEFT_PIN, "/cal_left.bin",
                               RREF_LEFT_OHMS, RTOTAL_LEFT_OHMS, ATTEN_RANGE_LEFT_DB);
-static LDRVolume rightChannel(driver, COIL_CTRL_R, DriverChannels::SER_R, DriverChannels::SHUNT_R,
+static LDRVolume rightChannel(driver, board, COIL_CTRL_R, DriverChannels::SER_R, DriverChannels::SHUNT_R,
                                Wire1, SDA_RIGHT_PIN, SCL_RIGHT_PIN, "/cal_right.bin",
                                RREF_RIGHT_OHMS, RTOTAL_RIGHT_OHMS, ATTEN_RANGE_RIGHT_DB);
 
