@@ -21,21 +21,7 @@ BarPhysics::BarPhysics() {
     m_decayRate = kBaselineDecayRate * frameRatio;
     if (m_decayRate < kMinDecayRate) m_decayRate = kMinDecayRate;
 
-    // peakDrop is rounded to a whole pixel step (minimum 1), not left as a
-    // fractional value. state.peak[] starts as an exact integer
-    // (static_cast<float>(h)) every time it's reset by a rising bar, and
-    // subtracting an exact-integer peakDrop keeps it an exact integer
-    // through every subsequent decay step -- so truncating to uint16_t for
-    // the drawn pixel row is always lossless. A fractional peakDrop breaks
-    // that invariant: once decaying, the peak accumulates genuine
-    // fractional remainders, and truncating a fractional float to a pixel
-    // row is exactly the kind of thing that can drift by a pixel over many
-    // frames from floating-point representation error -- a real, subtle
-    // regression versus the original hardcoded peakDrop=2.0f, which was
-    // always an exact integer and never had this problem.
-    float rawPeakDrop = kBaselinePeakDrop * frameRatio;
-    m_peakDrop = static_cast<uint16_t>(roundf(rawPeakDrop));
-    if (m_peakDrop < 1) m_peakDrop = 1;
+    recomputePeakDrop(); // uses m_peakDecaySpeed's default (NORMAL) on first construction
 
     // smoothing is a per-frame EXPONENTIAL blend factor, not a linear
     // step -- a straight ratio rescale (like decayRate above) would be
@@ -49,6 +35,39 @@ BarPhysics::BarPhysics() {
     // goes negative), so unlike decayRate it needs no artificial floor.
     float tau = -static_cast<float>(kBaselineFrameUs) / logf(kBaselineSmoothing);
     m_smoothing = expf(-static_cast<float>(TARGET_FRAME_US) / tau);
+}
+
+void BarPhysics::setPeakDecaySpeed(PeakDecaySpeed speed) {
+    m_peakDecaySpeed = speed;
+    recomputePeakDrop();
+}
+
+// peakDrop is rounded to a whole pixel step (minimum 1), not left as a
+// fractional value. state.peak[] starts as an exact integer
+// (static_cast<float>(h)) every time it's reset by a rising bar, and
+// subtracting an exact-integer peakDrop keeps it an exact integer through
+// every subsequent decay step -- so truncating to uint16_t for the drawn
+// pixel row is always lossless. A fractional peakDrop breaks that
+// invariant: once decaying, the peak accumulates genuine fractional
+// remainders, and truncating a fractional float to a pixel row is exactly
+// the kind of thing that can drift by a pixel over many frames from
+// floating-point representation error -- a real, subtle regression versus
+// the original hardcoded peakDrop=2.0f, which was always an exact integer
+// and never had this problem.
+//
+// SLOW/FAST are plain multipliers on the same by-ear-tuned baseline, not
+// independently-tuned values -- 0.5x/2x was a reasonable first guess, not
+// something confirmed against real hardware yet.
+void BarPhysics::recomputePeakDrop() {
+    float frameRatio = static_cast<float>(TARGET_FRAME_US) / static_cast<float>(kBaselineFrameUs);
+
+    float speedMultiplier = 1.0f;
+    if (m_peakDecaySpeed == PeakDecaySpeed::SLOW) speedMultiplier = 0.5f;
+    else if (m_peakDecaySpeed == PeakDecaySpeed::FAST) speedMultiplier = 2.0f;
+
+    float rawPeakDrop = kBaselinePeakDrop * frameRatio * speedMultiplier;
+    m_peakDrop = static_cast<uint16_t>(roundf(rawPeakDrop));
+    if (m_peakDrop < 1) m_peakDrop = 1;
 }
 
 // THE CENTRALIZED ENGINE METHOD: Calculates ballistics updates uniformly
@@ -80,7 +99,10 @@ void BarPhysics::updateState(BarPhysicsState& state, float currentVal, uint16_t 
     if (integerUnits >= integerPeak) {
         integerPeak = integerUnits;
         state.peakTimer = now;
-    } else if (now - state.peakTimer > kPeakHoldTimeMs) {
+    } else if (m_peakDecaySpeed != PeakDecaySpeed::OFF && now - state.peakTimer > kPeakHoldTimeMs) {
+        // OFF skips this whole branch -- the peak simply never falls on
+        // its own once set, only a new higher bar value (the branch
+        // above) ever raises it again.
         if (integerPeak > m_peakDrop) integerPeak -= m_peakDrop;
         else integerPeak = 0;
         if (integerPeak < integerUnits) integerPeak = integerUnits;

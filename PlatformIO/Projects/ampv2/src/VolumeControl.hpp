@@ -51,21 +51,28 @@ public:
 private:
     VolumeControl() = default;
 
-    // Actually drives the GPIO + sends the UART command; no gating, no
-    // side effects on the boot-hold state. init() and muteOn()/muteOff()
-    // both funnel through this so the hardware-driving logic exists once.
-    void applyMuteState(bool muted);
+    // Actually drives the GPIO + (optionally) sends the UART command; no
+    // gating. init() and muteOn()/muteOff() all funnel through this so
+    // the hardware-driving logic exists once.
+    //
+    // sendOverUart defaults to true for every normal caller (muteOn()/
+    // muteOff()); init() alone passes false, for its very first boot-time
+    // call specifically -- sending "MUTE ON" over UART at t=0 was racing
+    // the daughter's own independent boot-hold (which already keeps its
+    // side safe regardless of what the master sends, refusing every
+    // command with an ERR reply until its own hold elapses), and an
+    // unexpected/garbled reply during that race could leave
+    // DaughterBoardLink stuck thinking a command was still in flight. The
+    // local GPIO mute (which has no such race -- it's a plain
+    // digitalWrite) still happens unconditionally either way; only the
+    // redundant, risky UART send at boot is skipped. There's no boot-hold
+    // timer on this side at all -- muteOn()/muteOff() work immediately,
+    // and whatever happens to arrive while the daughter is still in its
+    // own hold just gets its ERR reply handled the same as any other.
+    void applyMuteState(bool muted, bool sendOverUart = true);
 
     bool     m_muted             = true;
     bool     m_ampMuted          = false; // optimistic local mirror, same convention as m_muted -- see applyMuteState()'s comment on why that's the established pattern here
     uint32_t m_lastVolCommandMs  = 0; // throttles the daughter-board VOL UP/DOWN repeat rate
     bool     m_wasCalibrating    = false; // edge-detects isCalibrating() true->false in update(), to log the outcome exactly once
-
-    // Mandatory boot-time mute hold (MUTE_BOOT_HOLD_MS in Config.hpp):
-    // protects speakers/amp while coupling caps and other circuits settle.
-    // ALL mute commands -- including user-issued ones -- are refused
-    // entirely (not deferred, not cancelable) until this elapses. This is
-    // a hard safety floor, not a default state.
-    bool     m_bootHoldActive = true;
-    uint32_t m_bootMs         = 0;
 };

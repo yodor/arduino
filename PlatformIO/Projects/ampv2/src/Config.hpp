@@ -44,13 +44,6 @@ constexpr unsigned long MOTOR_MAX_RUN_TIME_MS = 10000;
 // unmuted). So LOW = muted, HIGH = unmuted -- active-low.
 constexpr bool MUTE_ACTIVE_HIGH = false;
 
-// How long to mandatorily hold mute after boot, protecting speakers/amp
-// while coupling caps and other circuits settle. This is a hard safety
-// floor: ALL mute commands, including user-issued ones (button/IR), are
-// refused outright for this entire duration -- not deferred, not
-// cancelable by any explicit call. Only expires by elapsed time.
-constexpr uint32_t MUTE_BOOT_HOLD_MS = 3000;
-
 // UART daughter board link (pins in Pins.hpp).
 constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
 

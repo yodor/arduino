@@ -24,13 +24,15 @@ enum class DaughterCmdStatus : uint8_t {
 // iteration to service incoming bytes and time out stalled commands;
 // nothing here ever blocks waiting on the UART.
 //
-// Protocol v2 notes (see daughter-board-uart-protocol-v2.md for the full
-// spec this implements): one daughter controller runs both channels, so
-// VOL/MUTE/GET apply to both together -- there is no per-channel
-// addressing here. AMP_MUTE is a third, independent mute path (the
+// Protocol v2 notes (see daughter-board-uart-protocol-v2.md for the full,
+// now-finalized spec this implements): one daughter controller runs both
+// channels, so VOL/MUTE/GET apply to both together -- there is no per-
+// channel addressing here. AMP_MUTE is a third, independent mute path (the
 // daughter's own amp-output opto mute) with no relation to MUTE (the LDR
 // network's own mute) or this master's separate local MUTE_PIN circuit --
-// all three can be engaged independently of each other.
+// all three can be engaged independently of each other. The daughter's own
+// boot-mute hold blocks EVERY command (not just AMP_MUTE) with a specific,
+// parseable ERR reply -- see isBootHoldError()/getBootHoldRemainingMs().
 class DaughterBoardLink {
 public:
     static DaughterBoardLink& instance();
@@ -46,17 +48,19 @@ public:
     bool sendMuteOff();
     bool sendVolUp();
     bool sendVolDown();
-    bool sendVolSet(uint8_t level); // DAUGHTER_VOL_MIN..DAUGHTER_VOL_MAX; rejected locally (not sent) if out of range
+    // DAUGHTER_VOL_MIN..DAUGHTER_VOL_MAX; rejected locally (not sent) if
+    // out of range. A jump of more than one step auto-ramps through every
+    // intermediate step on the daughter's own side (confirmed on real
+    // hardware: avoids an audible pop) -- worst case ~60-250ms for a
+    // full-range jump, comfortably inside DAUGHTER_RESPONSE_TIMEOUT_MS but
+    // not instantaneous the way sendVolUp()/sendVolDown() are.
+    bool sendVolSet(uint8_t level);
     bool sendGetMute();
     bool sendGetVol();
     bool sendCalibrate();
 
     // Independent amp-output mute path (daughter's own opto circuit, not
-    // the LDR network's MUTE above). The daughter gates both directions
-    // during its own boot hold and replies ERR either way during that
-    // window rather than silently dropping the command -- that ERR flows
-    // through getLastStatus()/getLastError() like any other, this class
-    // doesn't attempt to track or replicate the daughter's own hold timer.
+    // the LDR network's MUTE above).
     bool sendAmpMuteOn();
     bool sendAmpMuteOff();
     bool sendGetAmpMute();
@@ -64,14 +68,40 @@ public:
     bool isBusy() const;         // a command is currently in flight, awaiting a reply
     bool isCalibrating() const;  // a CAL is in progress (from the initial OK until DONE/FAIL/safety-timeout); sendXxx() calls will fail
 
+    // The daughter's boot-mute hold blocks EVERY command (not just
+    // AMP_MUTE), replying "ERR boot mute hold active, <n>ms remaining" to
+    // whatever was sent -- this class doesn't track or replicate the
+    // daughter's own hold timer itself, but does parse this specific,
+    // stable-worded reply so a caller can schedule a sensible retry
+    // instead of guessing. Valid when getLastStatus()==ERROR; check
+    // isBootHoldError() first since an ordinary ERR (wrong range, no
+    // calibration loaded, etc.) leaves getBootHoldRemainingMs() at 0,
+    // which is indistinguishable from "just received the final ms of the
+    // hold" -- isBootHoldError() is what actually tells them apart.
+    bool     isBootHoldError() const        { return m_lastErrorIsBootHold; }
+    uint32_t getBootHoldRemainingMs() const { return m_bootHoldRemainingMs; }
+
     // Valid once isCalibrating() has gone from true back to false:
-    // OK = CAL DONE, ERROR = CAL FAIL (see getLastError() for the reason),
-    // TIMEOUT = DAUGHTER_CAL_SAFETY_TIMEOUT_MS elapsed with no DONE/FAIL
-    // ever arriving (a crash/disconnect guard, not an expected outcome --
-    // see that constant's comment in Config.hpp). Reusing the same status/
-    // error fields as ordinary commands is safe here specifically because
-    // sendLine() refuses to send anything else at all while isCalibrating()
-    // is true, so nothing else can overwrite this in between.
+    // OK = CAL DONE, ERROR = CAL FAIL (see getLastError() for the reason --
+    // the exact wording is now settled on the daughter's side, but this
+    // class deliberately only distinguishes DONE vs FAIL, not the reason
+    // text itself, per the protocol doc's own guidance not to hardcode
+    // parsing beyond that), TIMEOUT = DAUGHTER_CAL_SAFETY_TIMEOUT_MS
+    // elapsed with no DONE/FAIL ever arriving (a crash/disconnect guard,
+    // not an expected outcome -- see that constant's comment in
+    // Config.hpp). CAL FAIL is also a whole-request failure, not per-
+    // channel -- either channel coming back degenerate fails the whole
+    // CAL, there's no partial-success reply to distinguish. Reusing the
+    // same status/error fields as ordinary commands is safe here
+    // specifically because sendLine() refuses to send anything else at
+    // all while isCalibrating() is true, so nothing else can overwrite
+    // this in between.
+    //
+    // Nothing needs to be sent after a successful CAL DONE to get usable
+    // volume state -- the daughter lands on a real, defined LUT step (or
+    // its own hard mute, if a channel's calibration came back degenerate)
+    // automatically, same as it does at boot. GET VOL after CAL DONE
+    // already reports something real.
     DaughterCmdStatus getLastStatus() const { return m_status; }
     const char* getLastError() const { return m_lastError; } // valid when getLastStatus()==ERROR
 
@@ -109,4 +139,7 @@ private:
     bool    m_lastMute    = false;
     bool    m_lastAmpMute = false;
     uint8_t m_lastVol     = 0;
+
+    bool     m_lastErrorIsBootHold = false;
+    uint32_t m_bootHoldRemainingMs = 0;
 };

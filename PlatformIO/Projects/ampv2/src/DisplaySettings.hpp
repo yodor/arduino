@@ -69,6 +69,17 @@ public:
     uint8_t getBrightnessPercent() const { return m_brightnessPercent; }
     void setBrightnessPercent(uint8_t pct) { m_brightnessPercent = (pct > 100) ? 100 : pct; }
 
+    // Whether SpectrumScreen/DigitalVuMeterScreen draw their peak-hold
+    // indicators at all (Theme -> Peaks -> Enabled). Purely read by each
+    // screen's own render() each frame -- no hardware/cross-core coupling
+    // like brightness above, and no special handling needed when this
+    // changes: the menu always forces the active screen through onEnter()
+    // on close (see main.cpp's closeMenu()), which already clears the
+    // screen and resets every bar's tracked state, so there's never a
+    // stale peak mark left behind from toggling this mid-session.
+    bool getPeaksEnabled() const { return m_peaksEnabled; }
+    void setPeaksEnabled(bool enabled) { m_peaksEnabled = enabled; }
+
 private:
     DisplaySettings() = default;
     ChannelMode  m_channelMode         = ChannelMode::STEREO;
@@ -76,4 +87,5 @@ private:
     StereoLayout m_stereoLayout        = StereoLayout::SIDE_BY_SIDE;
     bool         m_mirrorLeftBars      = true; // matches the old MIRROR_LEFT_CHANNEL_BARS default
     uint8_t      m_brightnessPercent   = 100;  // matches the original always-on digitalWrite(HIGH) behavior
+    bool         m_peaksEnabled        = true; // matches current always-on behavior
 };

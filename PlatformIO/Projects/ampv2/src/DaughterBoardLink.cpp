@@ -23,8 +23,21 @@ bool DaughterBoardLink::isCalibrating() const {
 }
 
 bool DaughterBoardLink::sendLine(const char* line) {
-    if (m_status == DaughterCmdStatus::PENDING) return false; // one command in flight at a time
-    if (m_calibrating) return false;                          // see DAUGHTER_CAL_SAFETY_TIMEOUT_MS in Config.hpp
+    // Temporary bring-up tracing -- prints every attempted send, including
+    // local rejections (which otherwise fail completely silently), so the
+    // master's own Serial monitor shows the full picture while testing
+    // the physical link. Remove or comment out once the link is confirmed
+    // working end to end.
+    if (m_status == DaughterCmdStatus::PENDING) {
+        Serial.print("[UART] send rejected (still awaiting a reply): "); Serial.println(line);
+        return false; // one command in flight at a time
+    }
+    if (m_calibrating) {
+        Serial.print("[UART] send rejected (calibration in progress): "); Serial.println(line);
+        return false; // see DAUGHTER_CAL_SAFETY_TIMEOUT_MS in Config.hpp
+    }
+
+    Serial.print("[UART TX] "); Serial.println(line);
 
     Serial1.print(line);
     Serial1.print('\n');
@@ -107,6 +120,12 @@ bool DaughterBoardLink::sendGetAmpMute() {
 }
 
 void DaughterBoardLink::handleResponseLine(const char* line) {
+    // Temporary bring-up tracing -- see sendLine()'s matching comment.
+    // Prints every received line, not just unrecognized ones (the
+    // existing "Unrecognized reply" print below only covers the lines
+    // that fail to match anything).
+    Serial.print("[UART RX] "); Serial.println(line);
+
     // Calibration's real, async completion (protocol v2) -- unsolicited,
     // arrives well after m_pending already went back to NONE (from the
     // initial "OK" that only meant "started"). Checked first and each
@@ -119,6 +138,13 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         return;
     }
     if (strncmp(line, "CAL FAIL", 8) == 0) {
+        // Exact wording is now settled on the daughter's side ("insufficient
+        // valid steps or no ADS1115 detected on one or both channels"), and
+        // it's a whole-request failure -- either channel coming back
+        // degenerate fails both, there's no partial-success variant to
+        // distinguish. Deliberately still only matching the "CAL FAIL"
+        // prefix here, not the full reason text, per the protocol doc's own
+        // guidance to rely on DONE-vs-FAIL rather than the specific wording.
         m_calibrating = false;
         strncpy(m_lastError, line, sizeof(m_lastError) - 1);
         m_lastError[sizeof(m_lastError) - 1] = '\0';
@@ -140,6 +166,21 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         strncpy(m_lastError, line, sizeof(m_lastError) - 1);
         m_lastError[sizeof(m_lastError) - 1] = '\0';
         m_status = DaughterCmdStatus::ERROR;
+
+        // Boot-hold ERR is a specific, stable-worded reply (per the
+        // protocol doc, unlike CAL FAIL's wording which is explicitly
+        // not guaranteed stable) carrying a remaining-time value worth
+        // extracting so a caller can schedule a sensible retry instead
+        // of guessing. Applies to EVERY command during the daughter's
+        // boot hold, not just AMP_MUTE.
+        unsigned long remainingMs = 0;
+        if (sscanf(line, "ERR boot mute hold active, %lums remaining", &remainingMs) == 1) {
+            m_lastErrorIsBootHold = true;
+            m_bootHoldRemainingMs = static_cast<uint32_t>(remainingMs);
+        } else {
+            m_lastErrorIsBootHold = false;
+            m_bootHoldRemainingMs = 0;
+        }
     } else if (strncmp(line, "AMP_MUTE=", 9) == 0) {
         // Checked before the plain "MUTE=" prefix below -- not that it's
         // ambiguous (the two strings differ at the very first character),
@@ -153,14 +194,24 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         m_lastVol = static_cast<uint8_t>(atoi(line + 4));
         m_status  = DaughterCmdStatus::OK;
     } else {
-        // Unrecognized line -- log it for visibility but don't treat it as
-        // a hard error. Notably, this is where a "CAL INIT ..." reply
-        // would land if one ever arrived (sendCalInit() isn't implemented
-        // here yet -- INIT/RTOTAL/MODE/FIXEDSERIES are a separate,
-        // not-yet-wired-up piece of protocol v2), so seeing one logged
-        // here isn't itself a sign of a protocol violation.
+        // Unrecognized line -- log it for visibility. Notably, this is
+        // where a "CAL INIT ..." reply would land if one ever arrived
+        // (sendCalInit() isn't implemented here yet -- INIT/RTOTAL/MODE/
+        // FIXEDSERIES are a separate, not-yet-wired-up piece of protocol
+        // v2), so seeing one logged here isn't itself a sign of a
+        // protocol violation.
+        //
+        // m_status MUST still be set here, same as every other branch --
+        // this was a real bug: leaving it untouched meant it stayed at
+        // whatever it was before this reply arrived (PENDING, since a
+        // reply just arrived to something we sent), which left sendLine()'s
+        // busy-check blocking every future send until the 500ms timeout
+        // eventually cleared it on its own. Treated as ERROR (an
+        // unexpected reply to whatever we asked is still a failure of
+        // that command, not a success).
         Serial.print("[Daughter] Unrecognized reply: ");
         Serial.println(line);
+        m_status = DaughterCmdStatus::ERROR;
     }
 
     m_pending = PendingCmd::NONE;
@@ -183,6 +234,10 @@ void DaughterBoardLink::update() {
 
     if (m_status == DaughterCmdStatus::PENDING &&
         (millis() - m_commandSentMs > DAUGHTER_RESPONSE_TIMEOUT_MS)) {
+        // Previously silent -- a command getting no reply at all otherwise
+        // produces zero Serial output, indistinguishable from "nothing
+        // was ever sent" while watching the monitor live.
+        Serial.println("[UART] TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
         m_status  = DaughterCmdStatus::TIMEOUT;
         m_pending = PendingCmd::NONE;
     }

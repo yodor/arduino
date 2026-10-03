@@ -8,6 +8,7 @@
 #include "WaveformPipeline.hpp"
 #include "PersistentSettings.hpp"
 #include "Renderer.hpp"
+#include "BarPhysics.hpp"
 #include <Arduino.h>
 
 namespace {
@@ -96,6 +97,31 @@ void menuSet_WaveTrackPreview() { AudioEngine::instance().setWaveformWindowMode(
 bool menuIsActive_WaveOscilloscope() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::OSCILLOSCOPE; }
 bool menuIsActive_WaveTrackPreview() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::TRACK_PREVIEW; }
 
+// Peaks Enabled: whether SpectrumScreen/DigitalVuMeterScreen draw their
+// peak-hold indicators at all -- purely a core0/display-side setting (see
+// DisplaySettings::setPeaksEnabled()'s comment for why no special
+// clear/reset handling is needed here beyond the menu's existing onEnter()
+// behavior on close).
+void menuSet_PeaksOn()  { DisplaySettings::instance().setPeaksEnabled(true);  PersistentSettings::instance().markDirty(); }
+void menuSet_PeaksOff() { DisplaySettings::instance().setPeaksEnabled(false); PersistentSettings::instance().markDirty(); }
+bool menuIsActive_PeaksOn()  { return DisplaySettings::instance().getPeaksEnabled(); }
+bool menuIsActive_PeaksOff() { return !DisplaySettings::instance().getPeaksEnabled(); }
+
+// Peak Decay Speed: a multiplier on the peak-hold drop rate (Slow/Normal/
+// Fast), not independently-tuned values -- see BarPhysics::
+// recomputePeakDrop()'s comment. Same core0-only reasoning as above, no
+// cross-core handling needed. Off is a genuinely different mode, not just
+// the slowest multiplier -- see PeakDecaySpeed's own comment in
+// BarPhysics.hpp: once set, the peak never falls on its own at all.
+void menuSet_PeakDecaySlow()   { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::SLOW);   PersistentSettings::instance().markDirty(); }
+void menuSet_PeakDecayNormal() { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::NORMAL); PersistentSettings::instance().markDirty(); }
+void menuSet_PeakDecayFast()   { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::FAST);   PersistentSettings::instance().markDirty(); }
+void menuSet_PeakDecayOff()    { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::OFF);    PersistentSettings::instance().markDirty(); }
+bool menuIsActive_PeakDecaySlow()   { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::SLOW; }
+bool menuIsActive_PeakDecayNormal() { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::NORMAL; }
+bool menuIsActive_PeakDecayFast()   { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::FAST; }
+bool menuIsActive_PeakDecayOff()    { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::OFF; }
+
 // Template rather than one hand-written function per screen index -- each
 // instantiation is still a genuinely distinct function pointer (required
 // since MenuValueOption uses plain `void(*)()`, which can't carry a bound
@@ -173,13 +199,35 @@ const MenuItem kWaveSubmenuItems[] = {
 };
 constexpr size_t kWaveSubmenuItemCount = sizeof(kWaveSubmenuItems) / sizeof(kWaveSubmenuItems[0]);
 
+const MenuValueOption kPeaksEnabledOptions[] = {
+    { "On",  menuSet_PeaksOn,  menuIsActive_PeaksOn  },
+    { "Off", menuSet_PeaksOff, menuIsActive_PeaksOff },
+};
+
+const MenuValueOption kPeakDecaySpeedOptions[] = {
+    { "Off",    menuSet_PeakDecayOff,    menuIsActive_PeakDecayOff    },
+    { "Slow",   menuSet_PeakDecaySlow,   menuIsActive_PeakDecaySlow   },
+    { "Normal", menuSet_PeakDecayNormal, menuIsActive_PeakDecayNormal },
+    { "Fast",   menuSet_PeakDecayFast,   menuIsActive_PeakDecayFast   },
+};
+
+// "Peaks" submenu, nested inside "Theme" -- peak-hold indicator settings
+// for both SpectrumScreen and DigitalVuMeterScreen, same role as "FFT"/
+// "Wave" play for their own screens.
+const MenuItem kPeaksSubmenuItems[] = {
+    { "Enabled",     MenuItemType::VALUE_CHOICE, nullptr, kPeaksEnabledOptions,    2 },
+    { "Decay Speed", MenuItemType::VALUE_CHOICE, nullptr, kPeakDecaySpeedOptions,  4 },
+};
+constexpr size_t kPeaksSubmenuItemCount = sizeof(kPeaksSubmenuItems) / sizeof(kPeaksSubmenuItems[0]);
+
 // "Theme" submenu, nested at root -- display/appearance settings grouped
-// together, with "FFT" and "Wave" themselves one further level in.
+// together, with "FFT", "Wave", and "Peaks" themselves one further level in.
 const MenuItem kThemeSubmenuItems[] = {
     { "Stereo / Mono", MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
     { "Colors",        MenuItemType::VALUE_CHOICE, nullptr, kColorOptions,       4 },
-    { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,  kFftSubmenuItemCount },
-    { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems, kWaveSubmenuItemCount },
+    { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
+    { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
+    { "Peaks",         MenuItemType::SUBMENU,      nullptr, nullptr, 0, kPeaksSubmenuItems, kPeaksSubmenuItemCount },
 };
 constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
 

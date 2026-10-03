@@ -16,28 +16,32 @@ void VolumeControl::init() {
     VolumeMotor::instance().init(DRV8833_IN1_PIN, DRV8833_IN2_PIN);
 
     pinMode(MUTE_PIN, OUTPUT);
-    m_bootMs = millis();
-    m_bootHoldActive = true;
-    applyMuteState(true); // force muted; muteOn()/muteOff() refuse to change this until the hold elapses, regardless of caller
+    // force muted locally at boot. UART send deliberately skipped here --
+    // see applyMuteState()'s comment in the header. No boot-hold timer on
+    // this side at all -- the daughter board enforces its own independent
+    // boot-mute hold and refuses every command (replying ERR) until it's
+    // elapsed, so duplicating that gate here would be redundant, and user
+    // mute/unmute requests are never artificially blocked on this side.
+    applyMuteState(true, false);
 }
 
-void VolumeControl::applyMuteState(bool muted) {
+void VolumeControl::applyMuteState(bool muted, bool sendOverUart) {
     digitalWrite(MUTE_PIN, (muted == MUTE_ACTIVE_HIGH) ? HIGH : LOW);
-    if (muted) {
-        DaughterBoardLink::instance().sendMuteOn();
-    } else {
-        DaughterBoardLink::instance().sendMuteOff();
+    if (sendOverUart) {
+        if (muted) {
+            DaughterBoardLink::instance().sendMuteOn();
+        } else {
+            DaughterBoardLink::instance().sendMuteOff();
+        }
     }
     m_muted = muted;
 }
 
 void VolumeControl::muteOn() {
-    if (m_bootHoldActive) return; // hard safety floor -- refused outright, not deferred
     applyMuteState(true);
 }
 
 void VolumeControl::muteOff() {
-    if (m_bootHoldActive) return; // hard safety floor -- refused outright, not deferred
     applyMuteState(false);
 }
 
@@ -65,14 +69,6 @@ void VolumeControl::calibrate() {
 }
 
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
-    // Mandatory boot mute hold: elapses purely by time, never by any
-    // explicit call (muteOn/muteOff/toggleMute all refuse to do anything
-    // while this is active -- see MUTE_BOOT_HOLD_MS in Config.hpp).
-    if (m_bootHoldActive && (millis() - m_bootMs >= MUTE_BOOT_HOLD_MS)) {
-        m_bootHoldActive = false; // clear first, so muteOff() below is no longer refused
-        muteOff();
-    }
-
     // Motor: continuous drive while held -- no-op if DRV8833_IN1/IN2
     // aren't physically connected to anything.
     VolumeMotor::instance().update(wantVolUpHeld, wantVolDownHeld);

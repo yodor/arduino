@@ -26,6 +26,22 @@ struct BarPhysicsState {
 // compared against millis(), not a per-frame step, so it's already
 // frame-rate-independent by construction (see AnalogVuScreen's ballistics
 // for the same reasoning applied to needle movement).
+// Menu-selectable multiplier on peak-hold drop speed (Theme -> Peaks ->
+// Decay Speed) -- NORMAL matches the original, by-ear-tuned feel; SLOW/
+// FAST are multipliers applied on top of it, not independently-tuned
+// values. Purely a core0-side setting (menu and screen render() both run
+// on core0), unlike the audio-pipeline settings in SpectrumPipeline/
+// WaveformPipeline -- no `volatile`/cross-core handling needed here.
+//
+// OFF is a genuinely different mode, not just a slower multiplier: once a
+// peak is set, it never falls on its own at all -- only a NEW, higher bar
+// value raises it further (a true "peak hold forever" meter mode, as
+// distinct from "peak hold then decay"). Appended after FAST rather than
+// inserted first so SLOW/NORMAL/FAST keep their existing persisted
+// ordinal values (0/1/2) -- OFF=3 is purely additive, so this didn't need
+// a PersistentData version bump the way adding a new field would have.
+enum class PeakDecaySpeed : uint8_t { SLOW, NORMAL, FAST, OFF };
+
 class BarPhysics {
 public:
     static BarPhysics& instance();
@@ -35,12 +51,16 @@ public:
     uint16_t peakDrop() const       { return m_peakDrop; }
     uint32_t peakHoldTimeMs() const { return kPeakHoldTimeMs; }
 
+    void setPeakDecaySpeed(PeakDecaySpeed speed);
+    PeakDecaySpeed getPeakDecaySpeed() const { return m_peakDecaySpeed; }
+
     // THE CENTRALIZED ENGINE METHOD: Calculates ballistics updates uniformly
     // Maps a floating-point level input (0.0..1.0) into crisp integer pixel limits
     void updateState(BarPhysicsState& state, float currentVal, uint16_t maxPixelUnits, uint32_t now) const;
 
 private:
     BarPhysics();
+    void recomputePeakDrop();
 
     // Baseline values, tuned by ear at 60fps. Retune the underlying feel
     // here -- this is the one place it lives now, instead of three
@@ -62,4 +82,5 @@ private:
     float    m_smoothing;
     float    m_decayRate;
     uint16_t m_peakDrop;
+    PeakDecaySpeed m_peakDecaySpeed = PeakDecaySpeed::NORMAL;
 };

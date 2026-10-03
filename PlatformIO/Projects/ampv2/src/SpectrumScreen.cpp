@@ -158,35 +158,70 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
     uint16_t h     = static_cast<uint16_t>(state.decay * maxBarHeight);
     uint16_t peakH = static_cast<uint16_t>(state.peak);
 
+    bool peaksEnabled = DisplaySettings::instance().getPeaksEnabled();
+
     if (growUp) {
         updateBarColumnUp(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
-
-        // Peak indicators use fillRect (a 1px-tall rect) rather than
-        // drawFastHLine -- diagnostic swap for a rotation-3 glitch that
-        // only affected peak markers, never the fillRect-painted bar
-        // bodies right above this. If this fixes it, the cause is almost
-        // certainly the NV3007 driver's fast-line address-window
-        // computation under this specific rotation, not anything in this
-        // file -- keeping fillRect here sidesteps that entirely rather
-        // than patching third-party driver code.
-        if (state.prevPeakUnits > h) {
-            gfx->fillRect(x, baseline - state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
-        }
-        if (peakH >= h && peakH > 0) {
-            gfx->fillRect(x, baseline - peakH, barWidth, 1, COLOR_WHITE);
-        }
     } else {
         updateBarColumnDown(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
+    }
 
-        if (state.prevPeakUnits > h) {
-            gfx->fillRect(x, baseline + state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
+    if (peaksEnabled) {
+        // Temporary diagnostic: bar 0's own trace proved internally
+        // consistent (checked symbolically, not just eyeballed) -- the
+        // real blind spot is that it never watched any OTHER bar index,
+        // while the glitch was reported across multiple columns. Rather
+        // than log every bar every frame (far too much output), this
+        // computes the actual risk condition for EVERY bar -- "the
+        // explicit erase didn't fire, AND the bar's own growth didn't
+        // happen to cover the old peak's position either, AND the new
+        // draw doesn't land exactly on top of it" -- and only prints when
+        // that's genuinely true. Remove once the peak-glitch root cause
+        // is confirmed.
+        uint16_t oldHeight           = state.prevUnits;
+        uint16_t oldPeak             = state.prevPeakUnits;
+        bool     willErase           = (oldPeak > h);
+        bool     isGrowing           = (h > oldHeight);
+        uint16_t growthRepaintFloor  = (oldHeight > 0) ? (oldHeight - 1) : 0;
+        bool     growthCoversOldPeak = isGrowing && (oldPeak >= growthRepaintFloor) && (oldPeak < h);
+        bool     newDrawOverlapsOld  = (peakH == oldPeak);
+        bool     gapRisk = (oldPeak > 0) && !willErase && !growthCoversOldPeak && !newDrawOverlapsOld;
+
+        if (gapRisk) {
+            Serial.print("[PeakGap] bar="); Serial.print(i);
+            Serial.print(" oldH="); Serial.print(oldHeight);
+            Serial.print(" newH="); Serial.print(h);
+            Serial.print(" oldPeak="); Serial.print(oldPeak);
+            Serial.print(" newPeak="); Serial.print(peakH);
+            Serial.print(" growUp="); Serial.print(growUp ? 1 : 0);
+            Serial.print(" growthRepaintFloor="); Serial.print(growthRepaintFloor);
         }
-        if (peakH >= h && peakH > 0) {
-            gfx->fillRect(x, baseline + peakH, barWidth, 1, COLOR_WHITE);
+
+        if (growUp) {
+            if (state.prevPeakUnits > h) {
+                gfx->fillRect(x, baseline - state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
+            }
+            if (peakH >= h && peakH > 0) {
+                gfx->fillRect(x, baseline - peakH, barWidth, 1, COLOR_WHITE);
+            }
+        } else {
+            if (state.prevPeakUnits > h) {
+                gfx->fillRect(x, baseline + state.prevPeakUnits, barWidth, 1, COLOR_BLACK);
+            }
+            if (peakH >= h && peakH > 0) {
+                gfx->fillRect(x, baseline + peakH, barWidth, 1, COLOR_WHITE);
+            }
         }
+
+        if (gapRisk) Serial.println(" <-- POTENTIAL GAP");
     }
 
     state.prevUnits     = h;
+    // onEnter() (called whenever the menu closes, including right after
+    // toggling Peaks Enabled) always resets prevPeakUnits to 0 and clears
+    // the screen -- so there's no stale mark to worry about from the
+    // moment this flips off, and no special handling needed here beyond
+    // just not drawing while it's off.
     state.prevPeakUnits = peakH;
 }
 
