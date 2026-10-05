@@ -40,7 +40,7 @@ the other — which roughly halves total sweep time. Single-channel
 | `ALL <duty>` | Raw duty on all 4 channels at once |
 | `ALLPCT <percent>` | Duty by percent on all 4 channels |
 | `SWEEP <ch> <start%> <end%> <step%> <dwell_ms>` | Ramp one channel, dwelling at each step |
-| `STATUS` | Current duty/relay/mute/volume state of both sides |
+| `STATUS` | Current duty/relay/mute/volume state of both sides, plus the computed attenuation depth and Rtotal |
 | `OFF` | All 4 channels to 0 |
 
 `<ch>` is `SHUNT_L`, `SER_L`, `SHUNT_R`, `SER_R`, or the raw index `0`–`3`.
@@ -66,14 +66,13 @@ of trusting the ADS1115, or hand-correcting one bad point.
 | `CALRESET [L|R]` | Clear curves + LUT, de-energize |
 | `CALDRIVE [L|R] <SER|SHUNT> <duty>` | Drive a duty and leave it — so you can go measure with a meter |
 | `CALPOINT [L|R] <SER|SHUNT> <duty> <ohms>` | Record a characterization point at that duty |
-| `CALSOLVE [L|R] [steps] [rangeDb] [rTotalOhms]` | Solve the LUT from whatever curve points exist so far |
+| `CALSOLVE [L|R] [steps] [rTotalOhms]` | Solve the LUT from whatever curve points exist so far (no sweep). The range is always computed — it is not an argument. With no `L|R` both sides share one common range; `L` or `R` alone uses that side's own range. An explicit `rTotalOhms` is applied as the channel's Rtotal, like `CALRTOTAL` first. |
 | `CALDUMP [L|R]` | Print curves + solved LUT |
-| `CALTRIM [L|R]` | Verify + trim every LUT step against a live measurement, re-saves when done |
-| `CALAUTO [L|R] <FULL|FAST>` | Automatic sweep + solve, no manual points. `FULL` ≈ 29 points (dense near the dark-zone knee), `FAST` ≈ 8 points (periodic drift touch-up). Auto-saves to flash, returns to audio mode. Both channels (no `L|R`) run interleaved. Skips as a no-op if no ADS1115 is detected on that channel. |
+| `CALTRIM [L|R]` | Verify + trim every LUT step against a live measurement, re-saves when done. The `old->new` columns now show the real change (earlier builds printed new->new, so every trim looked like it moved nothing). Starts by settling the channel at step 0 for 8 s so measurements begin from rest, and restores the current volume before the audio reconnects. |
+| `CALAUTO [L|R] <FULL|FAST>` | Automatic sweep + solve, no manual points. Auto-saves to flash, returns to audio mode. Both channels (no `L|R`) run interleaved. Skips as a no-op if no ADS1115 is detected on that channel. **FULL** = coarse sweep + adaptive knee refinement + solve + trim (so a separate `CALTRIM` afterwards is no longer needed). **FAST** = trim-only drift touch-up of the saved calibration, no sweep. |
 | `CALSCAN [L|R]` | Diagnostic: fine two-way (ascending + descending) scan of the ~22–28% duty window, 5 raw samples per point. Does **not** touch saved curves/LUT — purely for characterizing hysteresis. Paste the output back for analysis. |
 | `CALREF [L|R] [ohms]` | Get/set Rref used for that channel's readings |
 | `CALRTOTAL [L|R] [ohms]` | Get/set the Rs+Rsh target (default 10000Ω) |
-| `CALRANGE [L|R] [db\|AUTO]` | Get/set total dB span, or `AUTO` to recompute it from measured floors + Rtotal on every solve |
 | `CALMODE [L|R] [RTOTAL\|FIXEDSERIES]` | Get/set attenuation mode |
 | `CALSERIESDUTY [L|R] [duty]` | Get/set the fixed series duty (`FIXEDSERIES` mode only) — affects future solves only, re-run `CALAUTO`/`CALSOLVE` after changing it |
 | `CALSAVE [L|R]` | Manually save current curves+LUT to flash |

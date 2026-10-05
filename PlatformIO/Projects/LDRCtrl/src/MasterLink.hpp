@@ -40,6 +40,14 @@ public:
 
   void poll();
 
+  // Lets this link keep answering while a calibration or trim blocks the main
+  // loop: GET STATUS gets "OK STATUS=BUSY ...", anything else "ERR busy",
+  // instead of silence until CAL DONE. Call it once, for the REAL master link
+  // (UART) only: on a link a person may be using to abort a calibration with
+  // a keypress, the listener would swallow that keypress. Inactive while that
+  // link is in DEBUG mode.
+  void enableBusyService();
+
 private:
   enum class Mode : uint8_t { STRICT, DEBUG };
 
@@ -63,8 +71,17 @@ private:
   // After CAL INIT characterizes both channels: tries each
   // CAL_INIT_RTOTAL_CANDIDATES value against both channels'
   // computeMaxRangeDb(), reports the worst-of-both achievable range per
-  // candidate, then restores each channel's rTotalOhms to whatever it
-  // was before probing (this only reports candidates -- it doesn't
-  // commit to one; CAL RTOTAL/CAL MODE does that).
+  // candidate (the range the unit would actually use). Changes no state --
+  // it only reports candidates; CAL RTOTAL/CAL MODE commits to one.
   void reportRtotalSuggestions();
+
+  // GET STATUS: one line with everything a master needs after boot to sync
+  // its display -- mute states, volume (and its valid range and dB),
+  // calibration state, Rtotal, mode, attenuation depth. Format and field
+  // meanings: daughter-board-uart-protocol-v2.md. Read-only.
+  void reportStatus(bool busy = false);
+
+  // BusyHook listener: runs inside calibration's blocking waits.
+  static void busyThunk(void *self);
+  void serviceWhileBusy();
 };

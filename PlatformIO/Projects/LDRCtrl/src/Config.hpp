@@ -71,6 +71,28 @@ constexpr uint32_t RELAY_POP_SETTLE_MS = 100;
 // slightly if the pop reappears at this speed.
 constexpr uint32_t VOL_RAMP_STEP_DELAY_MS = 2;
 
+// After a calibration sweep or trim pass the LED cells are left at whatever
+// the last probe drove them to -- usually bright (low resistance). The cell
+// brightens in milliseconds but relaxes toward dark over seconds (the same
+// lag CALSCAN shows). So before the relay hands the audio path back, the
+// firmware puts each channel on its real operating point and WAITS this
+// long with the relay still energized (audio disconnected), letting the
+// bulk of that relaxation finish out of earshot. Without it the first
+// seconds after every CAL would be a loud network decaying toward the
+// intended volume.
+constexpr uint32_t CAL_RELAX_BEFORE_RECONNECT_MS = 1500;
+
+// The trim measures live resistance, and a cell that has just come down from
+// bright reads LOW while it is still relaxing (it was measured: R's series
+// trimmed 3 duty counts lower when the trim began straight after a sweep,
+// from fully bright, than when it began from a cell resting near step 0 --
+// about 2.5 dB of quiet-end level on the slower channel). So every trim
+// first puts the channel on its own step-0 operating point and waits this
+// long; the cells then start from (nearly) rest, the way they will actually
+// be used. The bulk of the relaxation is in the first seconds; the slow
+// tail beyond this is a few percent.
+constexpr uint32_t TRIM_PRECONDITION_MS = 8000;
+
 // ---------------------------------------------------------------------------
 // Calibration / volume LUT
 // ---------------------------------------------------------------------------
@@ -100,21 +122,18 @@ constexpr float RREF_RIGHT_OHMS = 9990.0f;
 // retune per-board once real curves exist.
 constexpr uint8_t  NUM_VOLUME_STEPS_DEFAULT = 32;
 
-// Total dB span the LUT solve covers, quietest to loudest. 47dB was never
-// a deliberate spec -- it fell out of Rsh_floor/RTOTAL back when RTOTAL
-// was 10k (~46R floor / 10000R). With RTOTAL now much lower, that range
-// asks for quiet-step targets below the cell's actual floor (see project
-// notes). 24dB is a safer starting point at RTOTAL~2000 -- keeps every
-// step's targets within the low-hysteresis region CALSCAN identified.
-// True silence is always available via MUTE regardless of this range.
-// These are BOOT-TIME DEFAULTS -- CALRANGE <L|R> [db] overrides per-
-// channel at runtime without recompiling.
-constexpr float ATTEN_RANGE_LEFT_DB = 24.0f;
-constexpr float ATTEN_RANGE_RIGHT_DB = 24.0f;
+// The total dB span the LUT covers (quietest step to the notional 0 dB top)
+// is NOT configurable: it is always computed from the measured cell floors
+// and Rtotal at every solve (LDRVolume::computeMaxRangeDb), and the two
+// channels always share the smaller of their two ranges so L and R have
+// identical dB at every step. There used to be per-channel fixed values
+// here plus a CALRANGE override; a fixed range could only ever ask for
+// targets below the cell's floor or leave depth on the table, and two
+// independently chosen ranges is exactly how L and R ended up 3 dB apart.
+// True silence is always available via MUTE regardless.
 
-// Safety margin subtracted from the auto-computed max range (CALRANGE
-// <L|R> AUTO), so the quietest/loudest steps don't sit exactly at the
-// measured floor -- floors have shown a few percent run-to-run wobble
+// Safety margin subtracted from the computed max range, so the
+// quietest/loudest steps don't sit exactly at the measured floor -- floors have shown a few percent run-to-run wobble
 // across repeated CALAUTO passes on the same cell.
 constexpr float RANGE_SAFETY_MARGIN_DB = 2.0f;
 
@@ -124,3 +143,8 @@ constexpr float RANGE_SAFETY_MARGIN_DB = 2.0f;
 // floors -- a fixed, easy-to-tweak list rather than anything computed.
 constexpr float CAL_INIT_RTOTAL_CANDIDATES[] = {2000.0f, 5000.0f, 10000.0f};
 constexpr uint8_t CAL_INIT_RTOTAL_CANDIDATE_COUNT = 3;
+
+// Strict master<->daughter protocol revision, reported in GET STATUS so the
+// master can detect an incompatible daughter board. Matches the document
+// revision (daughter-board-uart-protocol-v2.md).
+constexpr uint8_t PROTO_VERSION = 2;

@@ -1,4 +1,6 @@
 #include "LDRVolume.hpp"
+#include "DualCalibration.hpp"
+#include "BusyHook.hpp"
 #include "Config.hpp"
 #include <math.h>
 
@@ -94,36 +96,53 @@ void LDRVolume::runDiagnosticScan(Stream &out) {
                       : F("CALSCAN done. Existing calibration/LUT untouched -- paste this output back for analysis."));
 }
 
-float LDRVolume::computeMaxRangeDb(float marginDb) const {
+float LDRVolume::computeMaxRangeDb(float marginDb, float rTotalOverride) const {
   const LdrCurve &sc = cal_.seriesCurve();
   const LdrCurve &hc = cal_.shuntCurve();
   if (sc.empty() || hc.empty()) return 0.0f;
 
-  float rsFloor = sc.point(sc.count() - 1).ohms;  // highest-duty = lowest-R point
-  float rshFloor = hc.point(hc.count() - 1).ohms;
-  if (rshFloor <= 0.0f || rTotalOhms_ <= rshFloor) return 0.0f;
+  float rshFloor = hc.point(hc.count() - 1).ohms;  // highest-duty = lowest-R point
+  if (rshFloor <= 0.0f) return 0.0f;
 
-  float kMin = rshFloor / rTotalOhms_;
-  float kMax = 1.0f - (rsFloor / rTotalOhms_);
+  float kMin, kMax;
+  if (mode_ == AttenuationMode::FIXED_SERIES) {
+    float rsFixed;
+    if (!sc.resistanceForDuty(fixedSeriesDuty_, rsFixed) || rsFixed <= 0.0f) return 0.0f;
+    kMin = rshFloor / (rsFixed + rshFloor);
+    kMax = 1.0f; // Rsh -> infinity; the top step itself is OUT OF RANGE by design
+  } else {
+    float rsFloor = sc.point(sc.count() - 1).ohms;
+    const float rTotal = (rTotalOverride > 0.0f) ? rTotalOverride : rTotalOhms_;
+    if (rTotal <= rshFloor) return 0.0f;
+    kMin = rshFloor / rTotal;
+    kMax = 1.0f - (rsFloor / rTotal);
+  }
   if (kMax <= kMin || kMax <= 0.0f || kMin <= 0.0f) return 0.0f;
 
   float rangeDb = 20.0f * log10f(kMax / kMin) - marginDb;
   return (rangeDb > 0.0f) ? rangeDb : 0.0f;
 }
 
-uint8_t LDRVolume::calSolve(uint8_t steps, float rangeDb, float rTotalOhms, Stream &out) {
-  float effectiveRangeDb = rangeDb;
-  if (autoRange_) {
-    float computed = computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB);
-    if (computed > 0.0f) {
-      effectiveRangeDb = computed;
-      rangeDb_ = computed; // remember what was actually used
-      out.print(F("Auto-range: "));
-      out.print(computed, 2);
-      out.println(F("dB (from measured floors + Rtotal, minus safety margin)"));
-    } else {
-      out.println(F("WARN auto-range computation failed -- falling back to stored range"));
-    }
+uint8_t LDRVolume::calSolve(uint8_t steps, Stream &out) {
+  // The range is never a setting: computed fresh from the measured floors
+  // at every solve, then (for a stereo pair) capped at the smaller of the
+  // two channels' values so L and R get identical dB per step.
+  float range = computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB);
+  if (range <= 0.0f) {
+    out.println(F("ERR cannot compute the attenuation range: curves missing, or Rtotal too small for the measured floors"));
+    return 0;
+  }
+  if (rangeCapDb_ > 0.0f && rangeCapDb_ < range) {
+    out.print(F("Range: "));
+    out.print(rangeCapDb_, 2);
+    out.print(F("dB (stereo-common; this channel alone could reach "));
+    out.print(range, 2);
+    out.println(F("dB)"));
+    range = rangeCapDb_;
+  } else {
+    out.print(F("Range: "));
+    out.print(range, 2);
+    out.println(F("dB (from measured floors, minus safety margin)"));
   }
 
   if (mode_ == AttenuationMode::FIXED_SERIES) {
@@ -133,37 +152,205 @@ uint8_t LDRVolume::calSolve(uint8_t steps, float rangeDb, float rTotalOhms, Stre
       out.println(F("    -- characterize first, or pick a duty within the curve's range"));
       return 0;
     }
-    return cal_.solveLutFixedSeries(steps, effectiveRangeDb, rsFixed, fixedSeriesDuty_);
+    return cal_.solveLutFixedSeries(steps, range, rsFixed, fixedSeriesDuty_);
   }
-  return cal_.solveLut(steps, effectiveRangeDb, rTotalOhms);
+  return cal_.solveLut(steps, range, rTotalOhms_);
 }
 
 uint16_t LDRVolume::trimDuty(bool wantSeries, float targetOhms, uint16_t dutyGuess,
-                              uint8_t maxIterations, float toleranceFrac) {
-  const LdrCurve &curve = wantSeries ? cal_.seriesCurve() : cal_.shuntCurve();
+                              uint8_t maxProbes, float toleranceFrac) {
   DriverChannels::Channel ch = wantSeries ? seriesCh_ : shuntCh_;
-  uint16_t duty = dutyGuess;
+  const uint16_t maxDuty = DriverChannels::WRAP;
+  const int32_t MAX_STEP_STEEP = 40;    // per-probe cap while the MEASURED slope is steep (the knee)
+  const int32_t MAX_STEP_FLAT  = 150;   // ...and while it is flat (bright end): tiny slope => big steps are legitimate
+  const float    FLAT_SLOPE    = 3e-3f; // |d ln(ohms)/d duty| below this counts as flat
+  const float    ASSUMED_SLOPE = 0.03f; // ln(ohms) per duty count, ONLY for the first probe
 
-  for (uint8_t iter = 0; iter < maxIterations; iter++) {
+  const float lnTarget = logf(targetOhms);
+  uint16_t duty = dutyGuess;
+  uint16_t bestDuty = dutyGuess;
+  float bestErr = 1e9f;                 // |relative error|; 1e9 = nothing readable yet
+  bool havePrev = false;
+  uint16_t prevDuty = 0;
+  float prevLn = 0.0f;
+  uint8_t probesUsed = 0;   // readable probes only
+  uint8_t darkSteps = 0;    // unreadable probes, budgeted separately
+
+  while (probesUsed < maxProbes) {
     driver_.setDuty(ch, duty);
     unsigned long elapsed;
-    float measured = convergeRead(wantSeries, 300, elapsed); // shorter timeout than CALAUTO -- already near target
-    if (measured <= 0.0f) break; // can't trim blind -- keep current duty
+    float measured = convergeRead(wantSeries, 300, elapsed);
+
+    if (measured <= 0.0f) {
+      // Unreadable. Before anything has been read this is almost always
+      // "too dark for the ADC" -- step brighter and try again. That
+      // walk-in is NOT charged against maxProbes (a start 50 counts too
+      // dark would otherwise burn the whole budget before one reading).
+      // After a good reading, losing it means we've wandered somewhere
+      // odd: stop and keep the best duty seen rather than guess blind.
+      if (bestErr < 1e8f) break;
+      if (++darkSteps > 12) break;
+      uint32_t brighter = (uint32_t)duty + 12;
+      if (brighter > maxDuty) break;
+      duty = (uint16_t)brighter;
+      havePrev = false;
+      continue;
+    }
+    probesUsed++;
 
     float relErr = (measured - targetOhms) / targetOhms;
-    if (fabsf(relErr) <= toleranceFrac) break; // close enough
+    float absErr = fabsf(relErr);
+    if (absErr < bestErr) { bestErr = absErr; bestDuty = duty; }
+    if (absErr <= toleranceFrac) break;
 
-    float curvePredicted;
-    if (!curve.resistanceForDuty(duty, curvePredicted) || curvePredicted <= 0.0f) break;
-    float driftRatio = measured / curvePredicted; // how far reality has drifted from the curve, right now
-    float adjustedTarget = targetOhms / driftRatio;
+    float lnMeasured = logf(measured);
+    int32_t step;
+    int32_t maxStep = MAX_STEP_STEEP;
+    if (havePrev && duty != prevDuty) {
+      float slope = (lnMeasured - prevLn) / ((float)duty - (float)prevDuty);
+      if (slope < -1e-4f) {
+        if (-slope < FLAT_SLOPE) maxStep = MAX_STEP_FLAT;
+        // Resistance falls as duty rises, as it must: aim the secant at
+        // the target.
+        step = (int32_t)lroundf((lnTarget - lnMeasured) / slope);
+      } else {
+        // Flat or backwards between probes (noise, or cell lag): the
+        // secant is meaningless -- take a modest step the right way.
+        step = (measured > targetOhms) ? 4 : -4;
+      }
+    } else {
+      // First probe: no slope measured yet. A conservative assumed slope
+      // sizes the step; the next probe replaces it with a measured one.
+      step = (int32_t)lroundf((lnMeasured - lnTarget) / ASSUMED_SLOPE);
+      if (step > 12) step = 12;
+      if (step < -12) step = -12;
+    }
+    if (step == 0) step = (measured > targetOhms) ? 1 : -1;
+    if (step > maxStep) step = maxStep;
+    if (step < -maxStep) step = -maxStep;
 
-    uint16_t nextDuty;
-    if (!curve.dutyForResistance(adjustedTarget, nextDuty)) break; // adjusted target now outside curve's range
-    if (nextDuty == duty) break; // no change -- converged
-    duty = nextDuty;
+    int32_t next = (int32_t)duty + step;
+    if (next < 0) next = 0;
+    if (next > (int32_t)maxDuty) next = maxDuty;
+    if ((uint16_t)next == duty) break;
+
+    prevDuty = duty;
+    prevLn = lnMeasured;
+    havePrev = true;
+    duty = (uint16_t)next;
   }
-  return duty;
+  return bestDuty;
+}
+
+bool LDRVolume::trimLoop(Stream &out) {
+  out.println(F("--- CALTRIM: verify + trim each step ---"));
+
+  uint8_t n = numSteps();
+
+  // Start from rest: drive this channel to its own first valid step and let
+  // the cells settle there before measuring anything (see
+  // TRIM_PRECONDITION_MS). Without this the first series measurement comes
+  // straight after a sweep or a louder volume, from a bright cell that reads
+  // low while it relaxes, and the search over-corrects toward too little
+  // light -- worst on the slower channel.
+  for (uint8_t i0 = 0; i0 < n; i0++) {
+    const VolumeLut::Entry &e0 = lut().step(i0);
+    if (!e0.valid) continue;
+    driver_.setDuty(seriesCh_, e0.seriesDuty);
+    driver_.setDuty(shuntCh_, e0.shuntDuty);
+    out.println(F("  settling at step 0 before trimming..."));
+    for (uint32_t waited = 0; waited < TRIM_PRECONDITION_MS; waited += 100) {
+      BusyHook::wait(100);
+      if (out.available()) {
+        char c = out.read();
+        if (c != '\r' && c != '\n') {
+          out.println(F("CALTRIM aborted."));
+          return false;
+        }
+      }
+    }
+    break;
+  }
+  float lastSeriesTarget = -1.0f;
+  uint16_t lastSeriesDuty = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    const VolumeLut::Entry &e = lut().step(i);
+    if (!e.valid) continue;
+
+    // Capture everything BEFORE the LUT is updated. `e` is a reference
+    // INTO the LUT, so once setLutStepDuty() runs it shows the NEW values:
+    // the old printout read e.seriesDuty after the update and so printed
+    // "new->new" -- it could never show a change, and every trim looked
+    // like it had moved nothing.
+    const uint16_t oldSeriesDuty = e.seriesDuty;
+    const uint16_t oldShuntDuty = e.shuntDuty;
+    const float targetRs = e.targetRs;
+    const float targetRsh = e.targetRsh;
+
+    uint16_t newSeriesDuty = oldSeriesDuty;
+    if (mode_ == AttenuationMode::CONSTANT_RTOTAL) {
+      // Steps 0..~13 all want Rs within a couple of percent of each other
+      // (the series cell barely moves while the shunt does the work). Once
+      // one of them has been trimmed against a live measurement, the rest
+      // are the SAME physical operating point -- reuse that result instead
+      // of re-measuring a slow, lag-affected value 14 times over.
+      if (lastSeriesTarget > 0.0f &&
+          fabsf(targetRs - lastSeriesTarget) / lastSeriesTarget < 0.02f) {
+        newSeriesDuty = lastSeriesDuty;
+      } else {
+        newSeriesDuty = trimDuty(true, targetRs, oldSeriesDuty, 6, 0.03f);
+        lastSeriesTarget = targetRs;
+        lastSeriesDuty = newSeriesDuty;
+      }
+      // The shunt reading below needs the series cell at THIS step's
+      // operating point, not wherever the last probe happened to leave it.
+      driver_.setDuty(seriesCh_, newSeriesDuty);
+    } // FIXED_SERIES: series stays put, by design -- not trimmed per step
+
+    uint16_t newShuntDuty = trimDuty(false, targetRsh, oldShuntDuty, 6, 0.03f);
+
+    cal_.setLutStepDuty(i, newSeriesDuty, newShuntDuty);
+
+    out.print(F("  step "));
+    out.print(i);
+    out.print(F(": seriesDuty "));
+    out.print(oldSeriesDuty);
+    out.print(F("->"));
+    out.print(newSeriesDuty);
+    out.print(F("  shuntDuty "));
+    out.print(oldShuntDuty);
+    out.print(F("->"));
+    out.println(newShuntDuty);
+
+    if (out.available()) {
+      char c = out.read();
+      if (c != '\r' && c != '\n') {
+        out.println(F("CALTRIM aborted."));
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void LDRVolume::reapplyCurrentStepOrDefault() {
+  bool currentOk = hasLut() && currentStep_ < numSteps() && lut().step(currentStep_).valid;
+  if (muted_) {
+    // The user's LDR mute stays in force: put its static duties back (the
+    // trim/sweep drove raw duty past it) and refresh what unmute() restores.
+    driver_.setDuty(seriesCh_, 0);
+    driver_.setDuty(shuntCh_, DriverChannels::WRAP);
+    if (currentOk) {
+      savedSeriesDuty_ = lut().step(currentStep_).seriesDuty;
+      savedShuntDuty_ = lut().step(currentStep_).shuntDuty;
+    }
+    return;
+  }
+  if (currentOk) {
+    setStep(currentStep_);
+  } else {
+    applyDefinedStartupState();
+  }
 }
 
 void LDRVolume::runTrimPass(Stream &out) {
@@ -177,42 +364,17 @@ void LDRVolume::runTrimPass(Stream &out) {
   }
 
   relayEnergize(true);
-  out.println(F("--- CALTRIM: verify + trim each step ---"));
+  bool completed = trimLoop(out);
 
-  uint8_t n = numSteps();
-  bool aborted = false;
-  for (uint8_t i = 0; i < n && !aborted; i++) {
-    const VolumeLut::Entry &e = lut().step(i);
-    if (!e.valid) continue;
-
-    uint16_t newSeriesDuty = e.seriesDuty;
-    if (mode_ == AttenuationMode::CONSTANT_RTOTAL) {
-      newSeriesDuty = trimDuty(true, e.targetRs, e.seriesDuty, 3, 0.03f);
-    } // FIXED_SERIES: series stays put, by design -- not trimmed per step
-
-    uint16_t newShuntDuty = trimDuty(false, e.targetRsh, e.shuntDuty, 3, 0.03f);
-
-    cal_.setLutStepDuty(i, newSeriesDuty, newShuntDuty);
-
-    out.print(F("  step "));
-    out.print(i);
-    out.print(F(": seriesDuty "));
-    out.print(e.seriesDuty);
-    out.print(F("->"));
-    out.print(newSeriesDuty);
-    out.print(F("  shuntDuty "));
-    out.print(e.shuntDuty);
-    out.print(F("->"));
-    out.println(newShuntDuty);
-
-    if (out.available()) {
-      char c = out.read();
-      if (c != '\r' && c != '\n') aborted = true;
-    }
-  }
-
+  // Put this channel back on its real operating point WHILE the relay still
+  // has the audio path disconnected, then give the cells a moment to relax
+  // from the loudest probe. Without this the PWM is left wherever the last
+  // probe put it (step 30, the loudest) and the audio reconnects to that.
+  reapplyCurrentStepOrDefault();
+  BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
   relayEnergize(false);
-  if (aborted) {
+
+  if (!completed) {
     out.println(F("CALTRIM aborted -- not saved."));
     return;
   }
@@ -226,10 +388,14 @@ void LDRVolume::begin() {
     Serial.print(F("Loaded saved calibration from "));
     Serial.println(calPath_);
   } else {
+    // Deliberately NOT calibrating here. A per-channel boot calibration
+    // gave each channel its own range (L and R ended up 3 dB apart) and ran
+    // the two sweeps back to back. main.cpp now checks both channels once
+    // they have loaded and, if either needs it, runs ONE interleaved stereo
+    // calibration -- see DualCalibration::runBoth().
     Serial.print(F("No valid saved calibration ("));
     Serial.print(calPath_);
-    Serial.println(F(") -- running CALAUTO FULL..."));
-    runAutoCalibration(CalMode::FULL);
+    Serial.println(F(") -- will calibrate once both channels have loaded."));
   }
 
   applyDefinedStartupState();
@@ -297,7 +463,7 @@ void LDRVolume::relayEnergize(bool on) {
     sensor_.deactivate();
   }
 
-  delay(RELAY_POP_SETTLE_MS);
+  BusyHook::wait(RELAY_POP_SETTLE_MS);
   board_.setAmpMute(wasMuted); // restore -- don't force-unmute if it was already muted beforehand
 }
 
@@ -364,137 +530,24 @@ float LDRVolume::convergeRead(bool wantSeries, unsigned long timeoutMs, unsigned
       elapsedOut = millis() - start;
       return lastGood; // -1.0f if we never got a single valid reading
     }
-    delay(15);
+    BusyHook::wait(15);
   }
 }
 
 void LDRVolume::runAutoCalibration(CalMode mode, Stream &out) {
-  if (!sensor_.isPresent()) {
-    out.println(F("CALAUTO: no ADS1115 detected on this channel's bus -- skipping"));
-    out.println(F("         (no LDR board attached for this channel?)"));
-    return; // relay/curves untouched -- nothing was started
-  }
+  // One sweep implementation for one channel or two (see DualCalibration):
+  // adaptive knee refinement, dark-end handling and abort cleanup live
+  // there, so a single-channel run and the interleaved run can never
+  // drift apart again.
+  LDRVolume *one[1] = {this};
+  DualCalibration::runChannels(one, 1, mode, out, nullptr);
+}
 
-  // 1% steps from 19-36%: the steep region can swing an order of
-  // magnitude per single percentage point (per the earlier manual bench
-  // sweep), so 2%+ steps here risk jumping clean over the range where
-  // extreme LUT steps (needing several kOhm) actually live.
-  static const uint16_t FULL_PCT[] = {15, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-                                       31, 32, 33, 34, 35, 36, 38, 40, 45, 50, 60, 70, 80, 90, 100};
-  static const uint16_t FAST_PCT[] = {18, 22, 26, 32, 40, 55, 75, 100};
-
-  const uint16_t *pts = (mode == CalMode::FULL) ? FULL_PCT : FAST_PCT;
-  uint8_t n = (mode == CalMode::FULL) ? (sizeof(FULL_PCT) / sizeof(FULL_PCT[0]))
-                                       : (sizeof(FAST_PCT) / sizeof(FAST_PCT[0]));
-  unsigned long timeoutMs = (mode == CalMode::FULL) ? 500 : 150;
-
-  calBegin(); // energize relay, clear curves, reset step
-
-  out.println(F("--- CALAUTO: series sweep (shunt held bright) ---"));
-  driver_.setDuty(shuntCh_, DriverChannels::WRAP);
-  for (uint8_t i = 0; i < n; i++) {
-    uint16_t duty = (uint16_t)(((uint32_t)pts[i] * DriverChannels::WRAP) / 100);
-    driver_.setDuty(seriesCh_, duty);
-    unsigned long elapsed;
-    float rs = convergeRead(true, timeoutMs, elapsed);
-    out.print(F("  duty="));
-    out.print(duty);
-    out.print(F(" ("));
-    out.print(pts[i]);
-    out.print(F("%)  "));
-    if (rs > 0.0f) {
-      bool added = cal_.feedSeriesPoint(duty, rs);
-      out.print(F("Rs="));
-      out.print(rs, 1);
-      out.print(F(" ohm  settle="));
-      out.print(elapsed);
-      out.println(added ? F("ms") : F("ms  [point rejected, non-increasing duty]"));
-    } else {
-      out.println(F("ERR no valid reading, skipped"));
-    }
-    if (out.available()) {
-      char c = out.read();
-      if (c != '\r' && c != '\n') {
-        out.println(F("CALAUTO aborted."));
-        // Previously missing: this left the relay energized (audio path
-        // disconnected) indefinitely on an abort. Restore audio mode and
-        // re-sync hardware to whatever LUT is actually current, same as
-        // every other exit path from a calibration attempt.
-        relayEnergize(false);
-        applyDefinedStartupState();
-        return;
-      }
-      // else: a stray CR/LF left over from the command that invoked this
-      // (e.g. terminal sends \r and \n as separate packets) -- not a
-      // real abort request, keep going.
-    }
-  }
-
-  out.println(F("--- CALAUTO: shunt sweep (series held bright) ---"));
-  driver_.setDuty(seriesCh_, DriverChannels::WRAP);
-  for (uint8_t i = 0; i < n; i++) {
-    uint16_t duty = (uint16_t)(((uint32_t)pts[i] * DriverChannels::WRAP) / 100);
-    driver_.setDuty(shuntCh_, duty);
-    unsigned long elapsed;
-    float rsh = convergeRead(false, timeoutMs, elapsed);
-    out.print(F("  duty="));
-    out.print(duty);
-    out.print(F(" ("));
-    out.print(pts[i]);
-    out.print(F("%)  "));
-    if (rsh > 0.0f) {
-      bool added = cal_.feedShuntPoint(duty, rsh);
-      out.print(F("Rsh="));
-      out.print(rsh, 1);
-      out.print(F(" ohm  settle="));
-      out.print(elapsed);
-      out.println(added ? F("ms") : F("ms  [point rejected, non-increasing duty]"));
-    } else {
-      out.println(F("ERR no valid reading, skipped"));
-    }
-    if (out.available()) {
-      char c = out.read();
-      if (c != '\r' && c != '\n') {
-        out.println(F("CALAUTO aborted."));
-        relayEnergize(false);
-        applyDefinedStartupState();
-        return;
-      }
-      // else: a stray CR/LF left over from the command that invoked this
-      // (e.g. terminal sends \r and \n as separate packets) -- not a
-      // real abort request, keep going.
-    }
-  }
-
-  // A fresh characterization just happened -- always compute range from
-  // what was just measured, regardless of any prior fixed/auto setting.
-  setAutoRange(true);
-  uint8_t valid = calSolve(NUM_VOLUME_STEPS_DEFAULT, rangeDb_, rTotalOhms_, out);
-  out.print(F("--- CALAUTO done: solved "));
-  out.print(valid);
-  out.print('/');
-  out.print(NUM_VOLUME_STEPS_DEFAULT);
-  if (mode_ == AttenuationMode::FIXED_SERIES) {
-    out.print(F(" steps, FIXED_SERIES mode, seriesDuty="));
-    out.print(fixedSeriesDuty_);
-  } else {
-    out.print(F(" steps, CONSTANT_RTOTAL mode, Rtotal="));
-    out.print(rTotalOhms_, 0);
-    out.print(F(" ohm"));
-  }
-  out.println(F(". ---"));
-
-  bool saved = calSave();
-  out.println(saved ? F("Calibration saved to flash.")
-                        : F("WARN: failed to save calibration to flash."));
-
-  relayEnergize(false); // back to normal audio mode -- verify with RELAY ON + ADCREAD if needed
-
-  // A manually-triggered CALAUTO (mid-session, not at boot) needs the
-  // exact same re-sync begin() already does on its own -- without this,
-  // hardware stays at the sweep's raw leftover duty until the next VOL
-  // command happens to differ from the stale currentStep_ by coincidence.
-  applyDefinedStartupState();
+uint8_t LDRVolume::calSolveStereo(float capDb, uint8_t steps, Stream &out) {
+  rangeCapDb_ = capDb;
+  uint8_t valid = calSolve(steps, out);
+  rangeCapDb_ = 0.0f; // never leave a cap behind for some later, unrelated solve
+  return valid;
 }
 
 void LDRVolume::mute() {

@@ -2,6 +2,7 @@
 #include "Config.hpp"
 #include "DualCalibration.hpp"
 #include "VolumeRamp.hpp"
+#include "BusyHook.hpp"
 
 namespace {
 
@@ -50,27 +51,37 @@ void MasterLink::poll() {
 
 void MasterLink::resolveAndSaveIfCurvesExist() {
   NullStream nullOut;
-  if (!left_.seriesCurve().empty() && !left_.shuntCurve().empty()) {
-    left_.calSolve(NUM_VOLUME_STEPS_DEFAULT, left_.rangeDb(), left_.rTotalOhms(), nullOut);
+  bool haveL = !left_.seriesCurve().empty() && !left_.shuntCurve().empty();
+  bool haveR = !right_.seriesCurve().empty() && !right_.shuntCurve().empty();
+  if (haveL && haveR) {
+    // Both channels together, so AUTO uses ONE common range -- solving
+    // them independently left R 3 dB deeper than L at the quiet end.
+    uint8_t vl, vr;
+    DualCalibration::solveBoth(left_, right_, nullOut, vl, vr);
+    left_.calSave();
+    right_.calSave();
+    left_.setStep(left_.currentStep());   // keep the current volume, with the new LUT
+    right_.setStep(right_.currentStep());
+    return;
+  }
+  if (haveL) {
+    left_.calSolve(NUM_VOLUME_STEPS_DEFAULT, nullOut);
     left_.calSave();
   }
-  if (!right_.seriesCurve().empty() && !right_.shuntCurve().empty()) {
-    right_.calSolve(NUM_VOLUME_STEPS_DEFAULT, right_.rangeDb(), right_.rTotalOhms(), nullOut);
+  if (haveR) {
+    right_.calSolve(NUM_VOLUME_STEPS_DEFAULT, nullOut);
     right_.calSave();
   }
 }
 
 void MasterLink::reportRtotalSuggestions() {
-  float savedLeftRtotal = left_.rTotalOhms();
-  float savedRightRtotal = right_.rTotalOhms();
-
+  // Pure computation: evaluates each candidate against the measured curves
+  // without changing either channel's Rtotal (so the solved LUT stays put).
   stream_.print(F("CAL INIT SUGGEST"));
   for (uint8_t i = 0; i < CAL_INIT_RTOTAL_CANDIDATE_COUNT; i++) {
     float candidate = CAL_INIT_RTOTAL_CANDIDATES[i];
-    left_.setRTotalOhms(candidate);
-    right_.setRTotalOhms(candidate);
-    float rangeL = left_.computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB);
-    float rangeR = right_.computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB);
+    float rangeL = left_.computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB, candidate);
+    float rangeR = right_.computeMaxRangeDb(RANGE_SAFETY_MARGIN_DB, candidate);
     float worst = (rangeL < rangeR) ? rangeL : rangeR;
     stream_.print(F(" RTOTAL="));
     stream_.print((long)candidate);
@@ -78,9 +89,100 @@ void MasterLink::reportRtotalSuggestions() {
     stream_.print(worst, 1);
   }
   stream_.println();
+}
 
-  left_.setRTotalOhms(savedLeftRtotal);
-  right_.setRTotalOhms(savedRightRtotal);
+void MasterLink::enableBusyService() {
+  BusyHook::add(&MasterLink::busyThunk, this);
+}
+
+void MasterLink::busyThunk(void *self) {
+  static_cast<MasterLink *>(self)->serviceWhileBusy();
+}
+
+void MasterLink::serviceWhileBusy() {
+  // Runs from inside a calibration's blocking waits, so a master gets an
+  // answer in ~10 ms instead of a timeout. The outer handler that started
+  // the calibration already copied its own line out of lineBuf_ and cleared
+  // it, so lineBuf_ is free for the new bytes (and a half-received line
+  // simply carries over into poll() afterwards).
+  if (mode_ != Mode::STRICT) return; // a person is on this link -- leave their bytes alone
+  while (stream_.available()) {
+    char c = stream_.read();
+    if (c != '\r' && c != '\n') {
+      lineBuf_ += c;
+      continue;
+    }
+    if (lineBuf_.length() == 0) continue;
+    String line = lineBuf_;
+    lineBuf_ = "";
+    line.trim();
+    line.toUpperCase();
+    if (line == "GET STATUS" || line == "STATUS") {
+      reportStatus(true);
+    } else {
+      // Everything else must wait for CAL DONE / CAL FAIL -- but say so,
+      // rather than leaving the master's command timing out.
+      stream_.println(F("ERR busy"));
+    }
+  }
+}
+
+void MasterLink::reportStatus(bool busy) {
+  // One line: "OK" then key=value pairs separated by single spaces, always
+  // every key in this order, so a master can parse it with a fixed-format
+  // scanf or a generic tokenizer. STATUS=BUSY means a calibration/trim is
+  // running (answered from BusyHook; every other field is then transient --
+  // the LUT may be mid-rebuild -- and should be ignored). Otherwise values
+  // other than CAL/RTOTAL/MODE are only meaningful when CAL=OK (they read 0
+  // otherwise).
+  //
+  // VOLMIN/VOLMAX: the lowest/highest VOL value that is valid on BOTH
+  // channels (the unreachable top step is excluded, so VOLMAX is normally
+  // one below the LUT size). VOL=<n> and `VOL <n>` use the same 1-based
+  // numbering.
+  int lo = -1, hi = -1;
+  if (left_.hasLut() && right_.hasLut()) {
+    uint8_t n = left_.numSteps() < right_.numSteps() ? left_.numSteps() : right_.numSteps();
+    for (uint8_t i = 0; i < n; i++) {
+      if (left_.lut().step(i).valid && right_.lut().step(i).valid) {
+        if (lo < 0) lo = i;
+        hi = i;
+      }
+    }
+  }
+  bool usableL = left_.hasUsableLut();
+  bool usableR = right_.hasUsableLut();
+  bool calOk = (usableL && usableR && lo >= 0);
+
+  float db = 0.0f;
+  if (calOk && left_.currentStep() < left_.numSteps()) {
+    db = left_.lut().step(left_.currentStep()).targetDb;
+  }
+
+  stream_.print(F("OK STATUS="));
+  stream_.print(busy ? F("BUSY") : F("IDLE"));
+  stream_.print(F(" PROTO="));
+  stream_.print(PROTO_VERSION);
+  stream_.print(F(" MUTE="));
+  stream_.print(left_.isMuted() ? '1' : '0');
+  stream_.print(F(" AMP_MUTE="));
+  stream_.print(board_.ampMuted() ? '1' : '0');
+  stream_.print(F(" VOL="));
+  stream_.print(calOk ? left_.currentStep() + 1 : 0);
+  stream_.print(F(" VOLMIN="));
+  stream_.print(calOk ? lo + 1 : 0);
+  stream_.print(F(" VOLMAX="));
+  stream_.print(calOk ? hi + 1 : 0);
+  stream_.print(F(" DB="));
+  stream_.print(db, 1);
+  stream_.print(F(" RANGE="));
+  stream_.print(calOk ? left_.rangeDb() : 0.0f, 1);
+  stream_.print(F(" CAL="));
+  stream_.print(calOk ? F("OK") : ((usableL || usableR) ? F("PARTIAL") : F("NONE")));
+  stream_.print(F(" RTOTAL="));
+  stream_.print((long)left_.rTotalOhms());
+  stream_.print(F(" MODE="));
+  stream_.println(left_.mode() == LDRVolume::AttenuationMode::FIXED_SERIES ? F("FIXEDSERIES") : F("RTOTAL"));
 }
 
 void MasterLink::handleStrictLine(const String &lineIn) {
@@ -157,6 +259,9 @@ void MasterLink::handleStrictLine(const String &lineIn) {
       VolumeRamp::rampTo(both, 2, (uint8_t)(n - 1), ok);
       stream_.println((ok[0] && ok[1]) ? F("OK") : F("ERR step invalid or no calibration loaded"));
     }
+
+  } else if (upper == "GET STATUS" || upper == "STATUS") {
+    reportStatus(false);
 
   } else if (upper == "GET MUTE") {
     stream_.print(F("MUTE="));

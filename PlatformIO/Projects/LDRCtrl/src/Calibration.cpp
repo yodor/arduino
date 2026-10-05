@@ -15,7 +15,28 @@ bool LdrCurve::addPoint(uint16_t duty, float ohms) {
   // Vref floor near the DARK end -- those overshoot by 100s of percent,
   // nowhere near this tolerance.
   static constexpr float MAX_RISE_TOLERANCE = 1.10f; // allow up to +10%
-  if (count_ > 0 && ohms > points_[count_ - 1].ohms * MAX_RISE_TOLERANCE) return false;
+  // Above this, readings are dominated by the cell's slow dark-relaxation
+  // lag rather than its settled resistance -- and the LUT never needs
+  // resistances anywhere near this high (Rs/Rsh targets top out at
+  // Rtotal, a few tens of kOhm).
+  static constexpr float DARK_UNRELIABLE_OHMS = 150000.0f;
+  if (count_ > 0 && ohms > points_[count_ - 1].ohms * MAX_RISE_TOLERANCE) {
+    // A later, brighter point reading HIGHER than an earlier dark-end one
+    // means the earlier one was still catching up from a brighter state
+    // (lag), not that the later one is the outlier. Real hardware showed
+    // exactly this: R's shunt sweep started at ~560k (lagging), so the
+    // next real point (895k at duty 1023) was rejected -- leaving a
+    // 450-count hole in the curve right where the knee is, and CALTRIM
+    // then had to guess across it. Drop trailing dark-end points that
+    // this contradicts, then accept the new one. Anything below the dark
+    // threshold is still rejected as before: a mid-range spike must not
+    // be allowed to erase good earlier points.
+    while (count_ > 0 && ohms > points_[count_ - 1].ohms * MAX_RISE_TOLERANCE &&
+           points_[count_ - 1].ohms > DARK_UNRELIABLE_OHMS) {
+      count_--;
+    }
+    if (count_ > 0 && ohms > points_[count_ - 1].ohms * MAX_RISE_TOLERANCE) return false;
+  }
   points_[count_].duty = duty;
   points_[count_].ohms = ohms;
   count_++;

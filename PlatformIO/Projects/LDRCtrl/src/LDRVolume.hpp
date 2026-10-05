@@ -33,17 +33,18 @@ public:
   // calStoragePath: this channel's fixed flash path for its saved
   // calibration (e.g. "/cal_left.bin"). Must be a string literal or other
   // storage with program lifetime -- LDRVolume just keeps the pointer.
-  // rTotalOhms/rangeDb: solve-step parameters, required (no default) so
-  // the caller always states them explicitly, typically from Config.hpp.
-  // Both adjustable afterwards (setRTotalOhms()/CALRTOTAL,
-  // setRangeDb()/CALRANGE) without recompiling.
+  // rTotalOhms: solve-step parameter, required (no default) so the caller
+  // always states it explicitly, typically from Config.hpp. Adjustable
+  // afterwards (setRTotalOhms()/CALRTOTAL) without recompiling. The
+  // attenuation range is not a parameter at all: it is always computed from
+  // the measured floors (see computeMaxRangeDb()).
   LDRVolume(DriverChannels &driver, Board &board, uint8_t relayPin,
             DriverChannels::Channel seriesCh, DriverChannels::Channel shuntCh,
             TwoWire &i2cBus, uint8_t sdaPin, uint8_t sclPin,
-            const char *calStoragePath, float rRefOhms, float rTotalOhms, float rangeDb)
+            const char *calStoragePath, float rRefOhms, float rTotalOhms)
       : driver_(driver), board_(board), seriesCh_(seriesCh), shuntCh_(shuntCh),
         relay_(relayPin), sensor_(i2cBus, sdaPin, sclPin, 0x48, rRefOhms),
-        calPath_(calStoragePath), rTotalOhms_(rTotalOhms), rangeDb_(rangeDb) {}
+        calPath_(calStoragePath), rTotalOhms_(rTotalOhms) {}
 
   // Configures the relay pin (de-energized/audio mode, i2c bus left
   // inactive), then tries to load a saved calibration from flash
@@ -108,13 +109,23 @@ public:
   bool calFeedShuntPoint(uint16_t duty, float ohms) { return cal_.feedShuntPoint(duty, ohms); }
 
   // Dispatches to VolumeLut::solve() or solveFixedSeries() depending on
-  // mode(). rTotalOhms is ignored in FIXED_SERIES mode.
+  // mode(), at this channel's rTotalOhms() and a range COMPUTED from the
+  // measured floors (optionally capped, see calSolveStereo()). Returns the
+  // number of valid steps; 0 with a message if the range can't be computed.
   // out: where progress/errors print and where an abort keypress is read
   // from -- pass whichever Stream actually invoked this (the calling
   // SerialConsole's own stream), so output lands wherever the command
   // came from rather than always on USB. Defaults to the USB Serial for
   // boot-time auto-characterization, which has no calling console.
-  uint8_t calSolve(uint8_t steps, float rangeDb, float rTotalOhms, Stream &out = Serial);
+  uint8_t calSolve(uint8_t steps, Stream &out = Serial);
+
+  // calSolve(), but with the computed range additionally capped at capDb
+  // (ignored if capDb <= 0). This is how two channels with
+  // different cell floors end up with the SAME dB at every step: each
+  // channel's AUTO range alone would be set by its own floor (R's was
+  // 3.2 dB deeper than L's), so the pair uses the smaller of the two.
+  // See DualCalibration::solveBoth().
+  uint8_t calSolveStereo(float capDb, uint8_t steps = NUM_VOLUME_STEPS_DEFAULT, Stream &out = Serial);
   CalibrationSession::State calState() const { return cal_.state(); }
   const LdrCurve &seriesCurve() const { return cal_.seriesCurve(); }
   const LdrCurve &shuntCurve() const { return cal_.shuntCurve(); }
@@ -144,26 +155,25 @@ public:
   void setRTotalOhms(float ohms) { rTotalOhms_ = ohms; cal_.invalidateLut(); }
   float rTotalOhms() const { return rTotalOhms_; }
 
-  // Total dB span (quietest to loudest) used by CALSOLVE (when its
-  // rangeDb arg is omitted) and by CALAUTO. MUTE is always available for
-  // true silence regardless of this range.
-  void setRangeDb(float db) { rangeDb_ = db; autoRange_ = false; cal_.invalidateLut(); }
-  float rangeDb() const { return rangeDb_; }
+  // The attenuation depth (dB from step 0 up to the notional 0 dB top step)
+  // the CURRENT LUT was solved with, read back from the LUT itself (step 0's
+  // target is -range). 0 if there is no LUT. Report-only: the range is never
+  // set by anyone -- every solve computes it from the measured floors.
+  float rangeDb() const { return hasLut() ? -lut().step(0).targetDb : 0.0f; }
 
-  // Auto-range: when enabled, every calSolve() (manual CALSOLVE or via
-  // CALAUTO) recomputes the range fresh from the currently-characterized
-  // curves' own floors and the current rTotalOhms, via computeMaxRangeDb
-  // -- rather than using a fixed Config.hpp/CALRANGE value. Disabled by
-  // setRangeDb() (an explicit value means "use exactly this").
-  void setAutoRange(bool on) { autoRange_ = on; cal_.invalidateLut(); }
-  bool autoRange() const { return autoRange_; }
-
-  // K_min = Rsh_floor/rTotalOhms_, K_max = 1 - Rs_floor/rTotalOhms_,
-  // range = 20*log10(K_max/K_min) - marginDb. Floors are each curve's
+  // CONSTANT_RTOTAL: K_min = Rsh_floor/rTotalOhms_, K_max = 1 - Rs_floor/
+  // rTotalOhms_, range = 20*log10(K_max/K_min) - marginDb.
+  // FIXED_SERIES: Rs is the fixed series resistance, K_min = Rsh_floor/
+  // (Rs+Rsh_floor), K_max = 1, same formula. Floors are each curve's
   // highest-duty (lowest-resistance) characterized point. Returns 0 if
   // curves are empty or the numbers don't make physical sense (e.g.
   // rTotalOhms_ too small relative to a floor).
-  float computeMaxRangeDb(float marginDb) const;
+  // rTotalOverride > 0 evaluates the CONSTANT_RTOTAL formula at that Rtotal
+  // instead of the stored one -- WITHOUT touching any state. (CAL INIT's
+  // candidate probing used to set/restore rTotalOhms_ for this, and every
+  // setRTotalOhms() invalidates the solved LUT, so probing wiped the working
+  // calibration from RAM.)
+  float computeMaxRangeDb(float marginDb, float rTotalOverride = -1.0f) const;
 
   // Automatic characterization + solve, no manual CALDRIVE/CALPOINT
   // needed. FULL: ~18 points, dense through the steep ~15-40% duty
@@ -189,6 +199,25 @@ public:
   // to abort between points.
   enum class CalMode : uint8_t { FULL, FAST };
   void runAutoCalibration(CalMode mode, Stream &out = Serial); // auto-saves to flash on success
+
+  // CalMode::FAST is a drift touch-up, not a smaller sweep: it keeps the
+  // existing curves and LUT and only re-measures and trims every step (see
+  // DualCalibration::touchUp). CalMode::FULL sweeps, solves, then trims.
+
+  // The trim loop on its own: ASSUMES the relay is already energized and
+  // never touches it. Updates the LUT in RAM only (no save). Returns false
+  // if aborted. runTrimPass() wraps this with relay handling and a save;
+  // DualCalibration calls it directly so a full calibration can trim before
+  // it reconnects the audio.
+  bool trimLoop(Stream &out);
+
+  // Puts this channel's PWM on its current step (or on the lowest valid
+  // step if the current one isn't valid) -- or, if the LDR mute is engaged,
+  // re-asserts the mute's static duties and refreshes what unmute() will
+  // restore. Call it while the relay is still energized, so the audio path
+  // reconnects to the real operating point rather than to whatever the
+  // last calibration probe left behind.
+  void reapplyCurrentStepOrDefault();
 
   // Explicit save/load against this channel's fixed calStoragePath, for
   // manual testing from the console without needing a reboot.
@@ -265,8 +294,7 @@ private:
   CalibrationSession cal_;
   const char *calPath_;
   float rTotalOhms_;
-  float rangeDb_;
-  bool autoRange_ = false;
+  float rangeCapDb_ = 0.0f; // >0 only while calSolveStereo() is running -- see above
   AttenuationMode mode_ = AttenuationMode::CONSTANT_RTOTAL;
   uint16_t fixedSeriesDuty_ = DriverChannels::WRAP; // default: fully bright -- pick a better
                                                      // value from CALSCAN data before using
@@ -285,11 +313,14 @@ private:
   // valid reading was ever obtained. elapsedOut reports how long it took.
   float convergeRead(bool wantSeries, unsigned long timeoutMs, unsigned long &elapsedOut);
 
-  // One resistor's verify+trim: drives dutyGuess, measures, and if off
-  // target by more than toleranceFrac, uses the curve's local shape to
-  // propose a better duty and repeats (up to maxIterations). Returns the
-  // best duty found (the original dutyGuess if measurement/lookup fails
-  // at any point, rather than guessing blind).
+  // One resistor's verify+trim: a secant search on LIVE measurements --
+  // it never consults the characterized curve (a sparse curve can be
+  // wildly wrong between its points, and trusting it is exactly how a
+  // nudge once overshot by ~100 counts). Probes dutyGuess, then uses the
+  // measured slope between successive probes to aim at the target,
+  // stopping within toleranceFrac or after maxProbes. Always returns the
+  // BEST duty seen, never merely the last one tried (dutyGuess if
+  // nothing was ever readable).
   uint16_t trimDuty(bool wantSeries, float targetOhms, uint16_t dutyGuess,
                     uint8_t maxIterations, float toleranceFrac);
 };

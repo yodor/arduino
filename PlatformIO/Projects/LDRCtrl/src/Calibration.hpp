@@ -16,7 +16,11 @@
 // ============================================================================
 class LdrCurve {
 public:
-  static constexpr uint8_t MAX_POINTS = 40;
+  // 64, up from 40: CALAUTO now refines the sweep adaptively across the
+  // steep knee (see DualCalibration), which adds ~20-30 points on top of
+  // the ~29-point coarse list. The saved-file layout is unchanged (it
+  // stores count x sizeof(Point)), so existing files still load.
+  static constexpr uint8_t MAX_POINTS = 64;
 
   struct Point {
     uint16_t duty;

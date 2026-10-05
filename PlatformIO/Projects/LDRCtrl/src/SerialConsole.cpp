@@ -62,12 +62,14 @@ void SerialConsole::printHelp() {
   stream_.println(F("                                drive a duty, leave it, so you can measure"));
   stream_.println(F("  CALPOINT [L|R] <SER|SHUNT> <duty> <ohms>"));
   stream_.println(F("                                record a characterization point"));
-  stream_.println(F("  CALSOLVE [L|R] [steps] [rangeDb] [rTotalOhms]"));
+  stream_.println(F("  CALSOLVE [L|R] [steps] [rTotalOhms]"));
   stream_.println(F("                                solve the LUT from curves so far"));
   stream_.println(F("  CALDUMP [L|R]                 print curves + solved LUT"));
   stream_.println(F("  CALTRIM [L|R]                 verify+trim every LUT step against a live"));
   stream_.println(F("                                measurement, re-saves when done"));
-  stream_.println(F("  CALAUTO [L|R] <FULL|FAST>     automatic sweep + solve, no manual points"));
+  stream_.println(F("  CALAUTO [L|R] <FULL|FAST>     FULL: sweep + knee refine + solve + trim."));
+  stream_.println(F("                                FAST: trim-only drift touch-up of the saved"));
+  stream_.println(F("                                calibration (no sweep)"));
   stream_.println(F("                                both channels (no L|R) run INTERLEAVED,"));
   stream_.println(F("                                roughly halving total sweep time"));
   stream_.println(F("                                dense sweep=~29pt, fast=8pt drift touch-up"));
@@ -78,8 +80,6 @@ void SerialConsole::printHelp() {
   stream_.println(F("                                touch saved curves/LUT, paste output back"));
   stream_.println(F("  CALREF [L|R] [ohms]           get/set Rref used for this channel's readings"));
   stream_.println(F("  CALRTOTAL [L|R] [ohms]        get/set Rs+Rsh target (default from Config.hpp)"));
-  stream_.println(F("  CALRANGE [L|R] [db|AUTO]      get/set total dB span, or AUTO to recompute it"));
-  stream_.println(F("                                from measured floors + Rtotal on every solve"));
   stream_.println(F("  CALMODE [L|R] [RTOTAL|FIXEDSERIES]  get/set attenuation mode"));
   stream_.println(F("  CALSERIESDUTY [L|R] [duty]    get/set fixed series duty (FIXEDSERIES mode only)"));
   stream_.println(F("                                (affects future reads only; re-run CALAUTO after)"));
@@ -138,6 +138,10 @@ void SerialConsole::printStatus() {
       stream_.print(e.targetRsh, 1);
       stream_.print(F(" ohm"));
       if (!e.valid) stream_.print(F("  (OUT OF RANGE)"));
+      stream_.print(F("  depth="));
+      stream_.print(v.rangeDb(), 2);
+      stream_.print(F("dB  Rtotal="));
+      stream_.print((long)v.rTotalOhms());
     } else {
       stream_.print(F("none"));
     }
@@ -344,19 +348,45 @@ void SerialConsole::handleLine(String line) {
     }
 
   } else if (cmd == "CALSOLVE") {
+    // CALSOLVE [L|R] [steps] [rTotalOhms]. Re-solves from the existing
+    // curves (no sweep); the range is always computed. With BOTH channels
+    // (no L|R) the pair shares one common range so L and R match; solving
+    // a single side alone uses that side's own range.
     SideSelection sel = resolveOptionalSide(tok, n);
-    for (uint8_t i = 0; i < sel.count; i++) {
-      LDRVolume *v = sel.items[i];
-      uint8_t steps = (n >= sel.argBase + 1) ? (uint8_t)tok[sel.argBase].toInt() : NUM_VOLUME_STEPS_DEFAULT;
-      float rangeDb = (n >= sel.argBase + 2) ? tok[sel.argBase + 1].toFloat() : v->rangeDb();
-      float rTotal  = (n >= sel.argBase + 3) ? tok[sel.argBase + 2].toFloat() : v->rTotalOhms();
-      uint8_t valid = v->calSolve(steps, rangeDb, rTotal, stream_);
-      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
+    if (n > sel.argBase + 2) {
+      stream_.println(F("ERR CALSOLVE takes [steps] [rTotalOhms] -- the range is no longer an argument (it is always computed)"));
+      return;
+    }
+    uint8_t steps = (n >= sel.argBase + 1) ? (uint8_t)tok[sel.argBase].toInt() : NUM_VOLUME_STEPS_DEFAULT;
+    // An explicit Rtotal is applied as the channel's Rtotal (same as
+    // CALRTOTAL first): it is what the saved calibration records, and what
+    // the computed range is derived from.
+    if (n >= sel.argBase + 2) {
+      float rTotal = tok[sel.argBase + 1].toFloat();
+      for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->setRTotalOhms(rTotal);
+    }
+    if (sel.count == 2) {
+      uint8_t vl, vr;
+      DualCalibration::solveBoth(left_, right_, stream_, vl, vr, steps);
+      uint8_t valid[2] = {vl, vr};
+      const char *lab[2] = {"L", "R"};
+      for (uint8_t i = 0; i < 2; i++) {
+        stream_.print(lab[i]);
+        stream_.print(F(": OK solved "));
+        stream_.print(valid[i]);
+        stream_.print('/');
+        stream_.print(steps);
+        stream_.println(F(" steps in range (see CALDUMP for details)"));
+      }
+    } else {
+      LDRVolume *v = sel.items[0];
+      uint8_t valid = v->calSolve(steps, stream_);
       stream_.print(F("OK solved "));
       stream_.print(valid);
       stream_.print('/');
       stream_.print(steps);
       stream_.println(F(" steps in range (see CALDUMP for details)"));
+      stream_.println(F("NOTE: solved alone, so this side used its OWN range -- CALSOLVE with no L|R keeps both sides matched"));
     }
 
   } else if (cmd == "CALAUTO") {
@@ -370,32 +400,9 @@ void SerialConsole::handleLine(String line) {
       DualCalibration::runBoth(*sel.items[0], *sel.items[1], mode, stream_);
     } else {
       sel.items[0]->runAutoCalibration(mode, stream_);
-    }
-
-  } else if (cmd == "CALRANGE") {
-    SideSelection sel = resolveOptionalSide(tok, n);
-    bool hasValue = (n >= sel.argBase + 1);
-    for (uint8_t i = 0; i < sel.count; i++) {
-      LDRVolume *v = sel.items[i];
-      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
-      if (hasValue) {
-        if (tok[sel.argBase].equalsIgnoreCase("AUTO")) {
-          v->setAutoRange(true);
-          stream_.println(F("OK range = AUTO. Re-run CALSOLVE/CALAUTO to apply."));
-        } else {
-          float db = tok[sel.argBase].toFloat();
-          if (db <= 0.0f) { stream_.println(F("ERR range must be positive")); continue; }
-          v->setRangeDb(db);
-          stream_.print(F("OK range set to "));
-          stream_.print(db, 2);
-          stream_.println(F("dB (fixed). Re-run CALSOLVE/CALAUTO to apply."));
-        }
-      } else {
-        stream_.print(F("Range = "));
-        stream_.print(v->rangeDb(), 2);
-        stream_.print(F("dB"));
-        stream_.println(v->autoRange() ? F(" (AUTO -- last computed value shown)") : F(" (fixed)"));
-      }
+      // The other channel keeps its own curves; re-solve both with the
+      // common range so this recalibration can't leave L and R unequal.
+      DualCalibration::equalizeRanges(left_, right_, stream_);
     }
 
   } else if (cmd == "CALMODE") {

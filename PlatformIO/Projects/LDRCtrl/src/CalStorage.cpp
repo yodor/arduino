@@ -1,6 +1,7 @@
 #include "CalStorage.hpp"
 #include "LDRVolume.hpp" // full type needed here, not just the forward declaration
 #include <LittleFS.h>
+#include "DriverChannels.hpp" // DriverChannels::WRAP -- saved duties are only meaningful at the WRAP they were taken at
 
 namespace CalStorage {
 
@@ -27,7 +28,13 @@ constexpr uint32_t MAGIC = 0x4C445243; // 'LDRC'
 // 4095 (full 12-bit resolution, for current-driver-stage bench testing).
 // Same reasoning as every prior bump: a v4 file's saved duties are scaled
 // against the 749-max range and would silently misapply if loaded as-is.
-constexpr uint16_t FORMAT_VERSION = 5;
+// Bumped 5 -> 6: the header now records the PWM WRAP the saved duties were
+// taken at, and load rejects the file on any mismatch. Before this, every
+// WRAP change meant remembering to bump this version by hand -- forgetting
+// would silently misapply duties scaled to the wrong range. Now changing
+// LED_PWM_WRAP in Config.hpp is enough: the old file is refused and the
+// normal "no valid saved calibration" path runs a fresh CALAUTO at boot.
+constexpr uint16_t FORMAT_VERSION = 6;
 
 struct Header {
   uint32_t magic;
@@ -35,6 +42,7 @@ struct Header {
   uint8_t seriesCount;
   uint8_t shuntCount;
   uint8_t numSteps;
+  uint16_t pwmWrap;        // DriverChannels::WRAP at save time
   uint8_t mode;            // LDRVolume::AttenuationMode
   uint8_t autoRange;       // 0/1
   uint16_t fixedSeriesDuty;
@@ -69,11 +77,13 @@ bool save(const char *path, const LDRVolume &vol) {
   hdr.seriesCount = series.count();
   hdr.shuntCount = shunt.count();
   hdr.numSteps = lut.numSteps();
+  hdr.pwmWrap = DriverChannels::WRAP;
   hdr.mode = (uint8_t)vol.mode();
-  hdr.autoRange = vol.autoRange() ? 1 : 0;
+  hdr.autoRange = 1; // legacy field, kept so the file layout (and every existing file) stays valid:
+                     // the range is always computed now, so this is always 1 and ignored on load
   hdr.fixedSeriesDuty = vol.fixedSeriesDuty();
   hdr.rTotalOhms = vol.rTotalOhms();
-  hdr.rangeDb = vol.rangeDb();
+  hdr.rangeDb = vol.rangeDb(); // informational (read back from the LUT); ignored on load
 
   size_t sBytes = (size_t)hdr.seriesCount * sizeof(LdrCurve::Point);
   size_t shBytes = (size_t)hdr.shuntCount * sizeof(LdrCurve::Point);
@@ -112,6 +122,16 @@ bool load(const char *path, LDRVolume &vol) {
   Header hdr;
   if (f.read((uint8_t *)&hdr, sizeof(hdr)) != (int)sizeof(hdr)) { f.close(); return false; }
   if (hdr.magic != MAGIC || hdr.version != FORMAT_VERSION) { f.close(); return false; }
+  if (hdr.pwmWrap != DriverChannels::WRAP) {
+    // Saved at a different PWM resolution -- duties would misapply.
+    Serial.print(F("Saved calibration was taken at PWM WRAP="));
+    Serial.print(hdr.pwmWrap);
+    Serial.print(F(", firmware is now "));
+    Serial.print(DriverChannels::WRAP);
+    Serial.println(F(" -- discarding it, recalibration required."));
+    f.close();
+    return false;
+  }
   if (hdr.seriesCount > LdrCurve::MAX_POINTS ||
       hdr.shuntCount > LdrCurve::MAX_POINTS ||
       hdr.numSteps > VolumeLut::MAX_STEPS) {
@@ -143,17 +163,15 @@ bool load(const char *path, LDRVolume &vol) {
   crc = crc32Update(crc, (const uint8_t *)entries, eBytes);
   if (crc != hdr.crc32) return false; // corrupt file -- reject, don't half-apply it
 
-  // Settings first -- setRTotalOhms/setMode/setFixedSeriesDuty/setRangeDb
-  // each invalidate the (still-empty, at this point) LUT as a side
-  // effect, which is harmless here. setRangeDb also forces autoRange
-  // off, so setAutoRange is applied last to correctly restore it if the
-  // saved state had it on.
+  // Settings first -- setRTotalOhms/setMode/setFixedSeriesDuty each
+  // invalidate the (still-empty, at this point) LUT as a side effect, which
+  // is harmless here. hdr.autoRange / hdr.rangeDb are legacy/informational
+  // and deliberately ignored: the range is always computed, and it is
+  // recoverable from the loaded LUT itself (step 0's target is -range).
   vol.setRTotalOhms(hdr.rTotalOhms);
   vol.setMode(hdr.mode == 1 ? LDRVolume::AttenuationMode::FIXED_SERIES
                             : LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
   vol.setFixedSeriesDuty(hdr.fixedSeriesDuty);
-  vol.setRangeDb(hdr.rangeDb);
-  vol.setAutoRange(hdr.autoRange != 0);
 
   LdrCurve series, shunt;
   VolumeLut lut;

@@ -53,6 +53,17 @@ take, not double that — but still budget generously (a couple of minutes)
 as a safety margin, since convergence time is inherently variable. The
 master must hold on `CAL DONE`/`CAL FAIL`, not a fixed timer — see below.
 
+Two behaviors worth knowing, neither visible on the wire: (1) the sweep now
+**refines adaptively across the steep knee**, adding roughly 15–20 extra
+measured points per phase, so a `CAL` takes on the order of 20–30 s longer
+than before, and `CAL FULL` now ends with an automatic trim pass (roughly another minute) because the sweep alone is systematically a few duty counts off at the knee — so budget **3–4 minutes** for `CAL FULL`; (2) the attenuation **range is always computed** from the measured cell floors
+and Rtotal — there is no fixed-range setting and no command to set one — and
+**both channels always use the smaller of the two channels' own ranges**, so
+every `VOL` step has the same dB on L and R. (Previously each channel's range
+came from its own cell floors and the pair could differ by several dB at the
+quiet end.) `CAL RTOTAL` / `CAL MODE` / `CAL FIXEDSERIES` re-solve with the
+same stereo-common range.
+
 **Calibration is persisted to flash on the daughter board.** In normal
 operation, the daughter auto-loads a saved calibration at boot and never
 needs `CAL` sent to it at all. The master should treat `CAL` as a
@@ -80,13 +91,98 @@ mechanism below instead of the 500ms timeout.**
 | `GET AMP_MUTE` | `AMP_MUTE=1` / `AMP_MUTE=0` | |
 | `GET MUTE` | `MUTE=1` / `MUTE=0` | |
 | `GET VOL` | `VOL=<n>` | Reports the shared step, 1–32. |
-| `CAL` / `CAL FULL` | `OK` immediately, then async `CAL DONE` / `CAL FAIL <reason>` | Full characterization + solve (under whatever RTOTAL/mode is currently set) + save, both channels. Bare `CAL` = `CAL FULL`. Use this for routine re-calibration once initial setup (below) is done. |
-| `CAL FAST` | same as above | Faster, coarser re-characterization (for periodic drift touch-up) -- same async pattern. |
-| `CAL INIT` | `OK`, then async `CAL INIT SUGGEST RTOTAL=<n>:RANGE=<db> ...` then `CAL INIT DONE` / `CAL INIT FAIL <reason>` | **First-run / unknown-cells path.** Characterizes both channels (same cost as `CAL FULL`) and leaves a working calibration in place immediately (under whatever RTOTAL/mode was already set, so the unit isn't left unusable), then reports a fixed set of candidate `RTOTAL` values with each one's achievable dB range (worst of the two channels) computed from the curves just measured. Does not itself commit to a candidate -- follow with `CAL RTOTAL`/`CAL FIXEDSERIES`/`CAL MODE` to apply one (cheap -- reuses these same curves, no re-sweep). |
-| `CAL RTOTAL <ohms>` | `OK` | Sets the Rs+Rsh target on both channels. If curves already exist, immediately re-solves and saves (fast, no re-characterization) -- otherwise takes effect on the next `CAL FULL`/`FAST`/`INIT`. |
+| `GET STATUS` (alias `STATUS`) | `OK STATUS=IDLE|BUSY ...` (one line, see **GET STATUS** below) | Everything a master needs after boot to sync its display in one round trip. Read-only. **Answered even while a calibration is running** (as `STATUS=BUSY`). When idle it is refused during the boot hold like every other strict command (`ERR boot mute hold active, <n>ms remaining` — wait that long and ask again). |
+| `CAL` / `CAL FULL` | `OK` immediately, then async `CAL DONE` / `CAL FAIL <reason>` | Full characterization (coarse sweep + adaptive refinement across the knee) + solve (under whatever RTOTAL/mode is currently set) + **trim of every step against live measurements** + save, both channels. Bare `CAL` = `CAL FULL`. Use this for a from-scratch re-calibration once initial setup (below) is done. Expect on the order of 3-4 minutes. |
+| `CAL FAST` | same as above | **Drift touch-up, not a smaller sweep.** Keeps the saved curves and LUT, re-measures and trims every step (no sweep), then returns each channel to its *current* volume. Roughly a minute or two. If either channel has no usable calibration it silently does a `CAL FULL` instead. Audio is disconnected for the duration (relay energized) like any `CAL`; the volume it returns to is the one in force before it started, and the mute state is preserved. Use this periodically (e.g. after warm-up) rather than `CAL FULL`. |
+| `CAL INIT` | `OK`, then async `CAL INIT SUGGEST RTOTAL=<n>:RANGE=<db> ...` then `CAL INIT DONE` / `CAL INIT FAIL <reason>` | **First-run / unknown-cells path.** Characterizes both channels (same cost as `CAL FULL`) and leaves a working calibration in place immediately (under whatever RTOTAL/mode was already set, so the unit isn't left unusable), then reports a fixed set of candidate `RTOTAL` values with each one's achievable dB range computed from the curves just measured — the smaller of the two channels' ranges, which is exactly the range the unit will use if that candidate is applied. Does not itself commit to a candidate -- follow with `CAL RTOTAL`/`CAL FIXEDSERIES`/`CAL MODE` to apply one (cheap -- reuses these same curves, no re-sweep). |
+| `CAL RTOTAL <ohms>` | `OK` | Sets the Rs+Rsh target on both channels. If curves already exist, immediately re-solves and saves (instant, no re-characterization) -- otherwise takes effect on the next `CAL FULL`/`INIT`. **The instant re-solve is untrimmed** (a re-solve rebuilds the LUT from the curves); send `CAL FAST` afterwards to trim it against live measurements. |
 | `CAL MODE RTOTAL` | `OK` | Switches both channels to the constant-impedance scheme (default). Same immediate-resolve-if-possible behavior as `CAL RTOTAL`. |
 | `CAL MODE FIXEDSERIES` | `OK` | Switches both channels to the fixed-series scheme, keeping whatever fixed series duty is already set. **Only meaningful if that duty was already tuned** -- see `CAL FIXEDSERIES` below, or `DEBUG` mode's `CALSERIESDUTY` for manual tuning. |
 | `CAL FIXEDSERIES <ohms>` | `OK` / `ERR <reason>` | Switches both channels to the fixed-series scheme, picking each channel's own fixed duty as whatever best achieves the given target resistance on its own characterized series curve (so the master only ever deals in ohms, never raw duty). `ERR` if the target falls outside a channel's characterized range -- run `CAL INIT`/`FULL` first. |
+
+
+## GET STATUS
+
+`GET STATUS` (or bare `STATUS`) replies with **one line that always starts with `OK`**,
+followed by `KEY=value` pairs separated by single spaces. Every key is always present,
+in this order, so a fixed-format scan works as well as a tokenizer:
+
+```
+OK STATUS=IDLE PROTO=2 MUTE=0 AMP_MUTE=0 VOL=1 VOLMIN=1 VOLMAX=31 DB=-54.0 RANGE=54.0 CAL=OK RTOTAL=50000 MODE=RTOTAL
+```
+
+| Key | Meaning |
+|---|---|
+| `STATUS` | `IDLE` — normal operation, every other field is current. `BUSY` — a calibration or trim is running (a `CAL`/`CAL FAST` from the master, a bench command, or the automatic calibration at power-up after a flash or PWM change). While `BUSY` all the other fields are **transient — ignore them** (the LUT may be mid-rebuild); just show "calibrating" and wait for `CAL DONE`/`CAL FAIL` (or ask again later). |
+| `PROTO` | Protocol revision of this daughter firmware (currently `2`). Compare against what the master was written for. |
+| `MUTE` | `1` if the LDR mute is engaged (what `MUTE ON` sets). Same value as `GET MUTE`. |
+| `AMP_MUTE` | `1` if the amplifier mute is engaged (what `AMP_MUTE ON` sets, and what the boot hold / relay clicks assert). Same as `GET AMP_MUTE`. |
+| `VOL` | Current volume, same 1-based numbering as `VOL <n>` and `GET VOL`. Valid regardless of `MUTE` (mute doesn't change it). |
+| `VOLMIN`, `VOLMAX` | Lowest and highest `VOL` that is valid on **both** channels. The top LUT step is unreachable by design, so `VOLMAX` is normally one below the LUT size (31 of 32). Use these to clamp the master's own volume UI; `VOL UP` at `VOLMAX` returns `ERR step limit`. |
+| `DB` | Attenuation at the current `VOL`, in dB (negative; 1 decimal). Handy for an on-screen readout. |
+| `RANGE` | Total attenuation depth the LUT spans (dB from `VOLMIN` to the notional 0 dB top). Always computed from the measured floors; identical on both channels. |
+| `CAL` | `OK` — both channels have a usable calibration. `PARTIAL` — only one does (a `VOL` command will fail). `NONE` — neither. |
+| `RTOTAL` | The Rs+Rsh target in ohms (same on both channels). |
+| `MODE` | `RTOTAL` (constant-impedance, default) or `FIXEDSERIES`. |
+
+When idle, `VOL`, `VOLMIN`, `VOLMAX`, `DB` and `RANGE` read `0` if `CAL` is not `OK`; `PROTO`, `MUTE`, `AMP_MUTE`, `RTOTAL` and `MODE` are always meaningful.
+
+### Commands while a calibration is running
+
+A calibration (or trim) blocks the daughter's main loop for minutes, but it keeps the
+master link alive: **any line the master sends meanwhile is answered within ~10 ms.**
+`GET STATUS` gets `OK STATUS=BUSY ...`; every other command (`VOL`, `MUTE`, `CAL`,
+`AMP_MUTE`, `GET VOL`, even `DEBUG`) gets `ERR busy` and is **not** queued or executed —
+resend it after `CAL DONE`/`CAL FAIL`. The calibration itself is unaffected. This
+replaces the earlier "may reply `ERR`, may reply nothing at all" behaviour. It applies to
+the UART link only (the USB link, when used as a bench strict-protocol terminal, is left
+alone so a keypress there can still abort a bench calibration).
+
+The same holds at **power-up**: after a flash, a PWM-resolution change or a corrupt
+calibration file the daughter calibrates both channels before it is usable (a few
+minutes), and the UART is already listening, so a master that boots first and asks
+`GET STATUS` hears `STATUS=BUSY` instead of silence.
+
+**Intended use:** send `GET STATUS` once the master has booted. If the reply is
+`STATUS=BUSY`, show "calibrating" and poll again every few seconds; if it is
+`ERR boot mute hold active, <n>ms remaining`, wait `n` ms and ask again; if it is
+`STATUS=IDLE`, adopt `MUTE`/`VOL`/`DB` as the displayed state instead of assuming
+defaults. Re-send it after any `CAL` completes (`CAL DONE`) or after `CAL RTOTAL`/
+`CAL MODE`, since those can change `VOLMAX`, `RANGE` and `CAL`.
+
+Master-side parsing sketch (tokenize on spaces, split each token at the first `=`):
+
+```cpp
+// line = "OK STATUS=IDLE PROTO=2 MUTE=0 ..." ; false if it isn't a status line
+bool parseStatus(const String &line, Status &out) {
+  if (!line.startsWith("OK STATUS=")) return false;
+  int i = 3;                                   // skip "OK "
+  while (i < (int)line.length()) {
+    int sp = line.indexOf(' ', i); if (sp < 0) sp = line.length();
+    int eq = line.indexOf('=', i);
+    if (eq > i && eq < sp) {
+      String k = line.substring(i, eq), v = line.substring(eq + 1, sp);
+      if      (k == "STATUS")   out.busy    = (v == "BUSY");
+      else if (k == "PROTO")    out.proto   = v.toInt();
+      else if (k == "MUTE")     out.mute    = v.toInt();
+      else if (k == "AMP_MUTE") out.ampMute = v.toInt();
+      else if (k == "VOL")      out.vol     = v.toInt();
+      else if (k == "VOLMIN")   out.volMin  = v.toInt();
+      else if (k == "VOLMAX")   out.volMax  = v.toInt();
+      else if (k == "DB")       out.db      = v.toFloat();
+      else if (k == "RANGE")    out.range   = v.toFloat();
+      else if (k == "CAL")      out.cal     = v;        // "OK" | "PARTIAL" | "NONE"
+      else if (k == "RTOTAL")   out.rtotal  = v.toInt();
+      else if (k == "MODE")     out.mode    = v;        // "RTOTAL" | "FIXEDSERIES"
+      // unknown keys: ignore, so newer daughters can add fields
+    }
+    i = sp + 1;
+  }
+  return true;
+}
+```
+
+Unknown keys must be ignored, so fields can be appended in future revisions without breaking an older master.
 
 ## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks EVERY command, not just `AMP_MUTE`
 
