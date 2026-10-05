@@ -2,6 +2,8 @@
 #include "LDRVolume.hpp" // full type needed here, not just the forward declaration
 #include <LittleFS.h>
 #include "DriverChannels.hpp" // DriverChannels::WRAP -- saved duties are only meaningful at the WRAP they were taken at
+#include "Config.hpp"        // CAL_HW_REV / CAL_ALGO_REV
+#include "CalStamp.hpp"
 
 namespace CalStorage {
 
@@ -34,7 +36,11 @@ constexpr uint32_t MAGIC = 0x4C445243; // 'LDRC'
 // would silently misapply duties scaled to the wrong range. Now changing
 // LED_PWM_WRAP in Config.hpp is enough: the old file is refused and the
 // normal "no valid saved calibration" path runs a fresh CALAUTO at boot.
-constexpr uint16_t FORMAT_VERSION = 6;
+// Bumped 6 -> 7: the header now carries the hardware revision and calibration
+// revision the file was taken on (CAL_HW_REV / CAL_ALGO_REV, see CalStamp.hpp).
+// A v6 file has no stamp, so it cannot be vouched for and is refused: the
+// first boot after this change recalibrates once.
+constexpr uint16_t FORMAT_VERSION = 7;
 
 struct Header {
   uint32_t magic;
@@ -43,6 +49,8 @@ struct Header {
   uint8_t shuntCount;
   uint8_t numSteps;
   uint16_t pwmWrap;        // DriverChannels::WRAP at save time
+  uint16_t hwRev;          // CAL_HW_REV at save time
+  uint16_t calRev;         // CAL_ALGO_REV at save time
   uint8_t mode;            // LDRVolume::AttenuationMode
   uint8_t autoRange;       // 0/1
   uint16_t fixedSeriesDuty;
@@ -78,6 +86,8 @@ bool save(const char *path, const LDRVolume &vol) {
   hdr.shuntCount = shunt.count();
   hdr.numSteps = lut.numSteps();
   hdr.pwmWrap = DriverChannels::WRAP;
+  hdr.hwRev = CAL_HW_REV;
+  hdr.calRev = CAL_ALGO_REV;
   hdr.mode = (uint8_t)vol.mode();
   hdr.autoRange = 1; // legacy field, kept so the file layout (and every existing file) stays valid:
                      // the range is always computed now, so this is always 1 and ignored on load
@@ -132,6 +142,30 @@ bool load(const char *path, LDRVolume &vol) {
     f.close();
     return false;
   }
+  switch (CalStamp::check(hdr.hwRev, hdr.calRev, CAL_HW_REV, CAL_ALGO_REV)) {
+    case CalStamp::Verdict::HW_MISMATCH:
+      Serial.print(F("Saved calibration "));
+      Serial.print(path);
+      Serial.print(F(" was taken on hardware rev "));
+      Serial.print(hdr.hwRev);
+      Serial.print(F(", this firmware is built for rev "));
+      Serial.print(CAL_HW_REV);
+      Serial.println(F(" -- REFUSED (a stale LUT would put the cells at the wrong brightness); recalibration required."));
+      f.close();
+      return false;
+    case CalStamp::Verdict::ALGO_MISMATCH:
+      Serial.print(F("Saved calibration "));
+      Serial.print(path);
+      Serial.print(F(" has calibration rev "));
+      Serial.print(hdr.calRev);
+      Serial.print(F(", this firmware uses rev "));
+      Serial.print(CAL_ALGO_REV);
+      Serial.println(F(" -- refused; recalibration required."));
+      f.close();
+      return false;
+    case CalStamp::Verdict::OK:
+      break;
+  }
   if (hdr.seriesCount > LdrCurve::MAX_POINTS ||
       hdr.shuntCount > LdrCurve::MAX_POINTS ||
       hdr.numSteps > VolumeLut::MAX_STEPS) {
@@ -179,6 +213,10 @@ bool load(const char *path, LDRVolume &vol) {
   shunt.rawLoad(shuntPts, hdr.shuntCount);
   lut.rawLoad(entries, hdr.numSteps);
   vol.calAdoptLoaded(series, shunt, lut); // sets state_=SOLVED, overriding the invalidations above
+  Serial.print(F("Calibration stamp accepted: hardware rev "));
+  Serial.print(hdr.hwRev);
+  Serial.print(F(", calibration rev "));
+  Serial.println(hdr.calRev);
   return true;
 }
 

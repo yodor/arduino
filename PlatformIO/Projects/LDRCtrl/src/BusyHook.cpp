@@ -14,7 +14,11 @@ struct Listener {
 Listener gListeners[MAX_LISTENERS];
 uint8_t gCount = 0;
 bool gInService = false;
+uint8_t gDepth = 0; // live Scopes
 } // namespace
+
+Scope::Scope() { if (gDepth < 255) gDepth++; }
+Scope::~Scope() { if (gDepth > 0) gDepth--; }
 
 bool add(Fn fn, void *ctx) {
   if (!fn || gCount >= MAX_LISTENERS) return false;
@@ -25,7 +29,7 @@ bool add(Fn fn, void *ctx) {
 }
 
 void service() {
-  if (gInService || gCount == 0) return;
+  if (gInService || gCount == 0 || gDepth == 0) return;
   gInService = true;
   for (uint8_t i = 0; i < gCount; i++) gListeners[i].fn(gListeners[i].ctx);
   gInService = false;

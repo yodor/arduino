@@ -42,12 +42,57 @@ constexpr uint32_t CPU_SPEED_KHZ = 150000; // was 200000; back off until burned-
 // present at every intermediate duty, completely absent at LDR mute()'s
 // static 0%/100% extremes -- an edge-switching signature, not a current-
 // level one). Restoring 4095 now to test full resolution against this
-// SAME current driver stage and its existing 10k/10nF passive RC filter,
+// SAME current driver stage and its existing 10k/1uF passive RC filter,
 // before the planned op-amp current-source redesign -- which removes PWM
 // edges from ever reaching the LED at all, making high resolution safe
 // regardless of frequency, independently of what this test finds.
 constexpr uint16_t LED_PWM_WRAP = 4095;
 constexpr float LED_PWM_CLKDIV = 1.0f; // fastest achievable divider at this WRAP (cannot go below 1.0)
+
+// Level the NON-swept element is held at during calibration sweeps and
+// CALSCAN ("bright" = near the cell's floor resistance). Full scale is not
+// needed: the NSL-32SR3 bottoms out well before it (duty ~3685 with 100k
+// base bleeds, ~3150 with 1M bleeds), and beyond that extra LED current only
+// heats the cell, which then reads ~7% HIGHER. 80% of WRAP sits just past the
+// floor for either bleed value, as a fraction so it follows LED_PWM_WRAP.
+constexpr uint16_t CAL_BRIGHT_HOLD_DUTY = (uint16_t)(((uint32_t)LED_PWM_WRAP * 80u) / 100u);
+
+// ---------------------------------------------------------------------------
+// Audio-path impedances the LUT solve accounts for (see DividerMath.hpp). The
+// divider is not unloaded: the amp board's input is a 10k resistor to the
+// op-amp's virtual ground (measured), and the JFET buffer in front has a ~400R
+// output impedance. Solving against the real loaded gain makes each step's dB --
+// and STATUS DB= -- the true one; with the old unloaded solve the loud steps were
+// up to ~7 dB quieter than labelled. Set AMP_INPUT_LOAD_OHMS to 0 to solve
+// unloaded again (and bump CAL_ALGO_REV: the meaning of saved LUTs changes).
+// AUDIO_SOURCE_OHMS is approximate; its effect is <= ~0.4 dB, at the loud end only.
+constexpr float AMP_INPUT_LOAD_OHMS = 10000.0f;
+constexpr float AUDIO_SOURCE_OHMS   = 400.0f;
+
+// ---------------------------------------------------------------------------
+// What a saved calibration is stamped with (see CalStamp.hpp). A file whose
+// stamps differ from these is REFUSED at load and the board recalibrates from
+// scratch -- audio path disconnected, amp muted -- instead of playing through a
+// LUT taken on different hardware.
+//
+// CAL_HW_REV -- bump it IN THE SAME CHANGE as any hardware modification that
+// alters the duty -> resistance relationship:
+//   1 = original driver: 100k PNP base bleeds (R8/R9/R16/R17), 68k NPN
+//       emitters, 120R PNP emitters, 10k + 1uF PWM filters
+//   2 = bleeds R8/R9/R16/R17 changed to 1M
+// A PARTIAL swap (some bleeds 1M, some still 100k) is its own revision: bump for
+// it, and again when the last one is done. Revisions are free.
+// IMPORTANT: the revision must be bumped in the firmware that FIRST runs on the
+// modified board. Change the hardware with the power off, then flash by holding
+// BOOTSEL (which never runs the old firmware); if you flash over a running
+// board the old firmware boots on the new hardware first and loads the stale
+// file. Never flash a bumped revision onto the UNmodified board and let it
+// calibrate -- the file would carry the new stamp for the old hardware.
+constexpr uint16_t CAL_HW_REV   = 1;
+// CAL_ALGO_REV -- bump when a firmware change alters what saved curves/LUT
+// entries MEAN. Ordinary firmware updates do not bump it, so they keep the
+// saved calibration.
+constexpr uint16_t CAL_ALGO_REV = 2; // 2: the LUT is solved against the LOADED divider (see AMP_INPUT_LOAD_OHMS)
 
 // How long to force the amp muted around a calibration relay's energize/
 // de-energize transition, before restoring whatever mute state was in
@@ -98,15 +143,16 @@ constexpr uint32_t TRIM_PRECONDITION_MS = 8000;
 // ---------------------------------------------------------------------------
 // Constant Rs+Rsh target the calibration solve step aims for, in
 // CONSTANT_RTOTAL mode (keeps the JFET buffer's ~400R source impedance
-// seeing a fixed load at every step). 2000R chosen from CALSCAN data:
-// keeps every target resistance within the low-hysteresis region (<3%
-// spread) rather than the ~10-65% spread seen above ~3kOhm on this cell.
-// These are only BOOT-TIME DEFAULTS -- CALRTOTAL <L|R> [ohms] overrides
-// per-channel at runtime without recompiling.
-constexpr float RTOTAL_LEFT_OHMS = 10000.0f;
-constexpr float RTOTAL_RIGHT_OHMS = 10000.0f;
+// seeing a fixed load at every step). 50k is the final operating point:
+// 31 of 32 steps solved with ~54 dB of depth, at the cost of a wider
+// ascending/descending hysteresis band than the lower choices (see
+// CAL_R_CHOICES below). These are only BOOT-TIME DEFAULTS --
+// CALRTOTAL <L|R> [ohms] (or CAL FULL ... R=<n>) overrides per-channel
+// at runtime, and a saved calibration restores its own value from flash.
+constexpr float RTOTAL_LEFT_OHMS = 50000.0f;
+constexpr float RTOTAL_RIGHT_OHMS = 50000.0f;
 
-// Actual Rref (R27), from direct DMM measurement rather than the nominal
+// Actual Rref (R2 on the LDR Board sheet), from direct DMM measurement rather than the nominal
 // 10k 1% value. Both connectors measured ~9.99k (small reading jitter
 // between 9.99k/10.0k is DMM last-digit noise at this resistance, not a
 // real difference between the two boards) -- use CALREF <L|R> <ohms> to
@@ -137,14 +183,21 @@ constexpr uint8_t  NUM_VOLUME_STEPS_DEFAULT = 32;
 // across repeated CALAUTO passes on the same cell.
 constexpr float RANGE_SAFETY_MARGIN_DB = 2.0f;
 
-// CAL INIT (MasterLink) reports each of these as a candidate RTOTAL,
-// alongside the achievable dB range (worst of the two channels) that
-// computeMaxRangeDb() predicts for it from the just-characterized
-// floors -- a fixed, easy-to-tweak list rather than anything computed.
-constexpr float CAL_INIT_RTOTAL_CANDIDATES[] = {2000.0f, 5000.0f, 10000.0f};
-constexpr uint8_t CAL_INIT_RTOTAL_CANDIDATE_COUNT = 3;
+// The ONLY values the master may request as "R" in `CAL FULL MODE=... R=<ohms>`:
+// the Rtotal target in RTOTAL mode, or the fixed series resistance in
+// FIXEDSERIES mode. A fixed list on purpose -- the master offers a menu, not a
+// free-text field, and nothing outside it has been exercised on real cells
+// (100000 in particular sits at the limit of what the cells can resolve).
+constexpr long CAL_R_CHOICES[] = {5000, 10000, 25000, 50000, 100000};
+constexpr uint8_t CAL_R_CHOICE_COUNT = sizeof(CAL_R_CHOICES) / sizeof(CAL_R_CHOICES[0]);
 
-// Strict master<->daughter protocol revision, reported in GET STATUS so the
-// master can detect an incompatible daughter board. Matches the document
-// revision (daughter-board-uart-protocol-v2.md).
-constexpr uint8_t PROTO_VERSION = 2;
+// Strict master<->daughter protocol revision, reported as PROTO= in STATUS so
+// the master can detect an incompatible daughter board. History: 2 = 1-based
+// VOL; 3 = 0-based VOL and the reordered STATUS line with TEMP/UP; 4 = the
+// master's CAL commands are exactly CAL FAST and CAL FULL [MODE=.. R=..],
+// always answered with a status line (BUSY if started, IDLE + CAL=ERR + a
+// trailing ERR=<reason> if not -- no CAL DONE/FAIL, poll STATUS), STATUS is the
+// only getter (every GET command is gone, GET STATUS included), STATUS reports R
+// instead of RTOTAL, and CAL is OK / NONE / ERR (no PARTIAL). (The document file
+// keeps its v2 name.)
+constexpr uint8_t PROTO_VERSION = 4;

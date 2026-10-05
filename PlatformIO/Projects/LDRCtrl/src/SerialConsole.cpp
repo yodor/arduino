@@ -1,6 +1,25 @@
 #include "SerialConsole.hpp"
 #include "Config.hpp"
 #include "DualCalibration.hpp"
+#include "Board.hpp"
+#include "BusyHook.hpp"
+
+namespace {
+// "VOL=8 (-40.04 dB)" -- the same number the strict master protocol uses
+// (0-based, 0 = quietest), plus the attenuation that step is solved for.
+void describeVolume(Stream &out, LDRVolume &v) {
+  if (!v.hasLut() || v.currentStep() >= v.numSteps()) {
+    out.print(F("VOL=? (no calibration)"));
+    return;
+  }
+  out.print(F("VOL="));
+  out.print(v.currentStep());
+  out.print(F(" ("));
+  out.print(v.lut().step(v.currentStep()).targetDb, 2);
+  out.print(F(" dB)"));
+  if (v.isMuted()) out.print(F(" [muted]"));
+}
+} // namespace
 
 void SerialConsole::begin() {
   stream_.println();
@@ -41,6 +60,8 @@ void SerialConsole::printHelp() {
   stream_.println(F("  ALLPCT <percent>     duty by percent on all 4 channels"));
   stream_.println(F("  SWEEP <ch> <start%> <end%> <step%> <dwell_ms>"));
   stream_.println(F("  STATUS               current duty/relay/volume state of both sides"));
+  stream_.println(F("  TEMP | UPTIME        RP2040 die temperature (proxy for board temperature)"));
+  stream_.println(F("                       and time since power-up"));
   stream_.println(F("  OFF                  all channels to 0"));
   stream_.println(F("<ch> is SHUNT_L, SER_L, SHUNT_R, SER_R, or 0-3."));
   stream_.println();
@@ -48,7 +69,7 @@ void SerialConsole::printHelp() {
   stream_.println();
   stream_.println(F("Relay:"));
   stream_.println(F("  RELAY [L|R] <ON|OFF> energize/de-energize a board's calibration relay directly"));
-  stream_.println(F("  AMPMUTE [ON|OFF]     get/set the amp's own mute (4N25 opto) -- independent of"));
+  stream_.println(F("  AMP_MUTE [ON|OFF]    get/set the amp's own mute (4N25 opto) -- independent of"));
   stream_.println(F("                       any channel's own MUTE; OFF refused during the boot hold"));
   stream_.println(F("  DIAGLED <ON|OFF>     steady on/off for the diagnostic LED (no blinking --"));
   stream_.println(F("                       GPIO toggling was audible as noise on real hardware)"));
@@ -75,9 +96,9 @@ void SerialConsole::printHelp() {
   stream_.println(F("                                dense sweep=~29pt, fast=8pt drift touch-up"));
   stream_.println(F("                                auto-saves to flash, returns to audio mode"));
   stream_.println(F("                                skips (no-op) if no ADS1115 is detected"));
-  stream_.println(F("  CALSCAN [L|R]                 diagnostic: fine 2-way scan of the ~22-28%"));
-  stream_.println(F("                                duty window, 5 raw samples/point -- does NOT"));
-  stream_.println(F("                                touch saved curves/LUT, paste output back"));
+  stream_.println(F("  CALSCAN [L|R] [start end]     diagnostic: fine 2-way scan of a raw-duty window"));
+  stream_.println(F("                                (default 900-1148), 5 raw samples/point -- does"));
+  stream_.println(F("                                NOT touch saved curves/LUT, paste output back"));
   stream_.println(F("  CALREF [L|R] [ohms]           get/set Rref used for this channel's readings"));
   stream_.println(F("  CALRTOTAL [L|R] [ohms]        get/set Rs+Rsh target (default from Config.hpp)"));
   stream_.println(F("  CALMODE [L|R] [RTOTAL|FIXEDSERIES]  get/set attenuation mode"));
@@ -87,8 +108,9 @@ void SerialConsole::printHelp() {
   stream_.println(F("  CALLOAD [L|R]                 manually (re)load from flash"));
   stream_.println();
   stream_.println(F("Volume (uses the solved LUT):"));
-  stream_.println(F("  VOL [L|R] <step>      apply LUT step (0 = quietest) -- jumps of more than"));
-  stream_.println(F("                        one step auto-ramp through the intermediate ones"));
+  stream_.println(F("  VOL [L|R] [<step>]    apply LUT step (0 = quietest, same numbering as the"));
+  stream_.println(F("                        master's VOL/GET VOL); jumps of more than one step"));
+  stream_.println(F("                        auto-ramp. With no step: show the current volume"));
   stream_.println(F("  VOLUP [L|R]           one step louder"));
   stream_.println(F("  VOLDOWN [L|R]         one step quieter"));
   stream_.println(F("  MUTE [L|R] <ON|OFF>   fast mute / unmute (works even before calibration)"));
@@ -147,9 +169,22 @@ void SerialConsole::printStatus() {
     }
     stream_.println();
   }
+
+  stream_.print(F("Volume: "));
+  if (left_.currentStep() == right_.currentStep() && left_.isMuted() == right_.isMuted()) {
+    describeVolume(stream_, left_);
+  } else {
+    stream_.print(F("L "));
+    describeVolume(stream_, left_);
+    stream_.print(F("   R "));
+    describeVolume(stream_, right_);
+  }
+  stream_.println();
+  Board::reportDieTemp(stream_, F("Die temp"));
 }
 
 void SerialConsole::doSweep(DriverChannels::Channel ch, int startPct, int endPct, int stepPct, unsigned long dwellMs) {
+  BusyHook::Scope busy;
   if (stepPct == 0) { stream_.println(F("ERR step must be nonzero")); return; }
   stream_.print(F("Sweeping "));
   stream_.print(DriverChannels::name(ch));
@@ -159,7 +194,7 @@ void SerialConsole::doSweep(DriverChannels::Channel ch, int startPct, int endPct
   stream_.print(endPct);
   stream_.print(F("%, step "));
   stream_.print(stepPct);
-  stream_.println(F("%. Send any character to abort early."));
+  stream_.println(F("%."));
 
   bool increasing = endPct >= startPct;
   int step = increasing ? abs(stepPct) : -abs(stepPct);
@@ -173,10 +208,7 @@ void SerialConsole::doSweep(DriverChannels::Channel ch, int startPct, int endPct
     stream_.print(duty);
     stream_.println(F(")  <- read multimeter now"));
 
-    unsigned long start = millis();
-    while (millis() - start < dwellMs) {
-      if (stream_.available()) { stream_.println(F("Sweep aborted.")); return; }
-    }
+    BusyHook::wait(dwellMs); // services the link while it waits
   }
   stream_.println(F("Sweep complete."));
 }
@@ -240,6 +272,9 @@ void SerialConsole::handleLine(String line) {
   } else if (cmd == "STATUS") {
     printStatus();
 
+  } else if (cmd == "TEMP" || cmd == "UPTIME") {
+    Board::reportDieTemp(stream_, F("Die temp"));
+
   } else if (cmd == "OFF") {
     driver_.setDutyAll(0);
     stream_.println(F("OK all channels off"));
@@ -278,7 +313,7 @@ void SerialConsole::handleLine(String line) {
     board_.setDiagLedEnabled(on);
     stream_.println(F("OK"));
 
-  } else if (cmd == "AMPMUTE") {
+  } else if (cmd == "AMP_MUTE") {
     if (n >= 2) {
       bool on = tok[1].equalsIgnoreCase("ON");
       bool off = tok[1].equalsIgnoreCase("OFF");
@@ -292,7 +327,7 @@ void SerialConsole::handleLine(String line) {
         stream_.println(F("ms remaining"));
       }
     } else {
-      stream_.println(board_.ampMuted() ? F("AMPMUTE=1") : F("AMPMUTE=0"));
+      stream_.println(board_.ampMuted() ? F("AMP_MUTE=1") : F("AMP_MUTE=0"));
     }
 
   } else if (cmd == "RELAY") {
@@ -471,7 +506,21 @@ void SerialConsole::handleLine(String line) {
 
   } else if (cmd == "CALSCAN") {
     SideSelection sel = resolveOptionalSide(tok, n);
-    for (uint8_t i = 0; i < sel.count; i++) sel.items[i]->runDiagnosticScan(stream_);
+    long scanStart = 900, scanEnd = 1148;
+    if (n >= sel.argBase + 2) {
+      scanStart = tok[sel.argBase].toInt();
+      scanEnd = tok[sel.argBase + 1].toInt();
+      if (scanStart < 4 || scanEnd <= scanStart || scanEnd > (long)DriverChannels::WRAP) {
+        stream_.print(F("ERR CALSCAN window: need 4 <= start < end <= "));
+        stream_.println(DriverChannels::WRAP);
+        return;
+      }
+    } else if (n != sel.argBase) {
+      stream_.println(F("ERR usage: CALSCAN [L|R] [start end]"));
+      return;
+    }
+    for (uint8_t i = 0; i < sel.count; i++)
+      sel.items[i]->runDiagnosticScan(stream_, (uint16_t)scanStart, (uint16_t)scanEnd);
 
   } else if (cmd == "CALREF") {
     SideSelection sel = resolveOptionalSide(tok, n);
@@ -517,6 +566,11 @@ void SerialConsole::handleLine(String line) {
       stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
                           ? F("Mode: FIXED_SERIES")
                           : F("Mode: CONSTANT_RTOTAL"));
+      stream_.print(F("Divider model: Rsrc="));
+      stream_.print(AUDIO_SOURCE_OHMS, 0);
+      stream_.print(F(" Rload="));
+      stream_.print(AMP_INPUT_LOAD_OHMS, 0);
+      stream_.println(F(" ohm (LUT dB = loaded gain)"));
       printCurve("Series", v->seriesCurve());
       printCurve("Shunt", v->shuntCurve());
       printLut(v->lut());
@@ -524,7 +578,21 @@ void SerialConsole::handleLine(String line) {
 
   } else if (cmd == "VOL") {
     SideSelection sel = resolveOptionalSide(tok, n);
-    if (n < sel.argBase + 1) { stream_.println(F("ERR expected a step number")); return; }
+    if (n < sel.argBase + 1) {
+      // No step given: report the current volume instead of erroring.
+      if (sel.count == 2 && left_.currentStep() == right_.currentStep() &&
+          left_.isMuted() == right_.isMuted()) {
+        describeVolume(stream_, left_);
+        stream_.println();
+      } else {
+        for (uint8_t i = 0; i < sel.count; i++) {
+          stream_.print(sel.items[i] == &left_ ? F("L: ") : F("R: "));
+          describeVolume(stream_, *sel.items[i]);
+          stream_.println();
+        }
+      }
+      return;
+    }
     uint8_t step = (uint8_t)tok[sel.argBase].toInt();
     bool ok[2];
     VolumeRamp::rampTo(sel.items, sel.count, step, ok);
@@ -577,7 +645,7 @@ void SerialConsole::handleLine(String line) {
       stream_.print(vRef, 4);
       stream_.print(F("V"));
       if (!ok) {
-        stream_.println(F("  ERR Vref <= 0 -- both LDRs likely dark (outside the ~10k operating range)"));
+        stream_.println(F("  ERR Vref <= 0 -- both LDRs likely dark (outside the ~50k operating range)"));
       } else {
         stream_.print(F("  Rs="));
         stream_.print(rs, 1);

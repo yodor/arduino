@@ -9,6 +9,36 @@ verbose, human-readable text, not the strict wire format.
 
 Commands are case-insensitive. One command per line, `\n`-terminated.
 
+## While a long operation runs: one line at a time
+
+`CALAUTO`, `CALTRIM`, `CALSCAN` and `SWEEP` run to completion — **none of them can be
+aborted** (there is no keypress-to-stop any more). While one runs, the link keeps
+answering: a line typed meanwhile gets `ERR busy` — or, for `STATUS`, the strict
+protocol's status line (`OK STATUS=BUSY … CAL=PROCESSING`, so even in `DEBUG` mode
+that one command prints the machine format while busy) — and is **dropped, not queued**.
+So **do not paste a block of commands that starts with one of these**: in
+`CALAUTO FAST` followed by `CALDUMP`, the `CALDUMP` is answered `ERR busy` and lost.
+Send the next command once the operation prints its closing line. (Short waits, like the
+relay click after `RELAY L ON`, do not answer busy, so pasting ordinary command blocks
+still works.)
+
+## Amp mute during calibration, and the saved-calibration stamp
+
+- **Amp mute:** `CALAUTO`, `CALTRIM`, `CALSCAN` and the strict-protocol `CAL …` hold the amp
+  muted for the whole run (audio is disconnected by the relay anyway) and restore it
+  afterwards: a muted amp stays muted, an open one opens again once the relay is back.
+  `AMP_MUTE OFF` cannot open it mid-calibration. `SWEEP` does not touch the amp mute.
+- **Stamp:** each saved calibration records the hardware revision (`CAL_HW_REV`) and
+  calibration revision (`CAL_ALGO_REV`) from `Config.hpp`. On boot a file with a different
+  stamp is refused with a message such as
+  `Saved calibration /cal_left.bin was taken on hardware rev 1, this firmware is built for
+  rev 2 -- REFUSED`, and the board recalibrates from scratch. An accepted file prints
+  `Calibration stamp accepted: hardware rev N, calibration rev M`.
+- **After changing hardware:** power off, modify, bump `CAL_HW_REV`, flash with BOOTSEL held
+  (the old firmware never runs on the modified board), power on — the first boot calibrates.
+  Never flash a bumped revision onto the *unmodified* board and let it calibrate: the file
+  would carry the new stamp for the old hardware.
+
 ## `[L|R]` is optional everywhere
 
 Every command below that takes `[L|R]` can be given `L`, `R`, or nothing
@@ -23,7 +53,7 @@ When both channels are targeted, commands that only *act* (`CALSTART`,
 per-channel (`CALDUMP`, `ADCREAD`, `CALRTOTAL` with no value) label each
 channel's output `L:`/`R:` so you can tell them apart.
 
-`CALAUTO` (and the strict protocol's `CAL`/`CAL FULL`/`CAL FAST`) run
+`CALAUTO` (and the strict protocol's `CAL FULL`/`CAL FAST`) run
 **interleaved** when both channels are targeted — alternating between
 channels point-by-point rather than finishing one fully before starting
 the other — which roughly halves total sweep time. Single-channel
@@ -40,7 +70,8 @@ the other — which roughly halves total sweep time. Single-channel
 | `ALL <duty>` | Raw duty on all 4 channels at once |
 | `ALLPCT <percent>` | Duty by percent on all 4 channels |
 | `SWEEP <ch> <start%> <end%> <step%> <dwell_ms>` | Ramp one channel, dwelling at each step |
-| `STATUS` | Current duty/relay/mute/volume state of both sides, plus the computed attenuation depth and Rtotal |
+| `STATUS` | Current duty/relay/mute/volume state of both sides, plus the computed attenuation depth and Rtotal, a `Volume:` summary line (same number as the master's `GET VOL`) and the RP2040 die temperature with uptime |
+| `TEMP` (alias `UPTIME`) | RP2040 die temperature (proxy for board temperature) **and the time since power-up**, e.g. `Die temp: 28.0 C (RP2040 die)  uptime 01:02:05 (3725 s)`. `STATUS`, `CALTRIM` and `CALAUTO FAST`/`FULL` print the same pair at the start and end of a calibration, and the end line also gives the total duration (`... uptime 00:02:25 (145 s)  took 39.4 s`), so cold-vs-warm drift can be logged against temperature, time since power-on and how long the run took |
 | `OFF` | All 4 channels to 0 |
 
 `<ch>` is `SHUNT_L`, `SER_L`, `SHUNT_R`, `SER_R`, or the raw index `0`–`3`.
@@ -50,7 +81,7 @@ the other — which roughly halves total sweep time. Single-channel
 | Command | Effect |
 |---|---|
 | `RELAY [L|R] <ON|OFF>` | Energize/de-energize a calibration relay directly. Brackets the actual contact transition with a brief forced amp mute (pop suppression) either way. |
-| `AMPMUTE [ON|OFF]` | Get/set the amp's own mute (4N25 opto) — independent of either channel's `MUTE`. Both directions refused during the boot hold window; the amp auto-unmutes on its own once that window expires, no command needed. |
+| `AMP_MUTE [ON|OFF]` | (renamed from `AMPMUTE` — now the same name as the master protocol's) Get/set the amp's own mute (4N25 opto) — independent of either channel's `MUTE`. Both directions refused during the boot hold window; the amp auto-unmutes on its own once that window expires, no command needed. |
 | `DIAGLED <ON|OFF>` | Steady on/off for the diagnostic LED. No blinking — the GPIO toggling itself was confirmed audible as noise on real hardware, so this is a plain indicator you explicitly switch on only when you want it, off by default at boot. |
 
 ## Calibration
@@ -67,12 +98,12 @@ of trusting the ADS1115, or hand-correcting one bad point.
 | `CALDRIVE [L|R] <SER|SHUNT> <duty>` | Drive a duty and leave it — so you can go measure with a meter |
 | `CALPOINT [L|R] <SER|SHUNT> <duty> <ohms>` | Record a characterization point at that duty |
 | `CALSOLVE [L|R] [steps] [rTotalOhms]` | Solve the LUT from whatever curve points exist so far (no sweep). The range is always computed — it is not an argument. With no `L|R` both sides share one common range; `L` or `R` alone uses that side's own range. An explicit `rTotalOhms` is applied as the channel's Rtotal, like `CALRTOTAL` first. |
-| `CALDUMP [L|R]` | Print curves + solved LUT |
+| `CALDUMP [L|R]` | Print curves + solved LUT, preceded by a `Divider model: Rsrc=… Rload=…` line. The LUT's dB column is the **loaded** gain (amp input + buffer output impedance), so the Rs/Rsh targets differ from the bare-ratio values of earlier dumps at the loud steps (e.g. step 30 at 50k: Rs≈1.4k / Rsh≈48.6k instead of 9.1k / 40.9k). Compare dumps only within the same calibration revision. |
 | `CALTRIM [L|R]` | Verify + trim every LUT step against a live measurement, re-saves when done. The `old->new` columns now show the real change (earlier builds printed new->new, so every trim looked like it moved nothing). Starts by settling the channel at step 0 for 8 s so measurements begin from rest, and restores the current volume before the audio reconnects. |
-| `CALAUTO [L|R] <FULL|FAST>` | Automatic sweep + solve, no manual points. Auto-saves to flash, returns to audio mode. Both channels (no `L|R`) run interleaved. Skips as a no-op if no ADS1115 is detected on that channel. **FULL** = coarse sweep + adaptive knee refinement + solve + trim (so a separate `CALTRIM` afterwards is no longer needed). **FAST** = trim-only drift touch-up of the saved calibration, no sweep. |
-| `CALSCAN [L|R]` | Diagnostic: fine two-way (ascending + descending) scan of the ~22–28% duty window, 5 raw samples per point. Does **not** touch saved curves/LUT — purely for characterizing hysteresis. Paste the output back for analysis. |
+| `CALAUTO [L|R] <FULL|FAST>` | Automatic sweep + solve, no manual points. Auto-saves to flash, returns to audio mode. Both channels (no `L|R`) run interleaved. Skips as a no-op if no ADS1115 is detected on that channel. **FULL** = coarse sweep + adaptive knee refinement + solve + trim (so a separate `CALTRIM` afterwards is no longer needed). **FAST** = trim-only drift touch-up of the saved calibration, no sweep. During a `FULL` sweep the non-swept element is held at `CAL_BRIGHT_HOLD_DUTY` (80% of full scale, not 100%: the cells bottom out earlier and extra current only heats them). If the coarse list's first point (15% duty) already reads below 2× Rtotal on either channel, the knee is below the list and the sweep **extends downward automatically** (up to 4 rounds of 5 points, printed as `-- extending low end --`); with the original driver nothing triggers and the sweep is unchanged. |
+| `CALSCAN [L|R] [start end]` | Diagnostic: fine two-way (ascending + descending) scan of a raw-duty window (default **900–1148**, tuned to the original 100k-bleed driver — after changing the bleeds, pass the window around the new knee, e.g. `CALSCAN L 560 700`; the window is trimmed to a multiple of the 4-count step), 5 raw samples per point. The non-scanned element is held at `CAL_BRIGHT_HOLD_DUTY`. Does **not** touch saved curves/LUT — purely for characterizing hysteresis. Paste the output back for analysis. |
 | `CALREF [L|R] [ohms]` | Get/set Rref used for that channel's readings |
-| `CALRTOTAL [L|R] [ohms]` | Get/set the Rs+Rsh target (default 10000Ω) |
+| `CALRTOTAL [L|R] [ohms]` | Get/set the Rs+Rsh target (default 50000Ω) |
 | `CALMODE [L|R] [RTOTAL\|FIXEDSERIES]` | Get/set attenuation mode |
 | `CALSERIESDUTY [L|R] [duty]` | Get/set the fixed series duty (`FIXEDSERIES` mode only) — affects future solves only, re-run `CALAUTO`/`CALSOLVE` after changing it |
 | `CALSAVE [L|R]` | Manually save current curves+LUT to flash |
@@ -82,7 +113,7 @@ of trusting the ADS1115, or hand-correcting one bad point.
 
 | Command | Effect |
 |---|---|
-| `VOL [L|R] <step>` | Apply LUT step directly (step 0 = quietest) |
+| `VOL [L|R] [<step>]` | Apply LUT step directly (step 0 = quietest; **the same numbering as the master's `VOL`/`GET VOL`**). Jumps of more than one step auto-ramp. **With no step it shows the current volume**, e.g. `VOL=8 (-40.04 dB)` (or one `L:`/`R:` line each if they differ; `[muted]` is appended when muted). |
 | `VOLUP [L|R]` | One step louder |
 | `VOLDOWN [L|R]` | One step quieter |
 | `MUTE [L|R] <ON|OFF>` | Fast mute/unmute — works even before any calibration is loaded |
@@ -161,8 +192,10 @@ untouched. Paste the full output back for analysis.
 
 ```
 STATUS
-VOL 1
-VOL 32
+VOL            (no step: shows the current volume)
+VOL 0
+VOL 30
+VOL 31         (expect ERR: the top step is out of range)
 MUTE ON
 STATUS
 MUTE OFF
@@ -188,11 +221,13 @@ From the master's (or a terminal emulating the master's) side of UART0:
 ```
 DEBUG
 ```
-— link is now in bench-console mode, every command above is available —
+— the daughter answers with the single line `OK -- entering DEBUG mode. Send EXIT to
+return to the strict protocol.` (no banner — type `HELP` for the list); the link is now
+in bench-console mode and every command above is available —
 ```
 EXIT
 ```
-— link is back to the strict protocol (`CAL`, `VOL`, `MUTE`, `GET VOL`,
-etc. from `daughter-board-uart-protocol-v2.md`). A real master should
+— link is back to the strict protocol (`CAL FAST`/`CAL FULL`, `VOL`, `MUTE`,
+`AMP_MUTE`, `STATUS` from `daughter-board-uart-protocol-v2.md`). A real master should
 never send `DEBUG` itself; this is purely for a technician with a
 terminal on the same physical wire.

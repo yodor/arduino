@@ -1,30 +1,36 @@
 #include "LDRVolume.hpp"
 #include "DualCalibration.hpp"
 #include "BusyHook.hpp"
+#include "Board.hpp"
 #include "Config.hpp"
+#include "DividerMath.hpp"
 #include <math.h>
 
-void LDRVolume::runDiagnosticScan(Stream &out) {
+void LDRVolume::runDiagnosticScan(Stream &out, uint16_t startDuty, uint16_t endDuty) {
+  BusyHook::Scope busy;
+  Board::CalHold ampHold(board_); // amp muted for the whole run, restored after
   if (!sensor_.isPresent()) {
     out.println(F("CALSCAN: no ADS1115 detected on this channel's bus -- skipping"));
     return;
   }
 
-  // Window covers a bit either side of every 24-27% observation seen so
-  // far across both cells; step=4 raw counts is ~10x finer than CALAUTO's
-  // point list, specifically to see whether there's real structure
-  // between those samples or whether it's genuinely this abrupt.
-  static constexpr uint16_t SCAN_START = 900;
-  static constexpr uint16_t SCAN_END   = 1148; // (END-START) is an exact
-                                                // multiple of STEP, so
-                                                // ascending/descending hit
-                                                // identical duty values
+  // Default window (see the header) covers a bit either side of every 24-27%
+  // observation seen so far across both cells with the original 100k bleeds;
+  // step=4 raw counts is ~10x finer than CALAUTO's point list, specifically to
+  // see whether there's real structure between those samples or whether it's
+  // genuinely this abrupt.
   static constexpr uint16_t SCAN_STEP  = 4;
+  // Step-aligned and never below one step, so the descending loop cannot
+  // wrap past zero and both directions hit identical duty values.
+  const uint16_t SCAN_START = (startDuty < SCAN_STEP) ? SCAN_STEP : startDuty;
+  uint16_t       SCAN_END   = (endDuty > DriverChannels::WRAP) ? DriverChannels::WRAP : endDuty;
+  if (SCAN_END < SCAN_START + SCAN_STEP) SCAN_END = SCAN_START + SCAN_STEP;
+  SCAN_END = SCAN_START + (uint16_t)(((SCAN_END - SCAN_START) / SCAN_STEP) * SCAN_STEP);
+
   static constexpr uint8_t  SAMPLES    = 5;
   static constexpr unsigned long SAMPLE_GAP_MS = 60;
 
   relayEnergize(true); // diagnostic only -- cal_/curves untouched throughout
-  bool aborted = false;
 
   auto sampleAndPrint = [&](uint16_t duty, bool wantSeries) {
     out.print(F("  duty="));
@@ -46,11 +52,7 @@ void LDRVolume::runDiagnosticScan(Stream &out) {
         out.print(F("ERR"));
       }
       if (i < SAMPLES - 1) out.print(',');
-      delay(SAMPLE_GAP_MS);
-      if (out.available()) {
-        char c = out.read();
-        if (c != '\r' && c != '\n') aborted = true;
-      }
+      BusyHook::wait(SAMPLE_GAP_MS);
     }
     out.print(']');
     if (validCount > 0) {
@@ -66,37 +68,42 @@ void LDRVolume::runDiagnosticScan(Stream &out) {
     }
   };
 
-  for (uint8_t pass = 0; pass < 2 && !aborted; pass++) {
+  for (uint8_t pass = 0; pass < 2; pass++) {
     bool wantSeries = (pass == 0);
     DriverChannels::Channel scanCh = wantSeries ? seriesCh_ : shuntCh_;
     DriverChannels::Channel holdCh = wantSeries ? shuntCh_ : seriesCh_;
-    driver_.setDuty(holdCh, DriverChannels::WRAP);
+    driver_.setDuty(holdCh, CAL_BRIGHT_HOLD_DUTY);
 
     out.print(F("--- CALSCAN "));
     out.print(wantSeries ? F("SERIES") : F("SHUNT"));
     out.println(F(" -- ascending ---"));
-    for (uint16_t d = SCAN_START; d <= SCAN_END && !aborted; d += SCAN_STEP) {
+    for (uint16_t d = SCAN_START; d <= SCAN_END; d += SCAN_STEP) {
       driver_.setDuty(scanCh, d);
       sampleAndPrint(d, wantSeries);
     }
-    if (aborted) break;
 
     out.print(F("--- CALSCAN "));
     out.print(wantSeries ? F("SERIES") : F("SHUNT"));
     out.println(F(" -- descending ---"));
-    for (uint16_t d = SCAN_END; d >= SCAN_START && !aborted; d -= SCAN_STEP) {
+    for (uint16_t d = SCAN_END; d >= SCAN_START; d -= SCAN_STEP) {
       driver_.setDuty(scanCh, d);
       sampleAndPrint(d, wantSeries);
     }
   }
 
   relayEnergize(false);
-  out.println(aborted
-                      ? F("CALSCAN aborted.")
-                      : F("CALSCAN done. Existing calibration/LUT untouched -- paste this output back for analysis."));
+  out.println(F("CALSCAN done. Existing calibration/LUT untouched -- paste this output back for analysis."));
 }
 
-float LDRVolume::computeMaxRangeDb(float marginDb, float rTotalOverride) const {
+bool LDRVolume::effectiveFixedSeriesDuty(uint16_t &duty) const {
+  if (!fixedFromOhms_) {
+    duty = fixedSeriesDuty_;
+    return true;
+  }
+  return cal_.seriesCurve().dutyForResistance(rTotalOhms_, duty);
+}
+
+float LDRVolume::computeMaxRangeDb(float marginDb) const {
   const LdrCurve &sc = cal_.seriesCurve();
   const LdrCurve &hc = cal_.shuntCurve();
   if (sc.empty() || hc.empty()) return 0.0f;
@@ -104,18 +111,24 @@ float LDRVolume::computeMaxRangeDb(float marginDb, float rTotalOverride) const {
   float rshFloor = hc.point(hc.count() - 1).ohms;  // highest-duty = lowest-R point
   if (rshFloor <= 0.0f) return 0.0f;
 
+  const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
   float kMin, kMax;
   if (mode_ == AttenuationMode::FIXED_SERIES) {
+    uint16_t fixedDuty;
     float rsFixed;
-    if (!sc.resistanceForDuty(fixedSeriesDuty_, rsFixed) || rsFixed <= 0.0f) return 0.0f;
-    kMin = rshFloor / (rsFixed + rshFloor);
-    kMax = 1.0f; // Rsh -> infinity; the top step itself is OUT OF RANGE by design
+    if (!effectiveFixedSeriesDuty(fixedDuty) ||
+        !sc.resistanceForDuty(fixedDuty, rsFixed) || rsFixed <= 0.0f) return 0.0f;
+    kMin = DividerMath::gain(rsFixed, rshFloor, load);
+    // Rsh -> infinity. Unloaded that is 1.0; with the amp's load it tops out at
+    // Rload/(Rsrc+Rs+Rload). The top step itself is OUT OF RANGE by design.
+    kMax = (load.loadOhms > 0.0f) ? load.loadOhms / (load.srcOhms + rsFixed + load.loadOhms) : 1.0f;
   } else {
     float rsFloor = sc.point(sc.count() - 1).ohms;
-    const float rTotal = (rTotalOverride > 0.0f) ? rTotalOverride : rTotalOhms_;
-    if (rTotal <= rshFloor) return 0.0f;
-    kMin = rshFloor / rTotal;
-    kMax = 1.0f - (rsFloor / rTotal);
+    if (rTotalOhms_ <= rshFloor || rTotalOhms_ <= rsFloor) return 0.0f;
+    // Quietest: shunt at its floor. Loudest: series at its floor. Both through
+    // the loaded divider, so the range is the real one.
+    kMin = DividerMath::gain(rTotalOhms_ - rshFloor, rshFloor, load);
+    kMax = DividerMath::gain(rsFloor, rTotalOhms_ - rsFloor, load);
   }
   if (kMax <= kMin || kMax <= 0.0f || kMin <= 0.0f) return 0.0f;
 
@@ -146,13 +159,16 @@ uint8_t LDRVolume::calSolve(uint8_t steps, Stream &out) {
   }
 
   if (mode_ == AttenuationMode::FIXED_SERIES) {
+    uint16_t fixedDuty;
     float rsFixed;
-    if (!cal_.seriesCurve().resistanceForDuty(fixedSeriesDuty_, rsFixed)) {
-      out.println(F("ERR fixedSeriesDuty falls outside the characterized series curve"));
-      out.println(F("    -- characterize first, or pick a duty within the curve's range"));
+    if (!effectiveFixedSeriesDuty(fixedDuty) ||
+        !cal_.seriesCurve().resistanceForDuty(fixedDuty, rsFixed)) {
+      out.println(F("ERR the fixed series resistance/duty falls outside the characterized series curve"));
+      out.println(F("    -- characterize first, or pick a value within the curve's range"));
       return 0;
     }
-    return cal_.solveLutFixedSeries(steps, range, rsFixed, fixedSeriesDuty_);
+    fixedSeriesDuty_ = fixedDuty; // remember what was actually used: this is what gets saved
+    return cal_.solveLutFixedSeries(steps, range, rsFixed, fixedDuty);
   }
   return cal_.solveLut(steps, range, rTotalOhms_);
 }
@@ -242,7 +258,7 @@ uint16_t LDRVolume::trimDuty(bool wantSeries, float targetOhms, uint16_t dutyGue
   return bestDuty;
 }
 
-bool LDRVolume::trimLoop(Stream &out) {
+void LDRVolume::trimLoop(Stream &out) {
   out.println(F("--- CALTRIM: verify + trim each step ---"));
 
   uint8_t n = numSteps();
@@ -261,13 +277,6 @@ bool LDRVolume::trimLoop(Stream &out) {
     out.println(F("  settling at step 0 before trimming..."));
     for (uint32_t waited = 0; waited < TRIM_PRECONDITION_MS; waited += 100) {
       BusyHook::wait(100);
-      if (out.available()) {
-        char c = out.read();
-        if (c != '\r' && c != '\n') {
-          out.println(F("CALTRIM aborted."));
-          return false;
-        }
-      }
     }
     break;
   }
@@ -321,16 +330,7 @@ bool LDRVolume::trimLoop(Stream &out) {
     out.print(oldShuntDuty);
     out.print(F("->"));
     out.println(newShuntDuty);
-
-    if (out.available()) {
-      char c = out.read();
-      if (c != '\r' && c != '\n') {
-        out.println(F("CALTRIM aborted."));
-        return false;
-      }
-    }
   }
-  return true;
 }
 
 void LDRVolume::reapplyCurrentStepOrDefault() {
@@ -354,6 +354,8 @@ void LDRVolume::reapplyCurrentStepOrDefault() {
 }
 
 void LDRVolume::runTrimPass(Stream &out) {
+  BusyHook::Scope busy;
+  Board::CalHold ampHold(board_); // amp muted for the whole run, restored after
   if (!hasLut()) {
     out.println(F("CALTRIM: no LUT solved yet -- run CALSOLVE or CALAUTO first"));
     return;
@@ -363,8 +365,10 @@ void LDRVolume::runTrimPass(Stream &out) {
     return;
   }
 
+  const uint32_t t0 = millis();
+  Board::reportDieTemp(out, F("Die temp at start"));
   relayEnergize(true);
-  bool completed = trimLoop(out);
+  trimLoop(out);
 
   // Put this channel back on its real operating point WHILE the relay still
   // has the audio path disconnected, then give the cells a moment to relax
@@ -373,11 +377,8 @@ void LDRVolume::runTrimPass(Stream &out) {
   reapplyCurrentStepOrDefault();
   BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
   relayEnergize(false);
+  Board::reportDieTemp(out, F("Die temp at end"), millis() - t0);
 
-  if (!completed) {
-    out.println(F("CALTRIM aborted -- not saved."));
-    return;
-  }
   bool saved = calSave();
   out.println(saved ? F("Trimmed calibration saved to flash.") : F("WARN: failed to save."));
 }
@@ -536,7 +537,7 @@ float LDRVolume::convergeRead(bool wantSeries, unsigned long timeoutMs, unsigned
 
 void LDRVolume::runAutoCalibration(CalMode mode, Stream &out) {
   // One sweep implementation for one channel or two (see DualCalibration):
-  // adaptive knee refinement, dark-end handling and abort cleanup live
+  // adaptive knee refinement and dark-end handling live
   // there, so a single-channel run and the interleaved run can never
   // drift apart again.
   LDRVolume *one[1] = {this};

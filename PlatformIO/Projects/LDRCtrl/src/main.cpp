@@ -54,12 +54,13 @@ void setup() {
   driver.begin();       // 4 PWM channels, all start at duty=0
   // The master link comes up BEFORE anything slow, and answers "busy" while
   // a calibration blocks the main loop: a first-boot calibration takes
-  // minutes, and a master asking GET STATUS meanwhile should hear
+  // minutes, and a master asking STATUS meanwhile should hear
   // STATUS=BUSY, not silence.
   Serial1.setTX(UART_TX_PIN);
   Serial1.setRX(UART_RX_PIN);
   Serial1.begin(UART_BAUD);
   masterLinkUart.enableBusyService();
+  masterLinkUsb.enableBusyService(); // USB too, from the very start: STATUS over USB is immediate even during the boot calibration
 
   leftChannel.begin();  // relay de-energized (audio mode), i2c bus left inactive
   rightChannel.begin();

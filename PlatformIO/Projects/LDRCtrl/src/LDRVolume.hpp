@@ -92,12 +92,29 @@ public:
   enum class AttenuationMode : uint8_t { CONSTANT_RTOTAL, FIXED_SERIES };
   // Changing mode invalidates any already-solved LUT -- it was solved
   // under the other mode's math.
-  void setMode(AttenuationMode m) { mode_ = m; cal_.invalidateLut(); }
+  void setMode(AttenuationMode m) {
+    mode_ = m;
+    if (m == AttenuationMode::CONSTANT_RTOTAL) fixedFromOhms_ = false; // a stale master "R" must not leak into a later console FIXED_SERIES
+    cal_.invalidateLut();
+  }
   AttenuationMode mode() const { return mode_; }
 
   // Changing this invalidates any already-solved LUT in FIXED_SERIES
   // mode (every step's series target depends on it).
-  void setFixedSeriesDuty(uint16_t duty) { fixedSeriesDuty_ = duty; cal_.invalidateLut(); }
+  void setFixedSeriesDuty(uint16_t duty) { fixedSeriesDuty_ = duty; fixedFromOhms_ = false; cal_.invalidateLut(); }
+
+  // FIXED_SERIES specified in OHMS -- what the master's CAL FULL MODE=FIXEDSERIES
+  // R=<ohms> asks for. Switches to FIXED_SERIES, stores the ohms in
+  // rTotalOhms() (the single "R" setting serves both modes) and makes every
+  // solve DERIVE the series duty from the series curve at that resistance, so a
+  // fresh sweep re-resolves it. setFixedSeriesDuty() (the bench console) turns
+  // this off again.
+  void useFixedSeriesOhms(float ohms) {
+    mode_ = AttenuationMode::FIXED_SERIES;
+    rTotalOhms_ = ohms;
+    fixedFromOhms_ = true;
+    cal_.invalidateLut();
+  }
   uint16_t fixedSeriesDuty() const { return fixedSeriesDuty_; }
 
   void calBegin();                       // relayEnergize(true), clear curves
@@ -112,8 +129,7 @@ public:
   // mode(), at this channel's rTotalOhms() and a range COMPUTED from the
   // measured floors (optionally capped, see calSolveStereo()). Returns the
   // number of valid steps; 0 with a message if the range can't be computed.
-  // out: where progress/errors print and where an abort keypress is read
-  // from -- pass whichever Stream actually invoked this (the calling
+  // out: where progress/errors print -- pass whichever Stream actually invoked this (the calling
   // SerialConsole's own stream), so output lands wherever the command
   // came from rather than always on USB. Defaults to the USB Serial for
   // boot-time auto-characterization, which has no calling console.
@@ -140,7 +156,19 @@ public:
   // Cheap I2C-address-ACK check, no conversion started. Used by
   // DualCalibration to decide whether a channel can participate in an
   // interleaved sweep before touching its relay at all.
-  bool adsPresent() { return sensor_.isPresent(); }
+  // Probes the ADS1115: briefly ACTIVATES the I2C bus and then DE-INITS it. Only
+  // call it at idle, as part of starting a calibration or answering a CAL
+  // command -- never from anything that can run during a calibration (it would
+  // shut the bus under the sweep), and not as a periodic poll (the bus is kept
+  // inactive during audio on purpose). The result is remembered; see below.
+  bool adsPresent() {
+    adsSeen_ = sensor_.isPresent() ? 1 : 0;
+    return adsSeen_ == 1;
+  }
+  // What the most recent adsPresent() probe found, WITHOUT touching the bus:
+  // 1 present, 0 absent, -1 never probed (e.g. a saved calibration was loaded
+  // at boot and nothing has needed the sensor since). STATUS uses this.
+  int8_t adsLastSeen() const { return adsSeen_; }
 
   // See LdrSensor::setRRefOhms -- affects future measurements only.
   void setRRefOhms(float ohms) { sensor_.setRRefOhms(ohms); }
@@ -154,6 +182,7 @@ public:
   // re-characterizing.
   void setRTotalOhms(float ohms) { rTotalOhms_ = ohms; cal_.invalidateLut(); }
   float rTotalOhms() const { return rTotalOhms_; }
+  Board &board() const { return board_; } // the shared Board (calibration mute hold lives there)
 
   // The attenuation depth (dB from step 0 up to the notional 0 dB top step)
   // the CURRENT LUT was solved with, read back from the LUT itself (step 0's
@@ -168,12 +197,7 @@ public:
   // highest-duty (lowest-resistance) characterized point. Returns 0 if
   // curves are empty or the numbers don't make physical sense (e.g.
   // rTotalOhms_ too small relative to a floor).
-  // rTotalOverride > 0 evaluates the CONSTANT_RTOTAL formula at that Rtotal
-  // instead of the stored one -- WITHOUT touching any state. (CAL INIT's
-  // candidate probing used to set/restore rTotalOhms_ for this, and every
-  // setRTotalOhms() invalidates the solved LUT, so probing wiped the working
-  // calibration from RAM.)
-  float computeMaxRangeDb(float marginDb, float rTotalOverride = -1.0f) const;
+  float computeMaxRangeDb(float marginDb) const;
 
   // Automatic characterization + solve, no manual CALDRIVE/CALPOINT
   // needed. FULL: ~18 points, dense through the steep ~15-40% duty
@@ -195,8 +219,8 @@ public:
   // calBegin()), sweeps, solves, saves to flash, then de-energizes the
   // relay again -- back to normal audio mode when it returns. Use RELAY
   // <side> ON + ADCREAD to verify a step afterwards if you want to.
-  // Blocking -- prints progress to Serial as it goes; send any character
-  // to abort between points.
+  // Blocking -- prints progress to Serial as it goes; it always runs to
+  // completion (there is no abort).
   enum class CalMode : uint8_t { FULL, FAST };
   void runAutoCalibration(CalMode mode, Stream &out = Serial); // auto-saves to flash on success
 
@@ -205,11 +229,11 @@ public:
   // DualCalibration::touchUp). CalMode::FULL sweeps, solves, then trims.
 
   // The trim loop on its own: ASSUMES the relay is already energized and
-  // never touches it. Updates the LUT in RAM only (no save). Returns false
-  // if aborted. runTrimPass() wraps this with relay handling and a save;
+  // never touches it. Updates the LUT in RAM only (no save). runTrimPass()
+  // wraps this with relay handling and a save;
   // DualCalibration calls it directly so a full calibration can trim before
   // it reconnects the audio.
-  bool trimLoop(Stream &out);
+  void trimLoop(Stream &out);
 
   // Puts this channel's PWM on its current step (or on the lowest valid
   // step if the current one isn't valid) -- or, if the LDR mute is engaged,
@@ -229,7 +253,6 @@ public:
   // characterization). In FIXED_SERIES mode only shunt is trimmed --
   // series stays at its one fixed duty, by design. Updates and re-saves
   // the LUT. Energizes relay for the duration, de-energizes when done.
-  // Send any character to abort between steps.
   void runTrimPass(Stream &out = Serial);
 
   // Diagnostic-only: fine-resolution (every 4 raw duty counts) scan of
@@ -239,8 +262,11 @@ public:
   // per point so the actual settling trajectory is visible too, not a
   // pre-filtered single number. Does NOT touch existing curves/LUT/saved
   // flash data at all -- purely prints to Serial. De-energizes relay
-  // when done. Send any character to abort between points.
-  void runDiagnosticScan(Stream &out = Serial);
+  // when done.
+  // The default window (raw duty 900-1148) was tuned to the original 100k-bleed
+  // driver's knee; pass another window after changing the bleeds. Both ends are
+  // in raw duty counts; the window is trimmed to a multiple of the 4-count step.
+  void runDiagnosticScan(Stream &out = Serial, uint16_t startDuty = 900, uint16_t endDuty = 1148);
 
   bool calSave() { return CalStorage::save(calPath_, *this); }
   bool calLoad() {
@@ -296,6 +322,12 @@ private:
   float rTotalOhms_;
   float rangeCapDb_ = 0.0f; // >0 only while calSolveStereo() is running -- see above
   AttenuationMode mode_ = AttenuationMode::CONSTANT_RTOTAL;
+  bool fixedFromOhms_ = false; // FIXED_SERIES duty derived from rTotalOhms_ at each solve
+  int8_t adsSeen_ = -1;        // last adsPresent() result: 1 / 0 / -1 = never probed
+  // The series duty FIXED_SERIES should use right now: the stored duty, or (if
+  // set in ohms) the one the series curve gives for rTotalOhms_. False if that
+  // resistance lies outside the characterized curve.
+  bool effectiveFixedSeriesDuty(uint16_t &duty) const;
   uint16_t fixedSeriesDuty_ = DriverChannels::WRAP; // default: fully bright -- pick a better
                                                      // value from CALSCAN data before using
                                                      // FIXED_SERIES mode for real

@@ -1,4 +1,6 @@
 #include "Calibration.hpp"
+#include "Config.hpp"
+#include "DividerMath.hpp"
 #include <math.h>
 
 // ---------------------------------------------------------------------------
@@ -96,14 +98,19 @@ uint8_t VolumeLut::solve(const LdrCurve &seriesCurve, const LdrCurve &shuntCurve
   if (numSteps > MAX_STEPS) numSteps = MAX_STEPS;
   numSteps_ = numSteps;
   uint8_t validCount = 0;
+  const DividerMath::Load kLoad{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
 
   for (uint8_t i = 0; i < numSteps; i++) {
     float attenDb = (numSteps <= 1)
                         ? 0.0f
                         : -rangeDb * (float)(numSteps - 1 - i) / (float)(numSteps - 1);
     float k   = powf(10.0f, attenDb / 20.0f);
-    float rsh = k * rTotalOhms;
-    float rs  = (1.0f - k) * rTotalOhms;
+    // Solved against the LOADED divider (amp input + buffer output impedance),
+    // so attenDb is the real gain. Rsh >= rTotal means k is beyond what Rs -> 0
+    // can reach: Rs = 0 then fails the series curve's range check (OUT OF RANGE).
+    float rsh = DividerMath::rshForRtotal(k, rTotalOhms, kLoad);
+    if (rsh > rTotalOhms) rsh = rTotalOhms;
+    float rs  = rTotalOhms - rsh;
 
     Entry &e = entries_[i];
     e.targetDb  = attenDb;
@@ -126,6 +133,7 @@ uint8_t VolumeLut::solveFixedSeries(const LdrCurve &shuntCurve, uint8_t numSteps
   if (numSteps > MAX_STEPS) numSteps = MAX_STEPS;
   numSteps_ = numSteps;
   uint8_t validCount = 0;
+  const DividerMath::Load kLoad{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
 
   for (uint8_t i = 0; i < numSteps; i++) {
     float attenDb = (numSteps <= 1)
@@ -133,11 +141,11 @@ uint8_t VolumeLut::solveFixedSeries(const LdrCurve &shuntCurve, uint8_t numSteps
                         : -rangeDb * (float)(numSteps - 1 - i) / (float)(numSteps - 1);
     float k = powf(10.0f, attenDb / 20.0f);
 
-    // K = Rsh/(Rs+Rsh)  =>  Rsh = K*Rs/(1-K). Guard the K->1 singularity
-    // (true 0dB needs Rsh->infinity with any nonzero fixed series) with a
-    // large sentinel -- it will naturally fail the shunt curve's own
-    // range check below rather than produce Inf/NaN.
-    float rsh = (k >= 0.9999f) ? 1.0e9f : (k * rSeriesFixedOhms / (1.0f - k));
+    // Loaded divider: Rsh = f(K, Rs, Rsrc, Rload). The K->1 singularity -- and,
+    // with a load, everything above Rload/(Rsrc+Rs+Rload) -- returns a large
+    // sentinel that fails the shunt curve's own range check below rather than
+    // producing Inf/NaN.
+    float rsh = DividerMath::rshForFixedSeries(k, rSeriesFixedOhms, kLoad);
 
     Entry &e = entries_[i];
     e.targetDb = attenDb;

@@ -73,9 +73,6 @@ void Board::bootInfo() {
 }
 
 void Board::begin() {
-
-  delay(1000);
-  
   bootMillis_ = millis();
   ampMuted_ = true;
 
@@ -108,8 +105,6 @@ void Board::begin() {
   digitalWrite(REGULATOR_MODE_PIN, HIGH);
   pinMode(REGULATOR_MODE_PIN, OUTPUT);
 #endif
-
-
 
   // DIAGNOSTIC_LED_PIN is 25 (real GPIO) on the original Pico, or 32
   // (WL_GPIO0, routed through the wireless chip) on Pico W -- see
@@ -162,14 +157,35 @@ unsigned long Board::bootHoldRemainingMs() const {
   return (elapsed < MUTE_BOOT_HOLD_MS) ? (MUTE_BOOT_HOLD_MS - elapsed) : 0;
 }
 
+void Board::writeAmpMute(bool muted) {
+  bool driveHigh = muted ? MUTE_ACTIVE_HIGH : !MUTE_ACTIVE_HIGH;
+  digitalWrite(AMP_MUTE_PIN, driveHigh ? HIGH : LOW);
+  ampMuted_ = muted;
+}
+
 bool Board::setAmpMute(bool muted) {
   if (bootHoldRemainingMs() > 0) {
     return false; // boot hold active -- BOTH directions ignored, pin untouched
   }
-  bool driveHigh = muted ? MUTE_ACTIVE_HIGH : !MUTE_ACTIVE_HIGH;
-  digitalWrite(AMP_MUTE_PIN, driveHigh ? HIGH : LOW);
-  ampMuted_ = muted;
+  if (hold_.active()) {
+    // A calibration is holding the amp muted. Asking for mute is already true;
+    // asking to open it must wait for the hold to end. The remembered
+    // pre-calibration state is deliberately NOT touched here -- relayEnergize()
+    // restores "whatever it was" on every transition and would otherwise
+    // overwrite it with the forced mute.
+    return muted;
+  }
+  writeAmpMute(muted);
   return true;
+}
+
+void Board::calHoldBegin() {
+  hold_.begin(ampMuted_);
+  writeAmpMute(true);
+}
+
+void Board::calHoldEnd() {
+  if (hold_.end(bootHoldRemainingMs() > 0)) writeAmpMute(false);
 }
 
 void Board::setRelayActive(bool active) {
@@ -192,10 +208,38 @@ void Board::update() {
   // see 0ms remaining and work fine -- but being explicit here makes
   // the one-shot intent unambiguous rather than relying on that
   // coincidence.
-  if (!bootHoldReleased_ && bootHoldRemainingMs() == 0 && !anyRelayActive()) {
+  if (!bootHoldReleased_ && bootHoldRemainingMs() == 0 && !anyRelayActive() && !hold_.active()) {
     bootHoldReleased_ = true;
     bool driveHigh = !MUTE_ACTIVE_HIGH; // the "unmuted" drive level
     digitalWrite(AMP_MUTE_PIN, driveHigh ? HIGH : LOW);
     ampMuted_ = false;
   }
+}
+
+float Board::dieTempC() {
+  const int N = 16; // the sensor's ADC is ~0.5 degC per LSB; averaging brings it to ~0.1
+  float sum = 0.0f;
+  for (int i = 0; i < N; i++) sum += analogReadTemp();
+  return sum / N;
+}
+
+uint32_t Board::uptimeSeconds() { return millis() / 1000UL; }
+
+void Board::reportDieTemp(Stream &out, const __FlashStringHelper *label, uint32_t elapsedMs) {
+  char hms[16];
+  uint32_t up = uptimeSeconds();
+  out.print(label);
+  out.print(F(": "));
+  out.print(dieTempC(), 1);
+  out.print(F(" C (RP2040 die)  uptime "));
+  out.print(formatHms(up, hms, sizeof(hms)));
+  out.print(F(" ("));
+  out.print((unsigned long)up);
+  out.print(F(" s)"));
+  if (elapsedMs > 0) {
+    out.print(F("  took "));
+    out.print(elapsedMs / 1000.0f, 1);
+    out.print(F(" s"));
+  }
+  out.println();
 }

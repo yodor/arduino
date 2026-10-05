@@ -2,6 +2,8 @@
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
+#include "Board.hpp"
+#include "SweepLadder.hpp"
 #include <math.h>
 
 namespace DualCalibration {
@@ -106,14 +108,6 @@ void printPoint(Stream &out, const Sample &s, uint8_t na, const uint8_t *idx,
   out.println(F("ms)"));
 }
 
-// A stray CR/LF left over from the command that started this is not an
-// abort request; any other character is.
-bool abortRequested(Stream &out) {
-  if (!out.available()) return false;
-  char c = out.read();
-  return (c != '\r' && c != '\n');
-}
-
 bool needsRefine(const Sample &a, const Sample &b, uint8_t na) {
   if ((uint16_t)(b.duty - a.duty) <= REFINE_MIN_GAP) return false;
   for (uint8_t c = 0; c < na; c++) {
@@ -128,13 +122,14 @@ bool needsRefine(const Sample &a, const Sample &b, uint8_t na) {
 // One sweep of the swept element (series or shunt) across all channels,
 // the other element held bright. Measures a coarse list, refines across
 // the knee, then feeds every point to the curves in ascending duty order.
-// Returns false if the user aborted.
-bool sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *labels,
+void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *labels,
                 bool wantSeries, const uint16_t *pts, uint8_t n,
                 unsigned long timeoutMs, Stream &out) {
   for (uint8_t c = 0; c < na; c++) {
-    if (wantSeries) ch[c]->calDriveShunt(DriverChannels::WRAP);
-    else            ch[c]->calDriveSeries(DriverChannels::WRAP);
+    // The element that is NOT being swept sits at CAL_BRIGHT_HOLD_DUTY, not full
+    // scale: it only needs to be near its floor, and more current just heats it.
+    if (wantSeries) ch[c]->calDriveShunt(CAL_BRIGHT_HOLD_DUTY);
+    else            ch[c]->calDriveSeries(CAL_BRIGHT_HOLD_DUTY);
   }
 
   uint8_t ns = 0;
@@ -144,7 +139,40 @@ bool sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
     measurePoint(ch, na, wantSeries, duty, timeoutMs, gSamples[ns], el);
     printPoint(out, gSamples[ns], na, idx, labels, wantSeries, el, false);
     ns++;
-    if (abortRequested(out)) { out.println(F("CALAUTO aborted.")); return false; }
+  }
+
+  // Low-end extension (see SweepLadder.hpp): if the lowest point already reads
+  // low-resistance on any channel, the knee is below the coarse list -- walk
+  // downward until the curve has a dark end. Does nothing on hardware whose
+  // knee is inside the coarse list.
+  for (uint8_t round = 0; round < SweepLadder::MAX_ROUNDS && ns > 0; round++) {
+    bool need = false;
+    for (uint8_t c = 0; c < na; c++) {
+      if (SweepLadder::tooLow(gSamples[0].ohms[c], ch[c]->rTotalOhms())) need = true;
+    }
+    if (!need) break;
+
+    uint16_t ladder[SweepLadder::POINTS];
+    const uint8_t nl = SweepLadder::build(gSamples[0].duty, round, DriverChannels::WRAP, ladder);
+    if (nl == 0 || (uint16_t)ns + nl > MAX_SWEEP_POINTS) break;
+
+    out.print(F("  -- extending low end, round "));
+    out.print(round + 1);
+    out.print(F(": "));
+    out.print(nl);
+    out.println(F(" points below the knee --"));
+
+    driveSwept(ch, na, wantSeries, ladder[0]); // relax at the darkest point, then climb
+    BusyHook::wait(REFINE_DARK_DWELL_MS);
+
+    for (uint8_t k = 0; k < nl; k++) {
+      unsigned long el;
+      measurePoint(ch, na, wantSeries, ladder[k], timeoutMs, gAdded[k], el);
+      printPoint(out, gAdded[k], na, idx, labels, wantSeries, el, true);
+    }
+    for (int i = (int)ns - 1; i >= 0; i--) gSamples[i + nl] = gSamples[i];
+    for (uint8_t k = 0; k < nl; k++) gSamples[k] = gAdded[k];
+    ns = (uint8_t)(ns + nl);
   }
 
   for (uint8_t pass = 0; pass < REFINE_MAX_PASSES; pass++) {
@@ -171,7 +199,6 @@ bool sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
       unsigned long el;
       measurePoint(ch, na, wantSeries, mids[k], timeoutMs, gAdded[k], el);
       printPoint(out, gAdded[k], na, idx, labels, wantSeries, el, true);
-      if (abortRequested(out)) { out.println(F("CALAUTO aborted.")); return false; }
     }
 
     uint8_t a = 0, b = 0, m = 0;
@@ -202,17 +229,6 @@ bool sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
     out.print(rejected[c]);
   }
   out.println();
-  return true;
-}
-
-void finishAborted(LDRVolume *ch[], uint8_t na) {
-  // A partial sweep still drove raw duty before bailing out. Land each
-  // channel on a defined step and let the cells relax WHILE the audio path
-  // is still disconnected, then reconnect (the old order reconnected first
-  // and fixed the duty afterwards).
-  for (uint8_t c = 0; c < na; c++) ch[c]->applyDefinedStartupState();
-  BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
-  for (uint8_t c = 0; c < na; c++) ch[c]->relayEnergize(false);
 }
 
 } // namespace
@@ -228,27 +244,28 @@ void solveBoth(LDRVolume &left, LDRVolume &right, Stream &out,
 }
 
 void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels) {
+  BusyHook::Scope busy;
+  if (n == 0) return;
+  Board::CalHold ampHold(ch[0]->board()); // amp muted for the whole run, restored after
+  // Read at idle, before the relays/PWM start working, so the number is the
+  // board's resting temperature rather than the die's self-heating.
+  const uint32_t t0 = millis();
+  Board::reportDieTemp(out, F("Die temp at start"));
   for (uint8_t c = 0; c < n; c++) ch[c]->relayEnergize(true);
 
-  bool completed = true;
-  for (uint8_t c = 0; c < n && completed; c++) {
+  for (uint8_t c = 0; c < n; c++) {
     if (labels) { out.print(F("Channel ")); out.println(labels[c]); }
-    completed = ch[c]->trimLoop(out);
+    ch[c]->trimLoop(out);
   }
-  if (completed) {
-    for (uint8_t c = 0; c < n; c++) ch[c]->calSave();
-    out.println(F("Trimmed calibration saved to flash."));
-  } else {
-    // Keep RAM and flash consistent: drop the half-trimmed LUT.
-    for (uint8_t c = 0; c < n; c++) ch[c]->calLoad();
-    out.println(F("Trim aborted -- keeping the previously saved calibration."));
-  }
+  for (uint8_t c = 0; c < n; c++) ch[c]->calSave();
+  out.println(F("Trimmed calibration saved to flash."));
 
   // Back to each channel's CURRENT volume while the audio is still
   // disconnected, let the cells relax, then reconnect.
   for (uint8_t c = 0; c < n; c++) ch[c]->reapplyCurrentStepOrDefault();
   BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
   for (uint8_t c = 0; c < n; c++) ch[c]->relayEnergize(false);
+  Board::reportDieTemp(out, F("Die temp at end"), millis() - t0);
 }
 
 void equalizeRanges(LDRVolume &left, LDRVolume &right, Stream &out) {
@@ -283,6 +300,9 @@ void equalizeRanges(LDRVolume &left, LDRVolume &right, Stream &out) {
 
 void runChannels(LDRVolume *channels[], uint8_t count, LDRVolume::CalMode mode,
                  Stream &out, const char *labels) {
+  BusyHook::Scope busy; // a long operation: keep the links answering "busy" throughout
+  if (count == 0) return;
+  Board::CalHold ampHold(channels[0]->board()); // amp muted for the whole calibration (boot one included), restored after
   LDRVolume *act[MAX_CH];
   uint8_t idx[MAX_CH];
   uint8_t na = 0;
@@ -320,18 +340,14 @@ void runChannels(LDRVolume *channels[], uint8_t count, LDRVolume::CalMode mode,
   const uint8_t n = (uint8_t)(sizeof(FULL_PCT) / sizeof(FULL_PCT[0]));
   const unsigned long timeoutMs = 500;
 
+  const uint32_t t0 = millis();
+  Board::reportDieTemp(out, F("Die temp at start"));
   for (uint8_t c = 0; c < na; c++) act[c]->calBegin(); // energize relay, clear curves
 
   out.println(F("--- CALAUTO: series sweep (shunt held bright) ---"));
-  if (!sweepPhase(act, na, idx, labels, true, pts, n, timeoutMs, out)) {
-    finishAborted(act, na);
-    return;
-  }
+  sweepPhase(act, na, idx, labels, true, pts, n, timeoutMs, out);
   out.println(F("--- CALAUTO: shunt sweep (series held bright) ---"));
-  if (!sweepPhase(act, na, idx, labels, false, pts, n, timeoutMs, out)) {
-    finishAborted(act, na);
-    return;
-  }
+  sweepPhase(act, na, idx, labels, false, pts, n, timeoutMs, out);
 
   uint8_t valid[MAX_CH] = {0, 0};
   if (na == 2) {
@@ -350,8 +366,15 @@ void runChannels(LDRVolume *channels[], uint8_t count, LDRVolume::CalMode mode,
   }
   out.println(F(" ---"));
 
-  // Save the solved LUT first, so an abort during the trim below still
-  // leaves a usable calibration on flash.
+  // Trim. The sweep approaches every point from the dark side, so its LUT
+  // is systematically 2-3 duty counts (~25% in resistance at the knee)
+  // off; a calibration isn't finished until it has been trimmed against
+  // live measurements. The relay is still energized here. Saved once, after
+  // the trim: flash keeps the previous calibration until then.
+  for (uint8_t c = 0; c < na; c++) {
+    if (labels) { out.print(F("Channel ")); out.println(labels[idx[c]]); }
+    act[c]->trimLoop(out);
+  }
   for (uint8_t c = 0; c < na; c++) {
     bool saved = act[c]->calSave();
     out.print(saved ? F("Saved") : F("WARN: failed to save"));
@@ -359,28 +382,12 @@ void runChannels(LDRVolume *channels[], uint8_t count, LDRVolume::CalMode mode,
     out.println();
   }
 
-  // Trim. The sweep approaches every point from the dark side, so its LUT
-  // is systematically 2-3 duty counts (~25% in resistance at the knee)
-  // off; a calibration isn't finished until it has been trimmed against
-  // live measurements. The relay is still energized here.
-  bool trimmed = true;
-  for (uint8_t c = 0; c < na && trimmed; c++) {
-    if (labels) { out.print(F("Channel ")); out.println(labels[idx[c]]); }
-    trimmed = act[c]->trimLoop(out);
-  }
-  if (trimmed) {
-    for (uint8_t c = 0; c < na; c++) act[c]->calSave();
-    out.println(F("Trimmed calibration saved to flash."));
-  } else {
-    for (uint8_t c = 0; c < na; c++) act[c]->calLoad(); // RAM back in step with flash
-    out.println(F("Trim aborted -- keeping the untrimmed (saved) calibration."));
-  }
-
   // Land on a defined step and let the cells relax from the sweep's bright
   // end WHILE the audio path is still disconnected, then reconnect.
   for (uint8_t c = 0; c < na; c++) act[c]->applyDefinedStartupState();
   BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
   for (uint8_t c = 0; c < na; c++) act[c]->relayEnergize(false);
+  Board::reportDieTemp(out, F("Die temp at end"), millis() - t0);
 }
 
 void runBoth(LDRVolume &left, LDRVolume &right, LDRVolume::CalMode mode, Stream &out) {
