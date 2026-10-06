@@ -95,14 +95,6 @@ void LDRVolume::runDiagnosticScan(Stream &out, uint16_t startDuty, uint16_t endD
   out.println(F("CALSCAN done. Existing calibration/LUT untouched -- paste this output back for analysis."));
 }
 
-bool LDRVolume::effectiveFixedSeriesDuty(uint16_t &duty) const {
-  if (!fixedFromOhms_) {
-    duty = fixedSeriesDuty_;
-    return true;
-  }
-  return cal_.seriesCurve().dutyForResistance(rTotalOhms_, duty);
-}
-
 float LDRVolume::computeMaxRangeDb(float marginDb) const {
   const LdrCurve &sc = cal_.seriesCurve();
   const LdrCurve &hc = cal_.shuntCurve();
@@ -112,24 +104,12 @@ float LDRVolume::computeMaxRangeDb(float marginDb) const {
   if (rshFloor <= 0.0f) return 0.0f;
 
   const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
-  float kMin, kMax;
-  if (mode_ == AttenuationMode::FIXED_SERIES) {
-    uint16_t fixedDuty;
-    float rsFixed;
-    if (!effectiveFixedSeriesDuty(fixedDuty) ||
-        !sc.resistanceForDuty(fixedDuty, rsFixed) || rsFixed <= 0.0f) return 0.0f;
-    kMin = DividerMath::gain(rsFixed, rshFloor, load);
-    // Rsh -> infinity. Unloaded that is 1.0; with the amp's load it tops out at
-    // Rload/(Rsrc+Rs+Rload). The top step itself is OUT OF RANGE by design.
-    kMax = (load.loadOhms > 0.0f) ? load.loadOhms / (load.srcOhms + rsFixed + load.loadOhms) : 1.0f;
-  } else {
-    float rsFloor = sc.point(sc.count() - 1).ohms;
-    if (rTotalOhms_ <= rshFloor || rTotalOhms_ <= rsFloor) return 0.0f;
-    // Quietest: shunt at its floor. Loudest: series at its floor. Both through
-    // the loaded divider, so the range is the real one.
-    kMin = DividerMath::gain(rTotalOhms_ - rshFloor, rshFloor, load);
-    kMax = DividerMath::gain(rsFloor, rTotalOhms_ - rsFloor, load);
-  }
+  float rsFloor = sc.point(sc.count() - 1).ohms;
+  if (rTotalOhms_ <= rshFloor || rTotalOhms_ <= rsFloor) return 0.0f;
+  // Quietest: shunt at its floor. Loudest: series at its floor. Both through
+  // the loaded divider, so the range is the real one.
+  const float kMin = DividerMath::gain(rTotalOhms_ - rshFloor, rshFloor, load);
+  const float kMax = DividerMath::gain(rsFloor, rTotalOhms_ - rsFloor, load);
   if (kMax <= kMin || kMax <= 0.0f || kMin <= 0.0f) return 0.0f;
 
   float rangeDb = 20.0f * log10f(kMax / kMin) - marginDb;
@@ -158,18 +138,6 @@ uint8_t LDRVolume::calSolve(uint8_t steps, Stream &out) {
     out.println(F("dB (from measured floors, minus safety margin)"));
   }
 
-  if (mode_ == AttenuationMode::FIXED_SERIES) {
-    uint16_t fixedDuty;
-    float rsFixed;
-    if (!effectiveFixedSeriesDuty(fixedDuty) ||
-        !cal_.seriesCurve().resistanceForDuty(fixedDuty, rsFixed)) {
-      out.println(F("ERR the fixed series resistance/duty falls outside the characterized series curve"));
-      out.println(F("    -- characterize first, or pick a value within the curve's range"));
-      return 0;
-    }
-    fixedSeriesDuty_ = fixedDuty; // remember what was actually used: this is what gets saved
-    return cal_.solveLutFixedSeries(steps, range, rsFixed, fixedDuty);
-  }
   return cal_.solveLut(steps, range, rTotalOhms_);
 }
 
@@ -297,24 +265,22 @@ void LDRVolume::trimLoop(Stream &out) {
     const float targetRsh = e.targetRsh;
 
     uint16_t newSeriesDuty = oldSeriesDuty;
-    if (mode_ == AttenuationMode::CONSTANT_RTOTAL) {
-      // Steps 0..~13 all want Rs within a couple of percent of each other
-      // (the series cell barely moves while the shunt does the work). Once
-      // one of them has been trimmed against a live measurement, the rest
-      // are the SAME physical operating point -- reuse that result instead
-      // of re-measuring a slow, lag-affected value 14 times over.
-      if (lastSeriesTarget > 0.0f &&
-          fabsf(targetRs - lastSeriesTarget) / lastSeriesTarget < 0.02f) {
-        newSeriesDuty = lastSeriesDuty;
-      } else {
-        newSeriesDuty = trimDuty(true, targetRs, oldSeriesDuty, 6, 0.03f);
-        lastSeriesTarget = targetRs;
-        lastSeriesDuty = newSeriesDuty;
-      }
-      // The shunt reading below needs the series cell at THIS step's
-      // operating point, not wherever the last probe happened to leave it.
-      driver_.setDuty(seriesCh_, newSeriesDuty);
-    } // FIXED_SERIES: series stays put, by design -- not trimmed per step
+    // Steps 0..~13 all want Rs within a couple of percent of each other
+    // (the series cell barely moves while the shunt does the work). Once
+    // one of them has been trimmed against a live measurement, the rest
+    // are the SAME physical operating point -- reuse that result instead
+    // of re-measuring a slow, lag-affected value 14 times over.
+    if (lastSeriesTarget > 0.0f &&
+        fabsf(targetRs - lastSeriesTarget) / lastSeriesTarget < 0.02f) {
+      newSeriesDuty = lastSeriesDuty;
+    } else {
+      newSeriesDuty = trimDuty(true, targetRs, oldSeriesDuty, 6, 0.03f);
+      lastSeriesTarget = targetRs;
+      lastSeriesDuty = newSeriesDuty;
+    }
+    // The shunt reading below needs the series cell at THIS step's
+    // operating point, not wherever the last probe happened to leave it.
+    driver_.setDuty(seriesCh_, newSeriesDuty);
 
     uint16_t newShuntDuty = trimDuty(false, targetRsh, oldShuntDuty, 6, 0.03f);
 

@@ -99,13 +99,12 @@ of trusting the ADS1115, or hand-correcting one bad point.
 | `CALPOINT [L|R] <SER|SHUNT> <duty> <ohms>` | Record a characterization point at that duty |
 | `CALSOLVE [L|R] [steps] [rTotalOhms]` | Solve the LUT from whatever curve points exist so far (no sweep). The range is always computed — it is not an argument. With no `L|R` both sides share one common range; `L` or `R` alone uses that side's own range. An explicit `rTotalOhms` is applied as the channel's Rtotal, like `CALRTOTAL` first. |
 | `CALDUMP [L|R]` | Print curves + solved LUT, preceded by a `Divider model: Rsrc=… Rload=…` line. The LUT's dB column is the **loaded** gain (amp input + buffer output impedance), so the Rs/Rsh targets differ from the bare-ratio values of earlier dumps at the loud steps (e.g. step 30 at 50k: Rs≈1.4k / Rsh≈48.6k instead of 9.1k / 40.9k). Compare dumps only within the same calibration revision. |
+| `CALCAPS [L|R]` | **Read-only** capability report from the curves currently in memory (it does not sweep, so run `CALAUTO FULL` first). For a grid of Rtotal values plus the current one it prints depth per channel and stereo-common, the loud-end input impedance the source sees, max gain (insertion loss), the quiet-end step size in %/count, the worst-case ±half-step gain error, and the hysteresis prior — then `RMIN`, the curve-supported maximum, and the **AUTO pick**: the deepest Rtotal whose hysteresis prior and step error stay under `CAPS_AUTO_MAX_HYST` / `CAPS_AUTO_MAX_QUANT_DB` (`Config.hpp`, tunables). Rows marked `beyond curve` / `*extrap` go past the curve's consistent (non-lag) data, so treat them as estimates. The hysteresis column is a prior from earlier CALSCAN data (up to 100k) and must be re-measured after any hardware change. Nothing here alters calibration. |
 | `CALTRIM [L|R]` | Verify + trim every LUT step against a live measurement, re-saves when done. The `old->new` columns now show the real change (earlier builds printed new->new, so every trim looked like it moved nothing). Starts by settling the channel at step 0 for 8 s so measurements begin from rest, and restores the current volume before the audio reconnects. |
 | `CALAUTO [L|R] <FULL|FAST>` | Automatic sweep + solve, no manual points. Auto-saves to flash, returns to audio mode. Both channels (no `L|R`) run interleaved. Skips as a no-op if no ADS1115 is detected on that channel. **FULL** = coarse sweep + adaptive knee refinement + solve + trim (so a separate `CALTRIM` afterwards is no longer needed). **FAST** = trim-only drift touch-up of the saved calibration, no sweep. During a `FULL` sweep the non-swept element is held at `CAL_BRIGHT_HOLD_DUTY` (80% of full scale, not 100%: the cells bottom out earlier and extra current only heats them). If the coarse list's first point (15% duty) already reads below 2× Rtotal on either channel, the knee is below the list and the sweep **extends downward automatically** (up to 4 rounds of 5 points, printed as `-- extending low end --`); with the original driver nothing triggers and the sweep is unchanged. |
 | `CALSCAN [L|R] [start end]` | Diagnostic: fine two-way (ascending + descending) scan of a raw-duty window (default **900–1148**, tuned to the original 100k-bleed driver — after changing the bleeds, pass the window around the new knee, e.g. `CALSCAN L 560 700`; the window is trimmed to a multiple of the 4-count step), 5 raw samples per point. The non-scanned element is held at `CAL_BRIGHT_HOLD_DUTY`. Does **not** touch saved curves/LUT — purely for characterizing hysteresis. Paste the output back for analysis. |
 | `CALREF [L|R] [ohms]` | Get/set Rref used for that channel's readings |
 | `CALRTOTAL [L|R] [ohms]` | Get/set the Rs+Rsh target (default 50000Ω) |
-| `CALMODE [L|R] [RTOTAL\|FIXEDSERIES]` | Get/set attenuation mode |
-| `CALSERIESDUTY [L|R] [duty]` | Get/set the fixed series duty (`FIXEDSERIES` mode only) — affects future solves only, re-run `CALAUTO`/`CALSOLVE` after changing it |
 | `CALSAVE [L|R]` | Manually save current curves+LUT to flash |
 | `CALLOAD [L|R]` | Manually (re)load from flash |
 
@@ -135,7 +134,6 @@ relay is energized (calibration mode) — `ADCREAD` will `ERR` otherwise.
 ### 1. Clean-state full calibration, both channels, interleaved
 
 ```
-CALMODE RTOTAL
 CALRTOTAL 10000
 CALAUTO FULL
 ```

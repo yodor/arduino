@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 4
+# Master Board <-> Daughter Board UART Protocol — revision 5
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=4`) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=5`) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -59,8 +59,8 @@ is never reachable, so the usable range is normally **0–30**: read it from `ST
 | `AMP_MUTE ON` / `AMP_MUTE OFF` (also `1` / `0`) | `OK` (during the boot hold: the `BUSY` status line, see "Boot hold") | Engages/disengages the amp's own mute (4N25 opto, independent of the LDR network) — **regardless of either channel's `MUTE` state**. Once the boot hold expires **the amp auto-unmutes on its own, with no command needed**; a master only needs `AMP_MUTE OFF` if it deliberately re-muted after boot. |
 | `STATUS` | the status line | The only way to read anything. See below. Read-only. |
 | `CAL FAST` | the status line: `STATUS=BUSY` if started | Drift touch-up of the saved calibration. **Takes no parameters.** See "Calibration". |
-| `CAL FULL` | the status line: `STATUS=BUSY` if started | Full recalibration, as is: keeps the current mode and R. |
-| `CAL FULL MODE=<RTOTAL\|FIXEDSERIES> R=<ohms>` | the status line: `STATUS=BUSY` if started | Full recalibration with a new mode and R. **Both parameters, together, in either order.** `R` must be one of **5000, 10000, 25000, 50000, 100000**. See "Calibration". |
+| `CAL FULL` | the status line: `STATUS=BUSY` if started | Full recalibration, as is: keeps the current R. |
+| `CAL FULL R=<ohms>` | the status line: `STATUS=BUSY` if started | Full recalibration with a new R. `R` must be one of **5000, 10000, 25000, 50000, 100000**. See "Calibration". |
 | `DEBUG` / `EXIT` | `OK -- entering DEBUG mode. Send EXIT to return to the strict protocol.` / `OK -- back to strict protocol mode.` | Human-technician escape hatch — a real master never sends these. See the end of this document. |
 
 A CAL command that cannot start is answered with a status line too, not a bare
@@ -80,7 +80,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=30 RANGE=54.0 MODE=RTOTAL R=50000 PROTO=4
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=30 RANGE=54.0 R=50000 PROTO=5
 ```
 
 A rejected `CAL FULL` on a unit whose calibration is fine — the reply carries the
@@ -88,13 +88,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=30 RANGE=54.0 MODE=RTOTAL R=50000 PROTO=4 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=30 RANGE=54.0 R=50000 PROTO=5 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL FULL` / `CAL FAST` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=30 RANGE=54.0 MODE=RTOTAL R=50000 PROTO=4
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=30 RANGE=54.0 R=50000 PROTO=5
 ```
 
 | Key | Meaning |
@@ -109,10 +109,9 @@ OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING V
 | `CAL` | `PROCESSING` — a calibration is running (only then; `STATUS=BUSY`). `OK` — both channels have a usable calibration. `NONE` — nothing is calibrated and nothing is wrong (a fresh unit). `ERR` — something is wrong, and `ERR=` says what: a rejected CAL request, or a channel that cannot run (`no ADS1115`, `no valid steps`, `not calibrated`). There is no separate "partial" value: one working channel out of two cannot do stereo, so it is an error that names the channel. After a calibration this is how the master learns whether it worked. |
 | `VOLMIN`, `VOLMAX` | Lowest and highest `VOL` valid on **both** channels (0-based). The top LUT step is unreachable by design, so `VOLMAX` is normally 30 of a 0–31 LUT. Use these to clamp the master's own volume UI. `-1` if there is no usable calibration. |
 | `RANGE` | Total attenuation depth the LUT spans (dB from `VOLMIN` to the notional 0 dB top). Always computed from the measured floors; identical on both channels. `0` if there is no usable calibration. |
-| `MODE` | `RTOTAL` (constant-impedance, default) or `FIXEDSERIES`. |
-| `R` | In `MODE=RTOTAL`, the Rs+Rsh target in ohms; in `MODE=FIXEDSERIES`, the fixed series resistance in ohms — as last set by `CAL FULL`, and the same on both channels. (If a technician sets a fixed series *duty* from `DEBUG`, `R` may not reflect it.) |
-| `PROTO` | Protocol revision of this daughter firmware (currently **4**). A master should refuse, or warn about, a daughter reporting a revision it was not written for. |
-| `ERR` | **Present only when there is a reason to give, always the last key, and the value is free text running to the end of the line.** That is: when `CAL=ERR`, or when `STATUS=BUSY` because of the boot mute hold. Examples: `boot mute hold active, 3200ms remaining`, `no ADS1115 detected on either channel`, `CAL FULL args: MODE=RTOTAL\|FIXEDSERIES R=5000\|10000\|25000\|50000\|100000`, `R: no ADS1115`, `L: no ADS1115; R: no valid steps`, `R: not calibrated`. Meant for display or logging, not for matching — except the leading words `boot mute hold active`, which a master may use to tell the hold from a calibration. |
+| `R` | The Rs+Rsh total, in ohms, that the LUT is solved for — as last set by `CAL FULL`, and the same on both channels. |
+| `PROTO` | Protocol revision of this daughter firmware (currently **5**). A master should refuse, or warn about, a daughter reporting a revision it was not written for. |
+| `ERR` | **Present only when there is a reason to give, always the last key, and the value is free text running to the end of the line.** That is: when `CAL=ERR`, or when `STATUS=BUSY` because of the boot mute hold. Examples: `boot mute hold active, 3200ms remaining`, `no ADS1115 detected on either channel`, `CAL FULL args: R=5000\|10000\|25000\|50000\|100000`, `R: no ADS1115`, `L: no ADS1115; R: no valid steps`, `R: not calibrated`. Meant for display or logging, not for matching — except the leading words `boot mute hold active`, which a master may use to tell the hold from a calibration. |
 
 Unknown keys must be ignored by the master, so fields can be appended in future
 revisions without breaking an older master.
@@ -139,19 +138,15 @@ calibration isn't finished until it is trimmed. Budget **3–4 minutes** (an
 estimate; `CALAUTO FULL` in `DEBUG` mode prints the real `took N s`). When it
 finishes both channels sit on the lowest valid step (`VOL` = `VOLMIN`). Two forms:
 
-- `CAL FULL` — as is, with the mode and R already set. (In `FIXEDSERIES` the series
-  duty is re-derived from R against the *new* sweep.)
-- `CAL FULL MODE=<RTOTAL|FIXEDSERIES> R=<ohms>` — set both, then calibrate.
-  `R` is the value "to be used for rtotal or fixedseries":
-  - `MODE=RTOTAL`: R is the Rs+Rsh target (Rtotal). The deeper the R, the slower
-    and less repeatable the cells' dark end becomes; 50000 is what the unit has been
-    run at, and 100000 is at the limit of what the cells resolve cleanly.
-  - `MODE=FIXEDSERIES`: R is the fixed series resistance. Each channel picks its own
-    series duty for it from its own freshly characterized curve, and holds it for
-    every step.
-  - `R` must be one of 5000, 10000, 25000, 50000, 100000; anything else is rejected
-    and **nothing changes**. The mode and R are saved to flash with the calibration,
-    so a power cycle does not revert them.
+- `CAL FULL` — as is, with the R already set.
+- `CAL FULL R=<ohms>` — set R for both channels, then calibrate. `R` is the Rs+Rsh
+  total (Rtotal) the LUT is solved for. The deeper the R, the slower and less
+  repeatable the cells' dark end becomes; 50000 is what the unit has been run at,
+  and 100000 is at the limit of what the cells resolve cleanly. `R` must be one of
+  5000, 10000, 25000, 50000, 100000; anything else is rejected and **nothing
+  changes**. R is saved to flash with the calibration, so a power cycle does not
+  revert it. (The old `MODE=` parameter, and the `FIXEDSERIES` mode it selected,
+  no longer exist: `CAL FULL MODE=…` is rejected.)
 
 These are rejected *before* anything is touched, each as `STATUS=IDLE CAL=ERR` with
 `ERR=` set to:
@@ -159,8 +154,8 @@ These are rejected *before* anything is touched, each as `STATUS=IDLE CAL=ERR` w
 | Reason in `ERR=` | When |
 |---|---|
 | `CAL FAST takes no parameters` | anything after `CAL FAST` |
-| `CAL FULL args: MODE=RTOTAL\|FIXEDSERIES R=5000\|10000\|25000\|50000\|100000` | `CAL FULL` with only one of the two parameters, a repeated or unknown one, a mode other than the two, or an R outside the list |
-| `unknown CAL command: use CAL FAST or CAL FULL [MODE=.. R=..]` | any other `CAL …` line, including bare `CAL` |
+| `CAL FULL args: R=5000\|10000\|25000\|50000\|100000` | `CAL FULL` with a repeated or unknown parameter (`MODE=…` included), a non-numeric value, or an R outside the list |
+| `unknown CAL command: use CAL FAST or CAL FULL [R=..]` | any other `CAL …` line, including bare `CAL` |
 | `no ADS1115 detected on either channel` | neither channel's sensor answers, so there is nothing to calibrate |
 
 If only **one** channel's ADS1115 answers, the calibration still runs and calibrates
@@ -180,7 +175,7 @@ every few seconds (each poll is answered within ~10 ms even mid-calibration):
 | `STATUS=IDLE CAL=NONE` | nothing calibrated and nothing wrong (should not follow a calibration) |
 
 Use a generous overall timeout (several minutes) purely as a guard against a
-disconnected daughter, not as the expected completion signal. After `CAL FULL MODE=… R=…`
+disconnected daughter, not as the expected completion signal. After `CAL FULL R=…`
 the old calibration is discarded at the start, so the volume fields and the rest are
 transient while it runs — which is why `CAL` simply reads `PROCESSING` and the other
 fields are to be ignored until `STATUS` is `IDLE`.
@@ -236,7 +231,7 @@ is the regular status line, with **`STATUS=BUSY`** and
 **`ERR=boot mute hold active, <n>ms remaining`**, for whichever command was sent:
 
 ```
-OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=30 RANGE=54.0 MODE=RTOTAL R=50000 PROTO=4 ERR=boot mute hold active, 3200ms remaining
+OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=30 RANGE=54.0 R=50000 PROTO=5 ERR=boot mute hold active, 3200ms remaining
 ```
 
 So a master treats it as any other "busy": wait `n` ms (or just poll `STATUS`) and
@@ -262,7 +257,7 @@ protocol. The console uses the same names as this protocol where they overlap
 
 ```cpp
 struct Status { bool busy; int proto, vol, volMin, volMax, mute, ampMute, up, r;
-                float tempC, db, range; String cal, mode, error; };
+                float tempC, db, range; String cal, error; };
 
 // line = "OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 ..." ; false if it isn't a status line
 bool parseStatus(const String &line, Status &out) {
@@ -284,7 +279,6 @@ bool parseStatus(const String &line, Status &out) {
       else if (k == "VOLMIN")   out.volMin  = v.toInt();
       else if (k == "VOLMAX")   out.volMax  = v.toInt();
       else if (k == "RANGE")    out.range   = v.toFloat();
-      else if (k == "MODE")     out.mode    = v;        // "RTOTAL" | "FIXEDSERIES"
       else if (k == "R")        out.r       = v.toInt();
       else if (k == "PROTO")    out.proto   = v.toInt();
       else if (k == "ERR") { out.error = line.substring(eq + 1); break; }  // free text to end of line
@@ -298,7 +292,7 @@ bool parseStatus(const String &line, Status &out) {
 // busy == true with out.error starting "boot mute hold active": the boot hold -- wait and
 // retry. busy == true with out.cal == "PROCESSING": a calibration is running.
 //
-// start: send "CAL FULL MODE=RTOTAL R=50000" (or "CAL FAST"); the reply is a status
+// start: send "CAL FULL R=50000" (or "CAL FAST"); the reply is a status
 // line. busy == true: started. busy == false with cal == "ERR": it did NOT start, and
 // out.error says why. Then, every few seconds: send "STATUS"; when busy == false the
 // calibration is over and out.cal (and out.error) say whether it worked.
@@ -324,14 +318,15 @@ touch-up.
 |---|---|
 | `GET MUTE`, `GET VOL`, `GET AMP_MUTE`, `GET STATUS` | removed — `STATUS` carries everything (`MUTE`, `VOL`, `AMP_MUTE`, …) |
 | bare `CAL` | removed — `CAL FULL` |
-| `CAL INIT` (and its `SUGGEST`/`DONE`/`FAIL` lines) | removed — pick R from the fixed list with `CAL FULL MODE=… R=…` |
-| `CAL RTOTAL <ohms>` | `CAL FULL MODE=RTOTAL R=<ohms>` (which also recalibrates; it no longer just re-solves) |
-| `CAL MODE …` / `CAL FIXEDSERIES <ohms>` | `CAL FULL MODE=… R=<ohms>` |
+| `CAL INIT` (and its `SUGGEST`/`DONE`/`FAIL` lines) | removed — pick R from the fixed list with `CAL FULL R=…` |
+| `CAL RTOTAL <ohms>` | `CAL FULL R=<ohms>` (which also recalibrates; it no longer just re-solves) |
+| `CAL MODE …` / `CAL FIXEDSERIES <ohms>` | removed in rev 5 together with the FIXEDSERIES mode — `CAL FULL R=<ohms>` |
 | `OK`, then async `CAL DONE` / `CAL FAIL` | a `BUSY` status line, then poll `STATUS` until `IDLE` and read `CAL` |
 | `ERR boot mute hold active, <n>ms remaining` (any command, during the hold) | the regular status line with `STATUS=BUSY` and `ERR=boot mute hold active, <n>ms remaining` |
 | a bare `ERR …` reply to a CAL command that could not start | a status line with `STATUS=IDLE`, `CAL=ERR` and `ERR=<reason>` |
 | `CAL=PARTIAL` | removed — `CAL=ERR` with `ERR=` naming the channel (`R: no ADS1115`) |
-| `STATUS` key `RTOTAL` | `R` (also meaningful in `FIXEDSERIES`); `MODE` now precedes it |
+| `STATUS` key `RTOTAL` | `R` |
+| rev 4: `STATUS` with `MODE=`, and `CAL FULL MODE=… R=…` | rev 5: no `MODE=` key in `STATUS`; `CAL FULL` takes only an optional `R=<ohms>`; `PROTO=5` |
 | rev 2: volumes `1`–`32` | rev 3 onward: `0`–`31` (usable 0–30), "no calibration" = `-1` |
 
 ## Known asymmetry

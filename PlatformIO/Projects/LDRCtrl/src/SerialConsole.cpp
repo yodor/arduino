@@ -3,6 +3,7 @@
 #include "DualCalibration.hpp"
 #include "Board.hpp"
 #include "BusyHook.hpp"
+#include "Capabilities.hpp"
 
 namespace {
 // "VOL=8 (-40.04 dB)" -- the same number the strict master protocol uses
@@ -19,6 +20,7 @@ void describeVolume(Stream &out, LDRVolume &v) {
   out.print(F(" dB)"));
   if (v.isMuted()) out.print(F(" [muted]"));
 }
+
 } // namespace
 
 void SerialConsole::begin() {
@@ -86,6 +88,8 @@ void SerialConsole::printHelp() {
   stream_.println(F("  CALSOLVE [L|R] [steps] [rTotalOhms]"));
   stream_.println(F("                                solve the LUT from curves so far"));
   stream_.println(F("  CALDUMP [L|R]                 print curves + solved LUT"));
+  stream_.println(F("  CALCAPS [L|R]                 what the curves in memory say each Rtotal would give"));
+  stream_.println(F("                                (depth, loading, step error, AUTO pick); read-only"));
   stream_.println(F("  CALTRIM [L|R]                 verify+trim every LUT step against a live"));
   stream_.println(F("                                measurement, re-saves when done"));
   stream_.println(F("  CALAUTO [L|R] <FULL|FAST>     FULL: sweep + knee refine + solve + trim."));
@@ -101,8 +105,6 @@ void SerialConsole::printHelp() {
   stream_.println(F("                                NOT touch saved curves/LUT, paste output back"));
   stream_.println(F("  CALREF [L|R] [ohms]           get/set Rref used for this channel's readings"));
   stream_.println(F("  CALRTOTAL [L|R] [ohms]        get/set Rs+Rsh target (default from Config.hpp)"));
-  stream_.println(F("  CALMODE [L|R] [RTOTAL|FIXEDSERIES]  get/set attenuation mode"));
-  stream_.println(F("  CALSERIESDUTY [L|R] [duty]    get/set fixed series duty (FIXEDSERIES mode only)"));
   stream_.println(F("                                (affects future reads only; re-run CALAUTO after)"));
   stream_.println(F("  CALSAVE [L|R]                 manually save current curves+LUT to flash"));
   stream_.println(F("  CALLOAD [L|R]                 manually (re)load from flash"));
@@ -440,46 +442,6 @@ void SerialConsole::handleLine(String line) {
       DualCalibration::equalizeRanges(left_, right_, stream_);
     }
 
-  } else if (cmd == "CALMODE") {
-    SideSelection sel = resolveOptionalSide(tok, n);
-    bool hasValue = (n >= sel.argBase + 1);
-    for (uint8_t i = 0; i < sel.count; i++) {
-      LDRVolume *v = sel.items[i];
-      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
-      if (hasValue) {
-        if (tok[sel.argBase].equalsIgnoreCase("RTOTAL")) {
-          v->setMode(LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
-          stream_.println(F("OK mode = CONSTANT_RTOTAL. Re-run CALSOLVE/CALAUTO to apply."));
-        } else if (tok[sel.argBase].equalsIgnoreCase("FIXEDSERIES")) {
-          v->setMode(LDRVolume::AttenuationMode::FIXED_SERIES);
-          stream_.println(F("OK mode = FIXED_SERIES. Re-run CALSOLVE/CALAUTO to apply."));
-        } else {
-          stream_.println(F("ERR expected RTOTAL or FIXEDSERIES"));
-        }
-      } else {
-        stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
-                            ? F("Mode = FIXED_SERIES")
-                            : F("Mode = CONSTANT_RTOTAL"));
-      }
-    }
-
-  } else if (cmd == "CALSERIESDUTY") {
-    SideSelection sel = resolveOptionalSide(tok, n);
-    bool hasValue = (n >= sel.argBase + 1);
-    for (uint8_t i = 0; i < sel.count; i++) {
-      LDRVolume *v = sel.items[i];
-      if (sel.count == 2) { stream_.print(sideLabel(v)); stream_.print(F(": ")); }
-      if (hasValue) {
-        v->setFixedSeriesDuty((uint16_t)tok[sel.argBase].toInt());
-        stream_.print(F("OK fixedSeriesDuty = "));
-        stream_.print(v->fixedSeriesDuty());
-        stream_.println(F(". Re-run CALSOLVE/CALAUTO to apply."));
-      } else {
-        stream_.print(F("fixedSeriesDuty = "));
-        stream_.println(v->fixedSeriesDuty());
-      }
-    }
-
   } else if (cmd == "CALRTOTAL") {
     SideSelection sel = resolveOptionalSide(tok, n);
     bool hasValue = (n >= sel.argBase + 1);
@@ -558,15 +520,24 @@ void SerialConsole::handleLine(String line) {
       stream_.println(v->calLoad() ? F("OK loaded") : F("ERR no valid saved calibration"));
     }
 
+  } else if (cmd == "CALCAPS") {
+    SideSelection sel = resolveOptionalSide(tok, n);
+    const LdrCurve *ser[2], *shu[2]; const char *labels[2];
+    for (uint8_t i = 0; i < sel.count && i < 2; i++) {
+      ser[i] = &sel.items[i]->seriesCurve();
+      shu[i] = &sel.items[i]->shuntCurve();
+      labels[i] = sideLabel(sel.items[i]);
+    }
+    Capabilities::printReport(stream_, ser, shu, labels, sel.count, sel.items[0]->rTotalOhms());
+
   } else if (cmd == "CALDUMP") {
     SideSelection sel = resolveOptionalSide(tok, n);
     for (uint8_t i = 0; i < sel.count; i++) {
       LDRVolume *v = sel.items[i];
       if (sel.count == 2) { stream_.print(F("=== ")); stream_.print(sideLabel(v)); stream_.println(F(" ===")); }
-      stream_.println(v->mode() == LDRVolume::AttenuationMode::FIXED_SERIES
-                          ? F("Mode: FIXED_SERIES")
-                          : F("Mode: CONSTANT_RTOTAL"));
-      stream_.print(F("Divider model: Rsrc="));
+      stream_.print(F("Divider model: Rtotal="));
+      stream_.print(v->rTotalOhms(), 0);
+      stream_.print(F(" Rsrc="));
       stream_.print(AUDIO_SOURCE_OHMS, 0);
       stream_.print(F(" Rload="));
       stream_.print(AMP_INPUT_LOAD_OHMS, 0);

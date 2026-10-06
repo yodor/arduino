@@ -40,7 +40,10 @@ constexpr uint32_t MAGIC = 0x4C445243; // 'LDRC'
 // revision the file was taken on (CAL_HW_REV / CAL_ALGO_REV, see CalStamp.hpp).
 // A v6 file has no stamp, so it cannot be vouched for and is refused: the
 // first boot after this change recalibrates once.
-constexpr uint16_t FORMAT_VERSION = 7;
+// Bumped 7 -> 8: the FIXED_SERIES attenuation mode was removed, so the header no
+// longer carries mode / autoRange / fixedSeriesDuty. Older files are refused once
+// and recalibrated (the layout differs, so they cannot be read safely).
+constexpr uint16_t FORMAT_VERSION = 8;
 
 struct Header {
   uint32_t magic;
@@ -51,12 +54,9 @@ struct Header {
   uint16_t pwmWrap;        // DriverChannels::WRAP at save time
   uint16_t hwRev;          // CAL_HW_REV at save time
   uint16_t calRev;         // CAL_ALGO_REV at save time
-  uint8_t mode;            // LDRVolume::AttenuationMode
-  uint8_t autoRange;       // 0/1
-  uint16_t fixedSeriesDuty;
   float rTotalOhms;
-  float rangeDb;
-  uint32_t crc32; // over mode..rangeDb fields, then the series/shunt/entry arrays, in that order
+  float rangeDb;  // informational (read back from the LUT); ignored on load
+  uint32_t crc32; // over rTotalOhms, rangeDb, then the series/shunt/entry arrays, in that order
 };
 
 // Standard bitwise CRC32 (no table -- data here is at most a few hundred
@@ -88,10 +88,6 @@ bool save(const char *path, const LDRVolume &vol) {
   hdr.pwmWrap = DriverChannels::WRAP;
   hdr.hwRev = CAL_HW_REV;
   hdr.calRev = CAL_ALGO_REV;
-  hdr.mode = (uint8_t)vol.mode();
-  hdr.autoRange = 1; // legacy field, kept so the file layout (and every existing file) stays valid:
-                     // the range is always computed now, so this is always 1 and ignored on load
-  hdr.fixedSeriesDuty = vol.fixedSeriesDuty();
   hdr.rTotalOhms = vol.rTotalOhms();
   hdr.rangeDb = vol.rangeDb(); // informational (read back from the LUT); ignored on load
 
@@ -100,9 +96,6 @@ bool save(const char *path, const LDRVolume &vol) {
   size_t eBytes = (size_t)hdr.numSteps * sizeof(VolumeLut::Entry);
 
   uint32_t crc = 0;
-  crc = crc32Update(crc, (const uint8_t *)&hdr.mode, sizeof(hdr.mode));
-  crc = crc32Update(crc, (const uint8_t *)&hdr.autoRange, sizeof(hdr.autoRange));
-  crc = crc32Update(crc, (const uint8_t *)&hdr.fixedSeriesDuty, sizeof(hdr.fixedSeriesDuty));
   crc = crc32Update(crc, (const uint8_t *)&hdr.rTotalOhms, sizeof(hdr.rTotalOhms));
   crc = crc32Update(crc, (const uint8_t *)&hdr.rangeDb, sizeof(hdr.rangeDb));
   crc = crc32Update(crc, (const uint8_t *)series.rawPoints(), sBytes);
@@ -187,9 +180,6 @@ bool load(const char *path, LDRVolume &vol) {
   f.close();
 
   uint32_t crc = 0;
-  crc = crc32Update(crc, (const uint8_t *)&hdr.mode, sizeof(hdr.mode));
-  crc = crc32Update(crc, (const uint8_t *)&hdr.autoRange, sizeof(hdr.autoRange));
-  crc = crc32Update(crc, (const uint8_t *)&hdr.fixedSeriesDuty, sizeof(hdr.fixedSeriesDuty));
   crc = crc32Update(crc, (const uint8_t *)&hdr.rTotalOhms, sizeof(hdr.rTotalOhms));
   crc = crc32Update(crc, (const uint8_t *)&hdr.rangeDb, sizeof(hdr.rangeDb));
   crc = crc32Update(crc, (const uint8_t *)seriesPts, sBytes);
@@ -197,15 +187,11 @@ bool load(const char *path, LDRVolume &vol) {
   crc = crc32Update(crc, (const uint8_t *)entries, eBytes);
   if (crc != hdr.crc32) return false; // corrupt file -- reject, don't half-apply it
 
-  // Settings first -- setRTotalOhms/setMode/setFixedSeriesDuty each
-  // invalidate the (still-empty, at this point) LUT as a side effect, which
-  // is harmless here. hdr.autoRange / hdr.rangeDb are legacy/informational
-  // and deliberately ignored: the range is always computed, and it is
-  // recoverable from the loaded LUT itself (step 0's target is -range).
+  // Settings first -- setRTotalOhms() invalidates the (still-empty, at this
+  // point) LUT as a side effect, which is harmless here. hdr.rangeDb is
+  // informational and deliberately ignored: the range is always computed, and
+  // it is recoverable from the loaded LUT itself (step 0's target is -range).
   vol.setRTotalOhms(hdr.rTotalOhms);
-  vol.setMode(hdr.mode == 1 ? LDRVolume::AttenuationMode::FIXED_SERIES
-                            : LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
-  vol.setFixedSeriesDuty(hdr.fixedSeriesDuty);
 
   LdrCurve series, shunt;
   VolumeLut lut;

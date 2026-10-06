@@ -82,40 +82,10 @@ public:
   void i2cScan() { sensor_.scanBus(); }
 
   // --- Calibration --------------------------------------------------------
-  // CONSTANT_RTOTAL: existing behavior -- Rs+Rsh held at a fixed sum
-  // every step, both curves looked up per step.
-  // FIXED_SERIES: series held at fixedSeriesDuty() for every step (never
-  // moves during normal volume changes); only the shunt curve is looked
-  // up per step. True 0dB is unreachable in this mode -- see
-  // VolumeLut::solveFixedSeries. Pick a fixedSeriesDuty from a
-  // low-hysteresis part of the series curve (CALSCAN) before using this.
-  enum class AttenuationMode : uint8_t { CONSTANT_RTOTAL, FIXED_SERIES };
-  // Changing mode invalidates any already-solved LUT -- it was solved
-  // under the other mode's math.
-  void setMode(AttenuationMode m) {
-    mode_ = m;
-    if (m == AttenuationMode::CONSTANT_RTOTAL) fixedFromOhms_ = false; // a stale master "R" must not leak into a later console FIXED_SERIES
-    cal_.invalidateLut();
-  }
-  AttenuationMode mode() const { return mode_; }
-
-  // Changing this invalidates any already-solved LUT in FIXED_SERIES
-  // mode (every step's series target depends on it).
-  void setFixedSeriesDuty(uint16_t duty) { fixedSeriesDuty_ = duty; fixedFromOhms_ = false; cal_.invalidateLut(); }
-
-  // FIXED_SERIES specified in OHMS -- what the master's CAL FULL MODE=FIXEDSERIES
-  // R=<ohms> asks for. Switches to FIXED_SERIES, stores the ohms in
-  // rTotalOhms() (the single "R" setting serves both modes) and makes every
-  // solve DERIVE the series duty from the series curve at that resistance, so a
-  // fresh sweep re-resolves it. setFixedSeriesDuty() (the bench console) turns
-  // this off again.
-  void useFixedSeriesOhms(float ohms) {
-    mode_ = AttenuationMode::FIXED_SERIES;
-    rTotalOhms_ = ohms;
-    fixedFromOhms_ = true;
-    cal_.invalidateLut();
-  }
-  uint16_t fixedSeriesDuty() const { return fixedSeriesDuty_; }
+  // Attenuation law: Rs+Rsh is held at a fixed sum (rTotalOhms()) at every step and
+  // both curves are looked up per step. (A FIXED_SERIES mode that held the series
+  // cell still and moved only the shunt used to exist; it was removed -- one law is
+  // far simpler to calibrate, trim, store and document.)
 
   void calBegin();                       // relayEnergize(true), clear curves
   void calEnd() { relayEnergize(false); } // curves/LUT survive -- resumable
@@ -125,8 +95,7 @@ public:
   bool calFeedSeriesPoint(uint16_t duty, float ohms) { return cal_.feedSeriesPoint(duty, ohms); }
   bool calFeedShuntPoint(uint16_t duty, float ohms) { return cal_.feedShuntPoint(duty, ohms); }
 
-  // Dispatches to VolumeLut::solve() or solveFixedSeries() depending on
-  // mode(), at this channel's rTotalOhms() and a range COMPUTED from the
+  // Runs VolumeLut::solve() at this channel's rTotalOhms() and a range COMPUTED from the
   // measured floors (optionally capped, see calSolveStereo()). Returns the
   // number of valid steps; 0 with a message if the range can't be computed.
   // out: where progress/errors print -- pass whichever Stream actually invoked this (the calling
@@ -190,10 +159,9 @@ public:
   // set by anyone -- every solve computes it from the measured floors.
   float rangeDb() const { return hasLut() ? -lut().step(0).targetDb : 0.0f; }
 
-  // CONSTANT_RTOTAL: K_min = Rsh_floor/rTotalOhms_, K_max = 1 - Rs_floor/
-  // rTotalOhms_, range = 20*log10(K_max/K_min) - marginDb.
-  // FIXED_SERIES: Rs is the fixed series resistance, K_min = Rsh_floor/
-  // (Rs+Rsh_floor), K_max = 1, same formula. Floors are each curve's
+  // K_min = gain with the shunt at its floor, K_max = gain with the series at its
+  // floor (both through the LOADED divider, Rs+Rsh = rTotalOhms_),
+  // range = 20*log10(K_max/K_min) - marginDb. Floors are each curve's
   // highest-duty (lowest-resistance) characterized point. Returns 0 if
   // curves are empty or the numbers don't make physical sense (e.g.
   // rTotalOhms_ too small relative to a floor).
@@ -250,8 +218,7 @@ public:
   // true target using the characterized curve's own local shape (a far
   // better local model of "which way and how far" than a fixed step
   // size, even when the curve's absolute values have drifted since
-  // characterization). In FIXED_SERIES mode only shunt is trimmed --
-  // series stays at its one fixed duty, by design. Updates and re-saves
+  // characterization). Updates and re-saves
   // the LUT. Energizes relay for the duration, de-energizes when done.
   void runTrimPass(Stream &out = Serial);
 
@@ -321,16 +288,7 @@ private:
   const char *calPath_;
   float rTotalOhms_;
   float rangeCapDb_ = 0.0f; // >0 only while calSolveStereo() is running -- see above
-  AttenuationMode mode_ = AttenuationMode::CONSTANT_RTOTAL;
-  bool fixedFromOhms_ = false; // FIXED_SERIES duty derived from rTotalOhms_ at each solve
   int8_t adsSeen_ = -1;        // last adsPresent() result: 1 / 0 / -1 = never probed
-  // The series duty FIXED_SERIES should use right now: the stored duty, or (if
-  // set in ohms) the one the series curve gives for rTotalOhms_. False if that
-  // resistance lies outside the characterized curve.
-  bool effectiveFixedSeriesDuty(uint16_t &duty) const;
-  uint16_t fixedSeriesDuty_ = DriverChannels::WRAP; // default: fully bright -- pick a better
-                                                     // value from CALSCAN data before using
-                                                     // FIXED_SERIES mode for real
 
   uint8_t currentStep_ = 0;
   bool muted_ = false;

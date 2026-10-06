@@ -6,6 +6,7 @@
 #include "VolumeRamp.hpp"
 #include "BusyHook.hpp"
 #include "Board.hpp"
+#include "CalArgs.hpp"
 
 namespace {
 
@@ -20,47 +21,6 @@ public:
   size_t write(uint8_t) override { return 1; }
   size_t write(const uint8_t *buffer, size_t size) override { return size; }
 };
-
-// True if `ohms` is one of the values the master may request (CAL_R_CHOICES).
-bool allowedR(long ohms) {
-  for (uint8_t i = 0; i < CAL_R_CHOICE_COUNT; i++) {
-    if (CAL_R_CHOICES[i] == ohms) return true;
-  }
-  return false;
-}
-
-// Parses what follows "CAL FULL" (already upper-cased): exactly
-// MODE=<RTOTAL|FIXEDSERIES> and R=<allowed ohms>, in either order, nothing
-// else. Returns false for anything incomplete, repeated, or unknown.
-bool parseCalFullArgs(String rest, bool &fixed, long &ohms) {
-  rest.trim();
-  bool haveMode = false, haveR = false;
-  while (rest.length() > 0) {
-    int sp = rest.indexOf(' ');
-    String tok = (sp < 0) ? rest : rest.substring(0, sp);
-    rest = (sp < 0) ? String("") : rest.substring(sp + 1);
-    rest.trim();
-    if (tok.startsWith("MODE=") && !haveMode) {
-      String v = tok.substring(5);
-      if (v == "RTOTAL") fixed = false;
-      else if (v == "FIXEDSERIES") fixed = true;
-      else return false;
-      haveMode = true;
-    } else if (tok.startsWith("R=") && !haveR) {
-      String v = tok.substring(2);
-      if (v.length() == 0) return false;
-      for (int i = 0; i < (int)v.length(); i++) {
-        if (v[i] < '0' || v[i] > '9') return false;
-      }
-      ohms = (long)v.toInt();
-      if (!allowedR(ohms)) return false;
-      haveR = true;
-    } else {
-      return false;
-    }
-  }
-  return haveMode && haveR;
-}
 
 // Everything deriveCal() needs to know, so it can be a pure function.
 struct CalFacts {
@@ -274,10 +234,8 @@ void MasterLink::reportStatus(StatusKind kind, const char *text) {
   stream_.print(calOk ? hi : -1);
   stream_.print(F(" RANGE="));
   stream_.print(calOk ? left_.rangeDb() : 0.0f, 1);
-  stream_.print(F(" MODE="));
-  stream_.print(left_.mode() == LDRVolume::AttenuationMode::FIXED_SERIES ? F("FIXEDSERIES") : F("RTOTAL"));
   stream_.print(F(" R="));
-  stream_.print((long)left_.rTotalOhms()); // Rtotal in RTOTAL mode, the fixed series resistance in FIXEDSERIES mode
+  stream_.print((long)left_.rTotalOhms()); // Rs+Rsh, the series+shunt total the LUT is solved for
   stream_.print(F(" PROTO="));
   stream_.print(PROTO_VERSION);
   if (desc[0] != '\0') {
@@ -385,38 +343,24 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     reportStatus(StatusKind::CAL_REJECTED, "CAL FAST takes no parameters");
 
   } else if (upper == "CAL FULL" || upper.startsWith("CAL FULL ")) {
-    // Full characterization + solve + trim + save. Bare, it uses the mode and R
-    // currently set; with parameters it takes BOTH, MODE=<RTOTAL|FIXEDSERIES> and
-    // R=<one of CAL_R_CHOICES>, in either order.
-    bool withParams = !(upper == "CAL FULL");
-    bool fixed = false;
+    // Full characterization + solve + trim + save. Bare, it keeps the R currently
+    // set; CAL FULL R=<one of CAL_R_CHOICES> sets it for both channels first.
+    bool hasR = false;
     long ohms = 0;
-    if (withParams && !parseCalFullArgs(upper.substring(8), fixed, ohms)) {
-      reportStatus(StatusKind::CAL_REJECTED, "CAL FULL args: MODE=RTOTAL|FIXEDSERIES R=5000|10000|25000|50000|100000");
+    if (!CalArgs::parseFull(upper.substring(8).c_str(), hasR, ohms)) {
+      reportStatus(StatusKind::CAL_REJECTED, "CAL FULL args: R=5000|10000|25000|50000|100000");
     } else if (!left_.adsPresent() && !right_.adsPresent()) {
       reportStatus(StatusKind::CAL_REJECTED, "no ADS1115 detected on either channel");
     } else {
-      if (withParams) {
-        if (fixed) {
-          left_.useFixedSeriesOhms((float)ohms);
-          right_.useFixedSeriesOhms((float)ohms);
-        } else {
-          left_.setMode(LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
-          right_.setMode(LDRVolume::AttenuationMode::CONSTANT_RTOTAL);
-          left_.setRTotalOhms((float)ohms);
-          right_.setRTotalOhms((float)ohms);
-        }
-      } else if (left_.mode() == LDRVolume::AttenuationMode::FIXED_SERIES) {
-        // As-is in FIXEDSERIES mode: re-derive the series duty from R against
-        // the NEW sweep rather than reusing last time's duty.
-        left_.useFixedSeriesOhms(left_.rTotalOhms());
-        right_.useFixedSeriesOhms(right_.rTotalOhms());
+      if (hasR) {
+        left_.setRTotalOhms((float)ohms);
+        right_.setRTotalOhms((float)ohms);
       }
       startCalibration(LDRVolume::CalMode::FULL);
     }
 
   } else if (upper == "CAL" || upper.startsWith("CAL ")) {
-    reportStatus(StatusKind::CAL_REJECTED, "unknown CAL command: use CAL FAST or CAL FULL [MODE=.. R=..]");
+    reportStatus(StatusKind::CAL_REJECTED, "unknown CAL command: use CAL FAST or CAL FULL [R=..]");
 
   } else {
     stream_.println(F("ERR unrecognized command"));

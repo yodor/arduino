@@ -183,21 +183,52 @@ constexpr uint8_t  NUM_VOLUME_STEPS_DEFAULT = 32;
 // across repeated CALAUTO passes on the same cell.
 constexpr float RANGE_SAFETY_MARGIN_DB = 2.0f;
 
-// The ONLY values the master may request as "R" in `CAL FULL MODE=... R=<ohms>`:
-// the Rtotal target in RTOTAL mode, or the fixed series resistance in
-// FIXEDSERIES mode. A fixed list on purpose -- the master offers a menu, not a
+// The ONLY values the master may request as "R" in `CAL FULL R=<ohms>`: the
+// Rtotal (Rs+Rsh) the LUT is solved for. A fixed list on purpose -- the master offers a menu, not a
 // free-text field, and nothing outside it has been exercised on real cells
 // (100000 in particular sits at the limit of what the cells can resolve).
 constexpr long CAL_R_CHOICES[] = {5000, 10000, 25000, 50000, 100000};
+
+// ---------------------------------------------------------------------------
+// Capability model (CALCAPS now; the CAL FULL auto-Rtotal choice later). All of
+// these are TUNABLES to be settled from measurements, and the priors below must
+// be re-measured whenever CAL_HW_REV changes.
+//
+// CAPS_MIN_ZIN_OHMS     lowest acceptable input impedance at the loudest step
+//                       (what the JFET buffer sees); sets the smallest sensible Rtotal.
+// CAPS_AUTO_MAX_HYST    AUTO may not pick an Rtotal whose cell asc/desc ratio
+//                       (hysteresis prior, below) exceeds this.
+// CAPS_AUTO_MAX_QUANT_DB AUTO may not pick an Rtotal whose worst-case +-half-step
+//                       gain error at the quietest step exceeds this.
+// CAPS_DITHER_LEVELS    sub-count levels per PWM count. 1 = no dithering; set it
+//                       to the real number once dithering exists and every
+//                       step-error estimate shrinks accordingly.
+// CAPS_LAG_*            a sweep point is "lag-suspect" (the cell had not
+//                       relaxed yet) if it sits in a sparse tail (gap above
+//                       MAX_GAP counts) or its per-count slope exceeds
+//                       SLOPE_FACTOR x the median slope of the next intervals.
+// CAPS_HYST_PRIOR_*     asc/desc resistance ratio vs Rtotal, measured with
+//                       CALSCAN on the original 100k-bleed driver. Beyond the
+//                       last entry the model EXTRAPOLATES (and says so).
+constexpr float    CAPS_MIN_ZIN_OHMS      = 5000.0f;
+constexpr float    CAPS_AUTO_MAX_HYST     = 1.5f;
+constexpr float    CAPS_AUTO_MAX_QUANT_DB = 0.45f;
+constexpr float    CAPS_DITHER_LEVELS     = 1.0f;
+constexpr float    CAPS_LAG_SLOPE_FACTOR  = 1.6f;
+constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
+constexpr float    CAPS_HYST_PRIOR_R[]     = {10000.0f, 30000.0f, 50000.0f, 100000.0f};
+constexpr float    CAPS_HYST_PRIOR_RATIO[] = {1.04f, 1.17f, 1.27f, 1.52f};
+constexpr uint8_t  CAPS_HYST_PRIOR_COUNT   = sizeof(CAPS_HYST_PRIOR_R) / sizeof(CAPS_HYST_PRIOR_R[0]);
 constexpr uint8_t CAL_R_CHOICE_COUNT = sizeof(CAL_R_CHOICES) / sizeof(CAL_R_CHOICES[0]);
 
 // Strict master<->daughter protocol revision, reported as PROTO= in STATUS so
 // the master can detect an incompatible daughter board. History: 2 = 1-based
 // VOL; 3 = 0-based VOL and the reordered STATUS line with TEMP/UP; 4 = the
-// master's CAL commands are exactly CAL FAST and CAL FULL [MODE=.. R=..],
+// master's CAL commands are exactly CAL FAST and CAL FULL [R=..],
 // always answered with a status line (BUSY if started, IDLE + CAL=ERR + a
 // trailing ERR=<reason> if not -- no CAL DONE/FAIL, poll STATUS), STATUS is the
 // only getter (every GET command is gone, GET STATUS included), STATUS reports R
-// instead of RTOTAL, and CAL is OK / NONE / ERR (no PARTIAL). (The document file
-// keeps its v2 name.)
-constexpr uint8_t PROTO_VERSION = 4;
+// instead of RTOTAL, and CAL is OK / NONE / ERR (no PARTIAL); 5 = the FIXEDSERIES
+// attenuation mode is gone: STATUS has no MODE= field and CAL FULL takes only an
+// optional R=<ohms> (no MODE=). (The document file keeps its v2 name.)
+constexpr uint8_t PROTO_VERSION = 5;
