@@ -52,7 +52,8 @@ constexpr uint32_t MAGIC = 0x4C445243; // 'LDRC'
 // Bumped 10 -> 11: the series cell's measured dark end (DarkProfile) follows the LUT.
 // Bumped 11 -> 12: then the cells' bright-end fingerprint and the calibration history
 // (CellCheck.hpp), so a single CAL can tell the same cells from changed ones.
-constexpr uint16_t FORMAT_VERSION = 12;
+// Bumped 12 -> 13: the fingerprint stores the duties it was taken at (chosen from the curves).
+constexpr uint16_t FORMAT_VERSION = 13;
 
 struct Header {
   uint32_t magic;

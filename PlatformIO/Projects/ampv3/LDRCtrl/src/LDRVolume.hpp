@@ -86,6 +86,11 @@ public:
   // CAL_RELAX_BEFORE_RECONNECT_MS to settle, then release the relay. Releasing the
   // relay with leftover diagnostic duties can connect the audio near 0 dB.
   void releaseRelayToAudio();
+  // Hand the audio back on SEVERAL channels together (a stereo pair): every channel put
+  // back on its volume step (or the LDR mute), ONE shared settle, then all relays released
+  // back to back -- with the amplifier held muted until all of them are reconnected, so
+  // one channel is never heard alone. Use this, not a loop of releaseRelayToAudio().
+  static void releaseToAudio(LDRVolume *const *channels, uint8_t count);
 
 
   // Calibration / diagnostic helpers. The CALLER energizes the relay (relayEnergize(true)) and must

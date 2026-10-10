@@ -533,6 +533,8 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
 // Bright-end fingerprint of all four cells (CellCheck.hpp), both channels at once.
 // The relay must be energized.
 // ---------------------------------------------------------------------------
+// fp[c].duty[] must be set by the caller: chosen from the curves (full characterization) or
+// copied from the stored fingerprint (cell check), so both read the same points.
 void takeFingerprint(LDRVolume *const *ch, uint8_t na, CellFingerprint *fp) {
   const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
   const uint32_t bright = (uint32_t)CAL_BRIGHT_HOLD_DUTY * FPC;
@@ -541,7 +543,7 @@ void takeFingerprint(LDRVolume *const *ch, uint8_t na, CellFingerprint *fp) {
     const bool series = (e == 0);
     for (uint8_t c = 0; c < na; c++) ch[c]->driveElementFine(!series, bright);
     for (uint8_t i = 0; i < CellCheck::NFP; i++) {
-      for (uint8_t c = 0; c < na; c++) ch[c]->driveElementFine(series, (uint32_t)CellCheck::DUTIES[i] * FPC);
+      for (uint8_t c = 0; c < na; c++) ch[c]->driveElementFine(series, (uint32_t)fp[c].duty[i] * FPC);
       BusyHook::wait(CellCheck::SETTLE_MS);
       for (uint8_t c = 0; c < na; c++) {
         float rs, rsh;
@@ -559,6 +561,8 @@ void takeFingerprint(LDRVolume *const *ch, uint8_t na, CellFingerprint *fp) {
 // The cell check: a fresh fingerprint against the stored one, per channel.
 CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
   CellFingerprint now[MAX_CH];
+  for (uint8_t c = 0; c < na; c++)
+    for (uint8_t i = 0; i < CellCheck::NFP; i++) now[c].duty[i] = ch[c]->fingerprint().duty[i];
   takeFingerprint(ch, na, now);
   CellState all = CellState::MATCH;
   out.println(F("--- cell check: bright-end fingerprint vs the stored calibration ---"));
@@ -573,7 +577,7 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
       out.print(F(": a reading failed"));
     } else {
       out.print(F(": worst x")); out.print(w, 3);
-      out.print(e ? F(" (shunt @") : F(" (series @")); out.print(CellCheck::DUTIES[i]); out.print(')');
+      out.print(e ? F(" (shunt @") : F(" (series @")); out.print(st.duty[i]); out.print(')');
     }
     out.print(F(", die ")); out.print(now[c].tempC, 1); out.print(F(" C now / ")); out.print(st.tempC, 1);
     out.print(F(" C at calibration -> "));
@@ -626,7 +630,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
   }
   if (boot && cs == CellState::MATCH && policyR <= 0.0f) {
     out.println(F("Boot: the cells match the stored calibration -- using it as saved."));
-    for (uint8_t c = 0; c < 2; c++) ch[c]->releaseRelayToAudio();
+    LDRVolume::releaseToAudio(ch, 2);
     return cs;
   }
   CalAction a = CellCheck::plan(cs, req, left.rAuto() && right.rAuto());
@@ -701,11 +705,9 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   for (uint8_t c = 0; c < n; c++) ch[c]->calSave();
   out.println(F("Trimmed calibration saved to flash."));
 
-  // Back to each channel's CURRENT volume while the audio is still
-  // disconnected, let the cells relax, then reconnect.
-  for (uint8_t c = 0; c < n; c++) ch[c]->reapplyCurrentStepOrDefault();
-  BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
-  for (uint8_t c = 0; c < n; c++) ch[c]->relayEnergize(false);
+  // Back to each channel's CURRENT volume while the audio is still disconnected, let the
+  // cells relax, then reconnect both channels together.
+  LDRVolume::releaseToAudio(ch, n);
   Board::reportDieTemp(out, F("Die temp at end"), millis() - t0);
 }
 
@@ -765,6 +767,8 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // The cells' bright-end fingerprint, taken the same way a later CAL checks it.
   {
     CellFingerprint fp[MAX_CH];
+    for (uint8_t c = 0; c < na; c++)
+      CellCheck::chooseDuties(act[c]->seriesCurve(), act[c]->shuntCurve(), CAL_BRIGHT_HOLD_DUTY, fp[c].duty);
     takeFingerprint(act, na, fp);
     for (uint8_t c = 0; c < na; c++) act[c]->setFingerprint(fp[c]);
     out.println(F("--- cell fingerprint stored (bright end, for the next CAL's cell check) ---"));
@@ -857,8 +861,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // Land on a defined step and let the cells relax from the sweep's bright
   // end WHILE the audio path is still disconnected, then reconnect.
   for (uint8_t c = 0; c < na; c++) act[c]->applyDefinedStartupState();
-  BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
-  for (uint8_t c = 0; c < na; c++) act[c]->relayEnergize(false);
+  LDRVolume::releaseToAudio(act, na);
   Board::reportDieTemp(out, F("Die temp at end"), millis() - t0);
 }
 

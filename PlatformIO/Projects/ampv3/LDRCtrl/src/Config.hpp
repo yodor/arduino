@@ -70,7 +70,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-09q (health: common vs per-channel drift)"
+#define FW_VERSION "2026-10-10d (driver v1a, one relay session per DIAG ALL)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -112,7 +112,7 @@ constexpr float AUDIO_SOURCE_OHMS   = 400.0f;
 // board the old firmware boots on the new hardware first and loads the stale
 // file. Never flash a bumped revision onto the UNmodified board and let it
 // calibrate -- the file would carry the new stamp for the old hardware.
-constexpr uint16_t CAL_HW_REV   = 2; // the board now has the 1M bleeds
+constexpr uint16_t CAL_HW_REV   = 3; // v1a: 100k bleeds again (dithering covers the resolution), WIMA MKS film filter caps, matched PNP pairs (SER_L/SER_R, SHUNT_L/SHUNT_R). 2 = 1M bleeds.
 // CAL_ALGO_REV -- bump when a firmware change alters what saved curves/LUT
 // entries MEAN. Ordinary firmware updates do not bump it, so they keep the
 // saved calibration.

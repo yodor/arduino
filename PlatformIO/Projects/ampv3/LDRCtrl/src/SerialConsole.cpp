@@ -62,7 +62,6 @@ void SerialConsole::diagCreep(uint16_t quietSeconds) {
   }
   stream_.println(F("--- CREEP: settling after volume jumps ---"));
   stream_.println(F("Ratios are live resistance / LUT target for that step (x1.000 = exactly on target)."));
-  for (uint8_t c = 0; c < 2; c++) v[c]->relayEnergize(true);
   uint8_t loud[2], quiet[2], mid[2];
   for (uint8_t c = 0; c < 2; c++) {
     loud[c] = (uint8_t)v[c]->highestValidStep();
@@ -89,7 +88,6 @@ void SerialConsole::diagCreep(uint16_t quietSeconds) {
     while (millis() - t0 < (unsigned long)k * 1000UL) BusyHook::wait(10);
     creepLine(stream_, k, v, mid);
   }
-  for (uint8_t c = 0; c < 2; c++) v[c]->releaseRelayToAudio();
   Board::reportDieTemp(stream_, F("Die temp"));
 }
 
@@ -105,11 +103,9 @@ void SerialConsole::diagWalk() {
     }
   }
   stream_.println(F("--- DARK-END WALK: run again WITHOUT saving, compared with the stored profile ---"));
-  for (uint8_t c = 0; c < 2; c++) v[c]->relayEnergize(true);
   DarkProfile now[2];
   const char lab[3] = {'L', 'R', 0};
   DualCalibration::walkDarkEnd(v, 2, lab, now, stream_);
-  for (uint8_t c = 0; c < 2; c++) v[c]->releaseRelayToAudio();
   stream_.println(F("--- compared with the stored calibration ---"));
   for (uint8_t c = 0; c < 2; c++) {
     const DarkProfile &st = v[c]->darkProfile();
@@ -157,7 +153,6 @@ void SerialConsole::diagVerify() {
   for (uint8_t c = 0; c < 2; c++) for (uint8_t i = 0; i < VolumeLut::MAX_STEPS; i++) {
     up[c][i] = NAN; dn[c][i] = NAN; lastUpSer_[c][i] = NAN; lastUpShu_[c][i] = NAN;
   }
-  for (uint8_t c = 0; c < 2; c++) v[c]->relayEnergize(true);
   const uint8_t n = left_.numSteps() > right_.numSteps() ? left_.numSteps() : right_.numSteps();
   for (uint8_t pass = 0; pass < 2; pass++) {
     const bool down = (pass == 1);
@@ -228,10 +223,8 @@ void SerialConsole::diagVerify() {
   }
   stream_.print(F("  worst |L-R| (up) ")); stream_.print(worstBal, 2);
   stream_.print(F(" dB, worst |up-down| ")); stream_.print(worstHyst, 2); stream_.println(F(" dB"));
-  for (uint8_t c = 0; c < 2; c++) {
+  for (uint8_t c = 0; c < 2; c++)
     for (uint8_t i = 0; i < VolumeLut::MAX_STEPS; i++) lastUpDb_[c][i] = up[c][i];
-    v[c]->releaseRelayToAudio();
-  }
   lastVerifyMs_ = millis() | 1;
 }
 
@@ -378,7 +371,7 @@ void SerialConsole::printStored(LDRVolume &v, const char *label) {
   for (uint8_t e = 0; e < 2; e++) {
     stream_.print(e ? F("  shunt ") : F("  series"));
     for (uint8_t i = 0; i < CellCheck::NFP; i++) {
-      stream_.print(F("  @")); stream_.print(CellCheck::DUTIES[i]); stream_.print(F(" "));
+      stream_.print(F("  @")); stream_.print(f.duty[i]); stream_.print(F(" "));
       stream_.print(e ? f.shu[i] : f.ser[i], 1);
     }
     stream_.println();
@@ -414,15 +407,15 @@ void SerialConsole::diagSnapshot() {
   Capabilities::printReport(stream_, ser, shu, labels, 2, left_.rTotalOhms(), pr);
 }
 
+// The measured DIAG sections (cell check, verify, walk, creep) run inside DIAG ALL's single
+// relay session: they expect both relays energized and never switch them.
 void SerialConsole::diagCellCheck() {
   if (!left_.fingerprint().valid || !right_.fingerprint().valid) {
     stream_.println(F("--- cell check: skipped (no stored fingerprint) ---"));
     return;
   }
   LDRVolume *v[2] = {&left_, &right_};
-  for (uint8_t c = 0; c < 2; c++) v[c]->relayEnergize(true);
   DualCalibration::checkCells(v, 2, "LR", stream_);
-  for (uint8_t c = 0; c < 2; c++) v[c]->releaseRelayToAudio();
 }
 
 // One line per channel for VOL: the step, its dB, and what each cell is driven to and
@@ -553,7 +546,7 @@ void SerialConsole::printHealth() {
   uint8_t warns = 0;
   stream_.println(F("--- HEALTH ---"));
   if (!left_.hasLut() || !right_.hasLut()) { stream_.println(F("  WARN no calibration on both channels -- send CAL")); return; }
-  const char *SUGGEST_SER = "     suggest: CAL once warm (resync). If it comes back: clean/inspect the %c series driver (PNP, 1M bleed, base traces -- flux leaks nA there), then swap the LDR boards between channels (the next boot re-characterizes) to tell cell from driver.";
+  const char *SUGGEST_SER = "     suggest: CAL once warm (resync). If it comes back: clean/inspect the %c series driver (PNP, bleed, base traces -- flux leaks nA there), then swap the LDR boards between channels (the next boot re-characterizes) to tell cell from driver.";
   char buf[260];
   // 1. series cells off target / apart, from the last verify (quiet and middle steps)
   if (lastVerifyMs_ != 0) {
@@ -570,7 +563,7 @@ void SerialConsole::printHealth() {
     const float apart = med[1] - med[0]; // > 0: R's series further above target -> R quieter
     // Both channels off target TOGETHER (e.g. both drivers warmed since calibration):
     // the levels moved, the balance did not -- nothing to fix in either driver.
-    if (fabsf(apart) <= logf(PAIR_OFF) && fabsf(med[0]) > logf(SER_OFF) && fabsf(med[1]) > logf(SER_OFF) &&
+    if (fabsf(apart) <= logf(PAIR_OFF) && (fabsf(med[0]) > logf(SER_OFF) || fabsf(med[1]) > logf(SER_OFF)) &&
         (med[0] > 0) == (med[1] > 0)) {
       const float common = 0.5f * (med[0] + med[1]);
       stream_.print(F("  INFO both series sit about "));
@@ -760,7 +753,8 @@ void SerialConsole::handleLine(String line) {
         stream_.println(F("ms remaining"));
       }
     } else {
-      for (uint8_t c = 0; c < 2; c++) { if (on) both[c]->relayEnergize(true); else both[c]->releaseRelayToAudio(); }
+      if (on) { for (uint8_t c = 0; c < 2; c++) both[c]->relayEnergize(true); }
+      else LDRVolume::releaseToAudio(both, 2);
       stream_.println(on ? F("OK audio disconnected") : F("OK volume restored, audio reconnected"));
     }
 
@@ -797,10 +791,14 @@ void SerialConsole::handleLine(String line) {
       Board::CalHold ampHold(board_);
       stream_.println(F("===== DIAG ALL BEGIN (send everything down to DIAG ALL END) ====="));
       diagSnapshot();
+      // ONE relay session for every measured section: engaged once here, handed back once
+      // at the end (both channels together, amp held muted) -- no clicking in between.
+      for (uint8_t c = 0; c < 2; c++) both[c]->relayEnergize(true);
       diagCellCheck();
       diagVerify();
       diagWalk();
       diagCreep(90);
+      LDRVolume::releaseToAudio(both, 2);
       printHealth();
       Board::reportDieTemp(stream_, F("Die temp at the end"), millis() - t0);
       stream_.println(F("===== DIAG ALL END ====="));

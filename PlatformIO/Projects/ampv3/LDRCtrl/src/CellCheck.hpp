@@ -1,12 +1,18 @@
 #pragma once
 #include <stdint.h>
 #include <math.h>
+#include "Calibration.hpp"
 
 // ============================================================================
 // CellCheck -- one CAL command; the firmware decides how much work it needs.
 //
 // FINGERPRINT. Each of the four cells is read at a few BRIGHT duties (its partner
-// held bright), both channels at once. The bright end is the repeatable part of a
+// held bright), both channels at once. The duties are MEASURED, not fixed: at each full
+// characterization chooseDuties() takes them from the channel's own curves -- the lowest
+// where both cells are within BRIGHT_FACTOR x their floor (clear of the knee, wherever a
+// given driver puts it: ~1000 counts with 100k bleeds, ~600 with 1M), the highest at the
+// bright hold -- and they are stored with the fingerprint, so a later check reads exactly
+// the same points. (Fixed duties chosen for one board sat right on the knee of another.) The bright end is the repeatable part of a
 // vactrol: it settles in milliseconds, and the LED current there is set by the
 // driver's NPN stage, not by a few millivolts of Vbe drift. Measured on this
 // board, the same four cells a day apart (2026-10-08 vs 09) moved by at most 1.5%
@@ -27,14 +33,15 @@
 // ============================================================================
 namespace CellCheck {
 constexpr uint8_t  NFP = 4;
-constexpr uint16_t DUTIES[NFP] = {1023, 1474, 2457, 3276};
 constexpr float    MATCH_TOL = 1.05f;     // more than 5 percent off at any duty = a different cell
 constexpr uint32_t SETTLE_MS = 400;       // bright end: settled well within this
+constexpr float    BRIGHT_FACTOR = 4.0f;  // lowest fingerprint duty: both cells within 4x their floor
 } // namespace CellCheck
 
 struct CellFingerprint {
-  float ser[CellCheck::NFP];   // series cell, ohms at DUTIES[] (shunt bright)
-  float shu[CellCheck::NFP];   // shunt cell, ohms at DUTIES[] (series bright)
+  uint16_t duty[CellCheck::NFP]; // the PWM duties it was taken at (chosen from the curves)
+  float ser[CellCheck::NFP];   // series cell, ohms at duty[] (shunt bright)
+  float shu[CellCheck::NFP];   // shunt cell, ohms at duty[] (series bright)
   float tempC;                 // RP2040 die temperature when taken
   uint8_t valid;               // 1 = all readings present
   uint8_t pad[3];
@@ -78,8 +85,33 @@ inline float worst(const CellFingerprint &a, const CellFingerprint &b, uint8_t &
   return w;
 }
 
+// The fingerprint duties for one channel, from its own curves: the lowest duty at which BOTH
+// cells are within BRIGHT_FACTOR x their lowest reading, then evenly up to `top` (the
+// bright hold). Falls back to a fixed bright set if a curve is unusable.
+inline void chooseDuties(const LdrCurve &series, const LdrCurve &shunt, uint16_t top, uint16_t *out) {
+  uint16_t lo = 0;
+  const LdrCurve *cv[2] = {&series, &shunt};
+  bool ok = true;
+  for (uint8_t e = 0; e < 2 && ok; e++) {
+    const LdrCurve &c = *cv[e];
+    if (c.count() < 2) { ok = false; break; }
+    float floorOhms = c.point(0).ohms;
+    for (uint8_t k = 1; k < c.count(); k++) if (c.point(k).ohms < floorOhms) floorOhms = c.point(k).ohms;
+    uint16_t d = 0;
+    for (uint8_t k = 0; k < c.count(); k++) {               // ascending duty: first point bright enough
+      if (c.point(k).ohms <= BRIGHT_FACTOR * floorOhms) { d = c.point(k).duty; break; }
+    }
+    if (d == 0) { ok = false; break; }
+    if (d > lo) lo = d;
+  }
+  if (!ok) lo = 1638;
+  if (lo + 300 > top) lo = top - 300;
+  for (uint8_t i = 0; i < NFP; i++) out[i] = (uint16_t)(lo + (uint32_t)(top - lo) * i / (NFP - 1));
+}
+
 inline CellState judge(bool haveStored, const CellFingerprint &stored, const CellFingerprint &now) {
   if (!haveStored || !stored.valid) return CellState::NO_DATA;
+  for (uint8_t i = 0; i < NFP; i++) if (stored.duty[i] != now.duty[i] || stored.duty[i] == 0) return CellState::NO_DATA;
   uint8_t e, i;
   const float w = worst(stored, now, e, i);
   if (w <= 0.0f) return CellState::CHANGED;   // a reading failed: do not trust the old calibration

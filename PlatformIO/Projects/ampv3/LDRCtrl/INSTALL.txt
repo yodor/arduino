@@ -1,5 +1,9 @@
-LDR daughter board firmware -- 2026-10-09q (health: common vs per-channel drift)
+LDR daughter board firmware -- 2026-10-10d (driver v1a, one relay session per DIAG ALL)  (driver v1a)
+
+DIAG ALL engages both relays once after the snapshot and hands the audio back once at the
+end (both channels together, amp muted); the health check reports a same-direction shift
+with L and R close together as a common drift.
 
 1. DELETE your project's src/ folder, copy this package's src/ next to platformio.ini.
 2. pio run -t clean ; pio run ; flash .pio/build/picow/firmware.uf2 (BOOTSEL + copy).
-3. Boot: no recalibration (same file format and calibration revision).
+3. Boot: no recalibration (same file format as 2026-10-10c).
