@@ -11,244 +11,275 @@ DaughterBoardLink& DaughterBoardLink::instance() {
 void DaughterBoardLink::init(uint8_t txPin, uint8_t rxPin, uint32_t baud) {
     Serial1.setTX(txPin);
     Serial1.setRX(rxPin);
+    // Arduino-Pico's Serial1 keeps received bytes in a software queue of
+    // only 32 bytes by default (plus the UART's own 32-byte hardware FIFO);
+    // anything beyond that is silently dropped. A STATUS line is ~145 bytes
+    // (up to ~220 with ERR=) and at 115200 baud arrives in ~13-19ms, while
+    // update() only drains it once per 10ms loop -- so the middle of every
+    // status line was being lost (fields missing, PROTO read as 0, the link
+    // flapping between up and lost). Must be set before begin().
+    Serial1.setFIFOSize(kRxFifoSize);
     Serial1.begin(baud);
 }
 
-bool DaughterBoardLink::isBusy() const {
-    return m_status == DaughterCmdStatus::PENDING;
+bool DaughterBoardLink::isStatusFresh() const {
+    return m_statusData.valid && (millis() - m_statusData.receivedMs < DAUGHTER_STATUS_STALE_MS);
 }
 
-bool DaughterBoardLink::isCalibrating() const {
-    return m_calibrating;
+void DaughterBoardLink::setError(const char* text) {
+    strncpy(m_lastError, text, sizeof(m_lastError) - 1);
+    m_lastError[sizeof(m_lastError) - 1] = '\0';
+    m_status = DaughterCmdStatus::ERROR;
 }
 
-bool DaughterBoardLink::sendLine(const char* line) {
-    // Temporary bring-up tracing -- prints every attempted send, including
-    // local rejections (which otherwise fail completely silently), so the
-    // master's own Serial monitor shows the full picture while testing
-    // the physical link. Remove or comment out once the link is confirmed
-    // working end to end.
-    if (m_status == DaughterCmdStatus::PENDING) {
-        Serial.print("[UART] send rejected (still awaiting a reply): "); Serial.println(line);
-        return false; // one command in flight at a time
-    }
-    if (m_calibrating) {
-        Serial.print("[UART] send rejected (calibration in progress): "); Serial.println(line);
-        return false; // see DAUGHTER_CAL_SAFETY_TIMEOUT_MS in Config.hpp
-    }
+bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
+    if (m_status == DaughterCmdStatus::PENDING) return false; // one command in flight at a time
 
-    Serial.print("[UART TX] "); Serial.println(line);
+    if (DAUGHTER_LINK_TRACE) { Serial.print("[UART TX] "); Serial.println(line); }
 
+    // Bare '\n' terminator -- the daughter accepts '\r', '\n' or both.
     Serial1.print(line);
     Serial1.print('\n');
 
     m_status        = DaughterCmdStatus::PENDING;
+    m_pending       = cmd;
     m_commandSentMs = millis();
-    m_lineLen       = 0; // fresh reply incoming; discard anything stale in the buffer
+    if (cmd == PendingCmd::STATUS) m_lastStatusSentMs = m_commandSentMs;
+    m_lineLen       = 0;     // fresh reply incoming; discard anything stale
+    m_lineOverflow  = false;
     return true;
 }
 
-bool DaughterBoardLink::sendMuteOn() {
-    if (!sendLine("MUTE ON")) return false;
-    m_pending = PendingCmd::MUTE_ON;
-    return true;
-}
+bool DaughterBoardLink::sendMuteOn()     { return sendLine("MUTE ON",      PendingCmd::MUTE_ON); }
+bool DaughterBoardLink::sendMuteOff()    { return sendLine("MUTE OFF",     PendingCmd::MUTE_OFF); }
+bool DaughterBoardLink::sendVolUp()      { return sendLine("VOL UP",       PendingCmd::VOL_UP); }
+bool DaughterBoardLink::sendVolDown()    { return sendLine("VOL DOWN",     PendingCmd::VOL_DOWN); }
+bool DaughterBoardLink::sendAmpMuteOn()  { return sendLine("AMP_MUTE ON",  PendingCmd::AMP_MUTE_ON); }
+bool DaughterBoardLink::sendAmpMuteOff() { return sendLine("AMP_MUTE OFF", PendingCmd::AMP_MUTE_OFF); }
+bool DaughterBoardLink::sendCalibrate()  { return sendLine("CAL",          PendingCmd::CAL); }
+bool DaughterBoardLink::sendStatus()     { return sendLine("STATUS",       PendingCmd::STATUS); }
 
-bool DaughterBoardLink::sendMuteOff() {
-    if (!sendLine("MUTE OFF")) return false;
-    m_pending = PendingCmd::MUTE_OFF;
-    return true;
-}
-
-bool DaughterBoardLink::sendVolUp() {
-    if (!sendLine("VOL UP")) return false;
-    m_pending = PendingCmd::VOL_UP;
-    return true;
-}
-
-bool DaughterBoardLink::sendVolDown() {
-    if (!sendLine("VOL DOWN")) return false;
-    m_pending = PendingCmd::VOL_DOWN;
-    return true;
-}
-
-bool DaughterBoardLink::sendVolSet(uint8_t level) {
-    if (level < DAUGHTER_VOL_MIN || level > DAUGHTER_VOL_MAX) return false; // reject locally, don't send an out-of-range request at all
+bool DaughterBoardLink::sendVolSet(int16_t step) {
+    // The valid range lives on the daughter now (VOLMIN/VOLMAX in STATUS),
+    // so only send what a fresh, idle status says is valid.
+    const DaughterStatus& s = m_statusData;
+    if (!isStatusFresh() || s.busy || s.volMin < 0 || step < s.volMin || step > s.volMax) return false;
 
     char line[16];
-    snprintf(line, sizeof(line), "VOL %u", level);
-    if (!sendLine(line)) return false;
-
-    m_pending = PendingCmd::VOL_SET;
-    return true;
+    snprintf(line, sizeof(line), "VOL %d", static_cast<int>(step));
+    return sendLine(line, PendingCmd::VOL_SET);
 }
 
-bool DaughterBoardLink::sendGetMute() {
-    if (!sendLine("GET MUTE")) return false;
-    m_pending = PendingCmd::GET_MUTE;
-    return true;
-}
+// Parses "OK STATUS=... KEY=value ... [ERR=free text]" into m_statusData.
+// Returns false (touching nothing) if the line isn't a status line. Unknown
+// keys are ignored, as the protocol requires, so the daughter can append
+// fields in later revisions.
+bool DaughterBoardLink::parseStatusLine(const char* line) {
+    static const char kPrefix[] = "OK STATUS=";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
 
-bool DaughterBoardLink::sendGetVol() {
-    if (!sendLine("GET VOL")) return false;
-    m_pending = PendingCmd::GET_VOL;
-    return true;
-}
+    DaughterStatus s; // fields absent from the line keep their "unknown" defaults
+    const char* p = line + 3; // skip "OK "
+    char key[12];
+    char val[24];
 
-bool DaughterBoardLink::sendCalibrate() {
-    if (!sendLine("CAL")) return false;
-    m_pending = PendingCmd::CAL;
-    return true;
-}
+    while (*p) {
+        while (*p == ' ') ++p;
+        if (!*p) break;
 
-bool DaughterBoardLink::sendAmpMuteOn() {
-    if (!sendLine("AMP_MUTE ON")) return false;
-    m_pending = PendingCmd::AMP_MUTE_ON;
-    return true;
-}
+        const char* sp = strchr(p, ' ');
+        if (!sp) sp = p + strlen(p);
+        const char* eq = strchr(p, '=');
+        if (!eq || eq > sp) { p = sp; continue; } // token without '=' -- skip
 
-bool DaughterBoardLink::sendAmpMuteOff() {
-    if (!sendLine("AMP_MUTE OFF")) return false;
-    m_pending = PendingCmd::AMP_MUTE_OFF;
-    return true;
-}
+        size_t klen = static_cast<size_t>(eq - p);
 
-bool DaughterBoardLink::sendGetAmpMute() {
-    if (!sendLine("GET AMP_MUTE")) return false;
-    m_pending = PendingCmd::GET_AMP_MUTE;
+        // ERR is always last and its value is free text to the end of the line.
+        if (klen == 3 && strncmp(p, "ERR", 3) == 0) {
+            strncpy(s.err, eq + 1, sizeof(s.err) - 1);
+            s.err[sizeof(s.err) - 1] = '\0';
+            s.hasErr = true;
+            break;
+        }
+
+        size_t vlen = static_cast<size_t>(sp - (eq + 1));
+        if (klen >= sizeof(key) || vlen >= sizeof(val)) { p = sp; continue; } // unknown/oversized -- ignore
+        memcpy(key, p, klen);      key[klen] = '\0';
+        memcpy(val, eq + 1, vlen); val[vlen] = '\0';
+
+        if      (!strcmp(key, "STATUS"))   s.busy      = !strcmp(val, "BUSY");
+        else if (!strcmp(key, "TEMP"))     s.tempC     = static_cast<float>(atof(val));
+        else if (!strcmp(key, "UP"))       s.upSeconds = strtoul(val, nullptr, 10);
+        else if (!strcmp(key, "VOL"))      s.vol       = static_cast<int16_t>(atoi(val));
+        else if (!strcmp(key, "DB"))       s.db        = static_cast<float>(atof(val));
+        else if (!strcmp(key, "MUTE"))     s.mute      = (val[0] == '1');
+        else if (!strcmp(key, "AMP_MUTE")) s.ampMute   = (val[0] == '1');
+        else if (!strcmp(key, "CAL")) {
+            if      (!strcmp(val, "PROCESSING")) s.cal = DaughterCalState::PROCESSING;
+            else if (!strcmp(val, "OK"))         s.cal = DaughterCalState::OK;
+            else if (!strcmp(val, "NONE"))       s.cal = DaughterCalState::NONE;
+            else if (!strcmp(val, "ERR"))        s.cal = DaughterCalState::ERR;
+        }
+        else if (!strcmp(key, "VOLMIN"))   s.volMin    = static_cast<int16_t>(atoi(val));
+        else if (!strcmp(key, "VOLMAX"))   s.volMax    = static_cast<int16_t>(atoi(val));
+        else if (!strcmp(key, "RANGE"))    s.rangeDb   = static_cast<float>(atof(val));
+        else if (!strcmp(key, "R"))        s.rOhms     = strtoul(val, nullptr, 10);
+        else if (!strcmp(key, "RMIN"))     s.rMinOhms  = strtoul(val, nullptr, 10);
+        else if (!strcmp(key, "RMAX"))     s.rMaxOhms  = strtoul(val, nullptr, 10);
+        else if (!strcmp(key, "RAUTO"))    s.rAuto     = (val[0] == '1');
+        else if (!strcmp(key, "LASTCAL")) { strncpy(s.lastCal, val, sizeof(s.lastCal) - 1); s.lastCal[sizeof(s.lastCal) - 1] = '\0'; }
+        else if (!strcmp(key, "PROTO"))    s.proto     = static_cast<uint8_t>(atoi(val));
+        // anything else: ignore (forward compatibility)
+
+        p = sp;
+    }
+
+    // The protocol allows matching only these leading words of ERR= -- it's
+    // how a master tells the boot hold apart from a calibration.
+    static const char kHold[] = "boot mute hold active";
+    if (s.busy && s.hasErr && strncmp(s.err, kHold, sizeof(kHold) - 1) == 0) {
+        s.bootHold = true;
+        unsigned long ms = 0;
+        if (sscanf(s.err, "boot mute hold active, %lums", &ms) == 1) s.bootHoldRemainingMs = static_cast<uint32_t>(ms);
+    }
+
+    s.valid      = true;
+    s.receivedMs = millis();
+    m_statusData = s;
+    ++m_statusCount;
+
+    if (s.proto != DAUGHTER_PROTO_EXPECTED && !m_protoWarned) {
+        m_protoWarned = true;
+        Serial.print("[Daughter] WARNING: daughter reports PROTO=");
+        Serial.print(s.proto);
+        Serial.print(", this master is written for PROTO=");
+        Serial.println(DAUGHTER_PROTO_EXPECTED);
+    }
     return true;
 }
 
 void DaughterBoardLink::handleResponseLine(const char* line) {
-    // Temporary bring-up tracing -- see sendLine()'s matching comment.
-    // Prints every received line, not just unrecognized ones (the
-    // existing "Unrecognized reply" print below only covers the lines
-    // that fail to match anything).
-    Serial.print("[UART RX] "); Serial.println(line);
+    if (DAUGHTER_LINK_TRACE) { Serial.print("[UART RX] "); Serial.println(line); }
 
-    // Calibration's real, async completion (protocol v2) -- unsolicited,
-    // arrives well after m_pending already went back to NONE (from the
-    // initial "OK" that only meant "started"). Checked first and each
-    // returns immediately rather than falling through to the generic
-    // m_pending-clearing logic below, matching how CAL DONE was already
-    // handled in v1.
-    if (strcmp(line, "CAL DONE") == 0) {
-        m_calibrating = false;
-        m_status      = DaughterCmdStatus::OK;
+    PendingCmd cmd        = m_pending;
+    bool       wasPending = (m_status == DaughterCmdStatus::PENDING);
+    m_pending = PendingCmd::NONE;
+
+    // Status lines are kept whenever they arrive (they're always the
+    // daughter's truth), even a late one that missed its timeout.
+    if (parseStatusLine(line)) {
+        if (!wasPending) return; // late reply -- don't clobber a newer result
+
+        const DaughterStatus& s = m_statusData;
+        if (cmd == PendingCmd::CAL) {
+            if (s.calibrating()) {
+                m_status = DaughterCmdStatus::OK; // started
+                Serial.println("[Daughter] Calibration started");
+            } else {
+                // Rejected (IDLE + CAL=ERR) or the boot hold -- either way
+                // nothing was changed on the daughter.
+                setError(s.hasErr ? s.err : "calibration did not start");
+            }
+        } else if (cmd != PendingCmd::STATUS && s.bootHold) {
+            // Any setter during the boot hold is answered with a status
+            // line instead of being executed.
+            setError(s.err);
+        } else {
+            m_status = DaughterCmdStatus::OK;
+        }
         return;
     }
-    if (strncmp(line, "CAL FAIL", 8) == 0) {
-        // Exact wording is now settled on the daughter's side ("insufficient
-        // valid steps or no ADS1115 detected on one or both channels"), and
-        // it's a whole-request failure -- either channel coming back
-        // degenerate fails both, there's no partial-success variant to
-        // distinguish. Deliberately still only matching the "CAL FAIL"
-        // prefix here, not the full reason text, per the protocol doc's own
-        // guidance to rely on DONE-vs-FAIL rather than the specific wording.
-        m_calibrating = false;
-        strncpy(m_lastError, line, sizeof(m_lastError) - 1);
-        m_lastError[sizeof(m_lastError) - 1] = '\0';
-        m_status = DaughterCmdStatus::ERROR;
+
+    if (!wasPending) {
+        Serial.print("[Daughter] Unexpected line (no command in flight): ");
+        Serial.println(line);
         return;
     }
 
     if (strcmp(line, "OK") == 0) {
-        if (m_pending == PendingCmd::CAL) {
-            // This OK only means calibration STARTED, not finished -- real
-            // completion is the CAL DONE/FAIL handling above, which can
-            // arrive anywhere from ~15s to a couple of minutes later (see
-            // DAUGHTER_CAL_SAFETY_TIMEOUT_MS's comment in Config.hpp).
-            m_calibrating = true;
-            m_calStartMs  = millis();
-        }
         m_status = DaughterCmdStatus::OK;
+        // Re-read the daughter's real VOL/DB/MUTE right away so the display
+        // shows what actually happened rather than a local guess.
+        requestStatusRefresh();
     } else if (strncmp(line, "ERR", 3) == 0) {
-        strncpy(m_lastError, line, sizeof(m_lastError) - 1);
-        m_lastError[sizeof(m_lastError) - 1] = '\0';
-        m_status = DaughterCmdStatus::ERROR;
-
-        // Boot-hold ERR is a specific, stable-worded reply (per the
-        // protocol doc, unlike CAL FAIL's wording which is explicitly
-        // not guaranteed stable) carrying a remaining-time value worth
-        // extracting so a caller can schedule a sensible retry instead
-        // of guessing. Applies to EVERY command during the daughter's
-        // boot hold, not just AMP_MUTE.
-        unsigned long remainingMs = 0;
-        if (sscanf(line, "ERR boot mute hold active, %lums remaining", &remainingMs) == 1) {
-            m_lastErrorIsBootHold = true;
-            m_bootHoldRemainingMs = static_cast<uint32_t>(remainingMs);
-        } else {
-            m_lastErrorIsBootHold = false;
-            m_bootHoldRemainingMs = 0;
-        }
-    } else if (strncmp(line, "AMP_MUTE=", 9) == 0) {
-        // Checked before the plain "MUTE=" prefix below -- not that it's
-        // ambiguous (the two strings differ at the very first character),
-        // just documenting that order here isn't incidental.
-        m_lastAmpMute = (line[9] == '1');
-        m_status      = DaughterCmdStatus::OK;
-    } else if (strncmp(line, "MUTE=", 5) == 0) {
-        m_lastMute = (line[5] == '1');
-        m_status   = DaughterCmdStatus::OK;
-    } else if (strncmp(line, "VOL=", 4) == 0) {
-        m_lastVol = static_cast<uint8_t>(atoi(line + 4));
-        m_status  = DaughterCmdStatus::OK;
+        // e.g. "ERR busy" (a calibration is running -- the command was
+        // dropped, not queued) or "ERR step limit or no calibration loaded".
+        setError(line);
+        requestStatusRefresh();
     } else {
-        // Unrecognized line -- log it for visibility. Notably, this is
-        // where a "CAL INIT ..." reply would land if one ever arrived
-        // (sendCalInit() isn't implemented here yet -- INIT/RTOTAL/MODE/
-        // FIXEDSERIES are a separate, not-yet-wired-up piece of protocol
-        // v2), so seeing one logged here isn't itself a sign of a
-        // protocol violation.
-        //
-        // m_status MUST still be set here, same as every other branch --
-        // this was a real bug: leaving it untouched meant it stayed at
-        // whatever it was before this reply arrived (PENDING, since a
-        // reply just arrived to something we sent), which left sendLine()'s
-        // busy-check blocking every future send until the 500ms timeout
-        // eventually cleared it on its own. Treated as ERROR (an
-        // unexpected reply to whatever we asked is still a failure of
-        // that command, not a success).
+        // Every branch must leave m_status != PENDING, or every later send
+        // would be refused until the timeout (a real bug, fixed earlier).
         Serial.print("[Daughter] Unrecognized reply: ");
         Serial.println(line);
-        m_status = DaughterCmdStatus::ERROR;
+        setError(line);
     }
+}
 
-    m_pending = PendingCmd::NONE;
+uint32_t DaughterBoardLink::currentPollIntervalMs() const {
+    const DaughterStatus& s = m_statusData;
+    if (!s.valid || !s.busy) return DAUGHTER_STATUS_POLL_IDLE_MS;
+    if (s.bootHold) {
+        // Ask again right after the hold should be over, not up to 2s later.
+        uint32_t wait = s.bootHoldRemainingMs + 50;
+        if (wait < 100) wait = 100;
+        return (wait < DAUGHTER_STATUS_POLL_BUSY_MS) ? wait : DAUGHTER_STATUS_POLL_BUSY_MS;
+    }
+    return DAUGHTER_STATUS_POLL_BUSY_MS;
 }
 
 void DaughterBoardLink::update() {
     while (Serial1.available() > 0) {
         char c = static_cast<char>(Serial1.read());
 
-        if (c == '\r') continue; // tolerate CRLF from manual terminal typing
+        if (c == '\r') continue;
         if (c == '\n') {
-            m_lineBuf[m_lineLen] = '\0';
-            if (m_lineLen > 0) handleResponseLine(m_lineBuf); // ignore blank lines
-            m_lineLen = 0;
+            if (m_lineOverflow) {
+                Serial.println("[Daughter] Reply longer than the line buffer -- dropped");
+            } else if (m_lineLen > 0) {
+                m_lineBuf[m_lineLen] = '\0';
+                handleResponseLine(m_lineBuf);
+            }
+            m_lineLen      = 0;
+            m_lineOverflow = false;
         } else if (m_lineLen < kLineBufSize - 1) {
             m_lineBuf[m_lineLen++] = c;
+        } else {
+            m_lineOverflow = true; // drop the whole line rather than parse a truncated one
         }
-        // else: line too long -- silently drop overflow characters
     }
 
+    // Should never fire with kRxFifoSize -- if it does, a reply was mangled.
+    if (Serial1.overflow()) {
+        Serial.println("[Daughter] UART receive overflow -- bytes were lost");
+    }
+
+    uint32_t now = millis();
+
     if (m_status == DaughterCmdStatus::PENDING &&
-        (millis() - m_commandSentMs > DAUGHTER_RESPONSE_TIMEOUT_MS)) {
-        // Previously silent -- a command getting no reply at all otherwise
-        // produces zero Serial output, indistinguishable from "nothing
-        // was ever sent" while watching the monitor live.
-        Serial.println("[UART] TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
+        (now - m_commandSentMs > DAUGHTER_RESPONSE_TIMEOUT_MS)) {
+        if (DAUGHTER_LINK_TRACE) Serial.println("[UART] TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
         m_status  = DaughterCmdStatus::TIMEOUT;
         m_pending = PendingCmd::NONE;
     }
 
-    if (m_calibrating && (millis() - m_calStartMs > DAUGHTER_CAL_SAFETY_TIMEOUT_MS)) {
-        // Pure crash/disconnection guard -- DONE/FAIL should always arrive
-        // well before this in normal operation. Reaching it means
-        // something went wrong on the link or the daughter board itself,
-        // not a normal completion path -- see this constant's comment in
-        // Config.hpp.
-        m_calibrating = false;
-        m_status      = DaughterCmdStatus::TIMEOUT;
+    // Link up/lost is logged on transitions only -- a unit without a
+    // daughter board would otherwise log a timeout every poll forever.
+    bool fresh = isStatusFresh();
+    if (fresh != m_linkUp) {
+        m_linkUp = fresh;
+        if (fresh) {
+            Serial.print("[Daughter] Link up, PROTO=");
+            Serial.println(m_statusData.proto);
+        } else {
+            Serial.println("[Daughter] Link lost -- no STATUS reply");
+        }
+    }
+
+    // Poll STATUS whenever the link is free and it's due (or was asked for).
+    if (m_status != DaughterCmdStatus::PENDING) {
+        bool due = (now - m_lastStatusSentMs >= currentPollIntervalMs());
+        if (m_statusRefreshRequested || due) {
+            if (sendStatus()) m_statusRefreshRequested = false;
+        }
     }
 }

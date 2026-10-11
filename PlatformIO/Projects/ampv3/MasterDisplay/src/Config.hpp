@@ -27,28 +27,22 @@ constexpr unsigned long MOTOR_COMMAND_TIMEOUT_MS = 150;
 // mechanical jam, stuck button, or a missed release signal.
 constexpr unsigned long MOTOR_MAX_RUN_TIME_MS = 10000;
 
-// Mute/volume/calibration are always driven through BOTH paths below
-// unconditionally -- the direct DRV8833 motor + MUTE_PIN (Pins.hpp), AND
-// UART commands to a daughter board -- regardless of whether either is
-// actually physically connected on a given unit. Whichever is wired takes
-// effect; the other silently has no effect (an unconnected GPIO toggling,
-// or a UART command with nothing listening). Firmware never needs to know
-// or decide which hardware variant is actually present.
-
-// 4N25 opto-isolated mute control on MUTE_PIN. Verified against the actual
-// mute circuit: at boot (GPIO Hi-Z), current flows through the divider
-// (3.3V -> 300R -> opto LED -> junction -> 1k -> GND) with the LED on,
-// engaging mute purely passively before firmware ever runs. GPIO driven
-// LOW keeps sinking that same current (still muted); GPIO driven HIGH
-// brings the junction to 3.3V, killing the voltage across the LED (off,
-// unmuted). So LOW = muted, HIGH = unmuted -- active-low.
-constexpr bool MUTE_ACTIVE_HIGH = false;
+// Volume is driven through BOTH the DRV8833 motor and the daughter board's
+// UART link unconditionally -- whichever is fitted takes effect. Mute is
+// the daughter board's alone (its LDR mute; the amp mute/boot hold is its
+// own AMP_MUTE) -- the master no longer has a local mute pin.
 
 // UART daughter board link (pins in Pins.hpp).
 constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
 
-constexpr uint8_t DAUGHTER_VOL_MIN = 1;
-constexpr uint8_t DAUGHTER_VOL_MAX = 32; // matches the daughter's actual LUT size (NUM_VOLUME_STEPS_DEFAULT on that side) -- protocol v1 assumed 64 before the real hardware settled on this
+// Protocol revision 7: the volume range is no longer a master-side
+// constant -- it comes from the daughter's STATUS line (VOLMIN/VOLMAX,
+// 0-based, normally 0..31), so nothing here hard-codes it.
+
+// Protocol revision this master is written for. A daughter reporting a
+// different PROTO= is logged loudly (the protocol doc says a master
+// written for another revision will misbehave), but still parsed.
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 7;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held, since
 // each command is a single discrete step on the daughter board rather than
@@ -56,26 +50,52 @@ constexpr uint8_t DAUGHTER_VOL_MAX = 32; // matches the daughter's actual LUT si
 // continuously for as long as wantUp/wantDown is true).
 constexpr uint32_t DAUGHTER_VOL_REPEAT_MS = 250;
 
-// How long to wait for a reply to an ordinary (non-CAL) command before
-// giving up and reporting a timeout.
+// How long to wait for a reply to any command before giving up and
+// reporting a timeout. Revision 7 answers EVERY command within this,
+// including STATUS during a calibration (~10ms).
 constexpr uint32_t DAUGHTER_RESPONSE_TIMEOUT_MS = 500;
 
-// Protocol v2: calibration now sends a real, unsolicited "CAL DONE" /
-// "CAL FAIL <reason>" when it actually finishes -- the link waits for
-// that, not a fixed timer (see DaughterBoardLink::update()). This
-// constant is now purely a crash/disconnection safety net: if the
-// daughter board hangs or the link drops mid-calibration and DONE/FAIL
-// never arrives, this bounds how long isCalibrating() stays stuck true
-// forever. Real interleaved two-channel characterization on actual
-// hardware has measured anywhere from ~15s to over a minute, so this is
-// set generously above that, not tuned to it -- reaching this timeout in
-// normal operation would itself be a sign something went wrong, not an
-// expected outcome.
-constexpr uint32_t DAUGHTER_CAL_SAFETY_TIMEOUT_MS = 180000; // 3 minutes
+// STATUS is the only getter in revision 7, so the master polls it: every
+// IDLE_MS normally, every BUSY_MS while the daughter reports BUSY
+// (calibrating, or its boot hold -- the hold poll is shortened further to
+// the remaining time it reports). Also sent right after every successful
+// VOL/MUTE/AMP_MUTE command, so the on-screen volume reflects the
+// daughter's real VOL/DB rather than a local guess.
+constexpr uint32_t DAUGHTER_STATUS_POLL_IDLE_MS = 5000;
+constexpr uint32_t DAUGHTER_STATUS_POLL_BUSY_MS = 2000;
+
+// A STATUS older than this is treated as "no link" (the daughter stopped
+// answering, or isn't fitted on this unit) -- comfortably more than two
+// idle polls, so a single lost reply doesn't flip the display.
+constexpr uint32_t DAUGHTER_STATUS_STALE_MS = 12000;
+
+// After a local mute toggle, ignore the daughter's reported MUTE for this
+// long before adopting it -- a STATUS that was already in flight when the
+// user pressed mute would otherwise "undo" the press.
+constexpr uint32_t DAUGHTER_MUTE_ADOPT_GRACE_MS = 1000;
+
+// Set true to log every UART line in both directions ([UART TX]/[UART RX])
+// -- bring-up/debug only; with STATUS polled every few seconds it's noisy.
+constexpr bool DAUGHTER_LINK_TRACE = false;
+
+// Debug serial output, off for normal use:
+//  - DEBUG_AUDIO_DIAGNOSTICS: core1's once-a-second [Timing]/[RawADC]
+//    report (chunk timing, FFT duration, DMA overlap, raw ADC peak-to-peak)
+//    and SpectrumScreen's [Spectrum] loudest-bin line.
+//  - DEBUG_PERF: core0's once-a-second [Perf] FPS/render-time line.
+constexpr bool DEBUG_AUDIO_DIAGNOSTICS = false;
+constexpr bool DEBUG_PERF              = true;
+
+// On-screen volume overlay: how long it stays up after the last volume/
+// mute change (from the buttons/IR, or seen in the daughter's STATUS).
+constexpr uint32_t VOLUME_OVERLAY_TIMEOUT_MS = 2000;
 
 
 
 // Panel Specifications
+// Panel rotation passed to the NV3007 driver: 1 = original orientation,
+// 3 = flipped 180 degrees (the mounted device).
+constexpr uint8_t TFT_ROTATION = 3;
 constexpr uint16_t SCREEN_WIDTH  = 428;
 constexpr uint16_t SCREEN_HEIGHT = 142;
 constexpr uint32_t TOTAL_PIXELS  = SCREEN_WIDTH * SCREEN_HEIGHT;
@@ -279,6 +299,12 @@ static_assert((FFT_SIZE / 2) % (CAPTURE_CHUNK_SAMPLES / 2) == 0,
 constexpr float AUDIO_SAMPLE_RATE_HZ = 44100.0f;
 
 constexpr bool CUSTOM_CLOCKS_ENABLED = true;
-//constexpr int SPI_SPEED_HZ = 33333333;
-constexpr uint32_t SPI_SPEED_HZ = 50000000;
+
+// Display SPI clock. With clk_peri bound to clk_sys (200MHz) the reachable
+// rates are 200MHz / even divisor: 50MHz, 33.3MHz, 25MHz... 50MHz was fine
+// on the breadboard, but on the mounted device the bar/peak artifacts point
+// to writes being lost on the bus (see the note in Renderer.cpp), so this
+// runs one step slower. Render time per frame is a small fraction of the
+// 10ms frame budget on every bar screen, so the cost is invisible there.
+constexpr uint32_t SPI_SPEED_HZ = 33333333;
 constexpr uint32_t CPU_SPEED_KHZ = 200000;

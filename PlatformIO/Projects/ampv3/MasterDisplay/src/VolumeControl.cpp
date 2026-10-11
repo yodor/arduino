@@ -8,53 +8,32 @@ VolumeControl& VolumeControl::instance() {
 }
 
 void VolumeControl::init() {
-    // DaughterBoardLink must be ready before applyMuteState() below can
-    // safely send anything over it -- initializing mute state first would
-    // try to transmit on a UART that hasn't been begin()'d yet.
     DaughterBoardLink::instance().init(DAUGHTER_UART_TX_PIN, DAUGHTER_UART_RX_PIN, DAUGHTER_UART_BAUD);
-
     VolumeMotor::instance().init(DRV8833_IN1_PIN, DRV8833_IN2_PIN);
-
-    pinMode(MUTE_PIN, OUTPUT);
-    // force muted locally at boot. UART send deliberately skipped here --
-    // see applyMuteState()'s comment in the header. No boot-hold timer on
-    // this side at all -- the daughter board enforces its own independent
-    // boot-mute hold and refuses every command (replying ERR) until it's
-    // elapsed, so duplicating that gate here would be redundant, and user
-    // mute/unmute requests are never artificially blocked on this side.
-    applyMuteState(true, false);
+    // No mute action at boot: the daughter starts muted under its own boot
+    // hold and releases on its own; its real MUTE state is adopted from the
+    // first IDLE STATUS (syncFromDaughterStatus()).
 }
 
-void VolumeControl::applyMuteState(bool muted, bool sendOverUart) {
-    digitalWrite(MUTE_PIN, (muted == MUTE_ACTIVE_HIGH) ? HIGH : LOW);
-    if (sendOverUart) {
-        if (muted) {
-            DaughterBoardLink::instance().sendMuteOn();
-        } else {
-            DaughterBoardLink::instance().sendMuteOff();
-        }
-    }
-    m_muted = muted;
+// Optimistic: the local mirror flips immediately (so the overlay's MUTED tag
+// reacts at once), the command goes out as soon as the link is free, and
+// the daughter's STATUS confirms (or corrects) it afterwards.
+void VolumeControl::requestMute(bool muted) {
+    m_muted            = muted;
+    m_lastMuteChangeMs = millis();
+    m_mutePending      = true;
+    retryPendingCommands();
 }
 
-void VolumeControl::muteOn() {
-    applyMuteState(true);
-}
-
-void VolumeControl::muteOff() {
-    applyMuteState(false);
-}
+void VolumeControl::muteOn()  { requestMute(true); }
+void VolumeControl::muteOff() { requestMute(false); }
 
 void VolumeControl::toggleMute() {
-    if (m_muted) {
-        muteOff();
-    } else {
-        muteOn();
-    }
+    requestMute(!m_muted);
 }
 
 void VolumeControl::ampMuteOn() {
-    DaughterBoardLink::instance().sendAmpMuteOn(); // no-op if nothing's listening; see getLastStatus() for the ERR case (e.g. daughter's own boot hold)
+    DaughterBoardLink::instance().sendAmpMuteOn();
     m_ampMuted = true;
 }
 
@@ -64,54 +43,84 @@ void VolumeControl::ampMuteOff() {
 }
 
 void VolumeControl::calibrate() {
-    DaughterBoardLink::instance().sendCalibrate(); // no-op if nothing's listening
-    // No defined calibration procedure exists yet for the motor/mute path.
+    m_calPending = true;
+    retryPendingCommands();
+}
+
+void VolumeControl::retryPendingCommands() {
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    if (m_mutePending && !link.isBusy()) {
+        bool sent = m_muted ? link.sendMuteOn() : link.sendMuteOff();
+        if (sent) m_mutePending = false;
+    }
+    if (m_calPending && !link.isBusy()) {
+        if (link.sendCalibrate()) m_calPending = false;
+    }
+}
+
+// Adopts the daughter's reported state once per new STATUS line -- but only
+// when it reports IDLE (during a calibration the fields are transient, and
+// during the boot hold the daughter is still settling), and never while a
+// local mute change is still on its way or within the grace window after it.
+void VolumeControl::syncFromDaughterStatus() {
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    if (link.statusCount() == m_lastSeenStatusCount) return;
+    m_lastSeenStatusCount = link.statusCount();
+
+    const DaughterStatus& s = link.status();
+
+    // Calibration start/end logging (the protocol has no CAL DONE/FAIL --
+    // completion is STATUS going back to IDLE).
+    bool calibratingNow = s.calibrating();
+    if (calibratingNow && !m_wasCalibrating) {
+        Serial.println("[Calibration] Daughter reports CAL=PROCESSING");
+    } else if (!calibratingNow && m_wasCalibrating && !s.busy) {
+        if (s.cal == DaughterCalState::OK) {
+            Serial.print("[Calibration] Finished OK, LASTCAL=");
+            Serial.println(s.lastCal);
+        } else {
+            Serial.print("[Calibration] Finished with CAL=");
+            Serial.print(s.cal == DaughterCalState::NONE ? "NONE" : "ERR");
+            if (s.hasErr) { Serial.print(": "); Serial.print(s.err); }
+            Serial.println();
+        }
+    }
+    m_wasCalibrating = calibratingNow;
+
+    if (s.busy) return;
+
+    m_ampMuted = s.ampMute;
+
+    bool inGrace = (millis() - m_lastMuteChangeMs) < DAUGHTER_MUTE_ADOPT_GRACE_MS;
+    if (!m_mutePending && !inGrace) {
+        m_muted = s.mute; // the daughter is the source of truth
+    }
 }
 
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
-    // Motor: continuous drive while held -- no-op if DRV8833_IN1/IN2
-    // aren't physically connected to anything.
+    // Motor: continuous drive while held -- no-op if not connected.
     VolumeMotor::instance().update(wantVolUpHeld, wantVolDownHeld);
 
-    // Daughter board: always serviced (processes replies/timeouts), and
-    // sends throttled discrete VOL UP/DOWN commands while held -- no-op if
-    // nothing's connected (the command just goes nowhere, no reply ever
-    // arrives, no harm done).
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.update();
+    syncFromDaughterStatus();
+    retryPendingCommands();
 
-    // Logs calibration's real outcome exactly once, right when
-    // isCalibrating() transitions back to false -- protocol v2 made this a
-    // genuine async DONE/FAIL (or a safety-timeout fallback), worth
-    // surfacing now that there's an actual result to report instead of a
-    // blind fixed-wait guess.
-    bool isCalibratingNow = link.isCalibrating();
-    if (m_wasCalibrating && !isCalibratingNow) {
-        switch (link.getLastStatus()) {
-            case DaughterCmdStatus::OK:
-                Serial.println("[Calibration] Completed successfully.");
-                break;
-            case DaughterCmdStatus::ERROR:
-                Serial.print("[Calibration] Failed: ");
-                Serial.println(link.getLastError());
-                break;
-            case DaughterCmdStatus::TIMEOUT:
-                Serial.println("[Calibration] Safety timeout -- no DONE/FAIL reply ever arrived; check the link/daughter board.");
-                break;
-            default:
-                break;
-        }
-    }
-    m_wasCalibrating = isCalibratingNow;
-
+    // Daughter: throttled discrete VOL UP/DOWN while held. Skipped while a
+    // fresh status says the daughter is busy (it would just answer "ERR
+    // busy" / the boot-hold status line) or already at the end of its range.
     uint32_t now = millis();
-    bool readyToSend = !link.isBusy() && (now - m_lastVolCommandMs >= DAUGHTER_VOL_REPEAT_MS);
+    if (link.isBusy() || (now - m_lastVolCommandMs < DAUGHTER_VOL_REPEAT_MS)) return;
 
-    if (wantVolUpHeld && readyToSend) {
-        link.sendVolUp();
+    const DaughterStatus& s = link.status();
+    bool fresh = link.isStatusFresh();
+    if (fresh && s.busy) return;
+
+    if (wantVolUpHeld) {
+        if (!(fresh && s.volMax >= 0 && s.vol >= s.volMax)) link.sendVolUp();
         m_lastVolCommandMs = now;
-    } else if (wantVolDownHeld && readyToSend) {
-        link.sendVolDown();
+    } else if (wantVolDownHeld) {
+        if (!(fresh && s.volMin >= 0 && s.vol >= 0 && s.vol <= s.volMin)) link.sendVolDown();
         m_lastVolCommandMs = now;
     }
 }

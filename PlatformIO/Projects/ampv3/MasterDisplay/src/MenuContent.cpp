@@ -1,4 +1,5 @@
 #include "MenuContent.hpp"
+#include "Version.hpp"
 #include "ScreenRegistry.hpp"
 #include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
@@ -243,6 +244,8 @@ const MenuItem kRootMenuItems[] = {
     { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr,              kBrightnessOptions,  4 },
     { "Theme",           MenuItemType::SUBMENU,      nullptr,              nullptr, 0, kThemeSubmenuItems, kThemeSubmenuItemCount },
     { "Calibration",     MenuItemType::ACTION,       menuAction_Calibrate, nullptr, 0 },
+    // Read-only: shows the running firmware version; selecting it does nothing.
+    { "FW " FW_VERSION,  MenuItemType::ACTION,       nullptr,              nullptr, 0 },
 };
 constexpr size_t kRootMenuItemCount = sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]);
 

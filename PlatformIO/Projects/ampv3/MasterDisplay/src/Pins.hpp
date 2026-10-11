@@ -45,8 +45,8 @@ constexpr uint8_t IR_PIN  = 11;
 constexpr uint8_t DRV8833_IN1_PIN = 6;
 constexpr uint8_t DRV8833_IN2_PIN = 7;
 
-// 4n25 mute pin
-constexpr uint8_t MUTE_PIN  = 8; 
+// GPIO8 is free: it used to drive the master-side 4N25 mute, which was
+// removed -- muting is handled entirely by the daughter board now.
 
 /**
  * UART link to a daughter board handling mute/volume/calibration, using

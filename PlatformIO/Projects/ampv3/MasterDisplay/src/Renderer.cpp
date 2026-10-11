@@ -12,17 +12,20 @@ void Renderer::init() {
 
     // Instantiate NV3007 display panel driver using Config.hpp parameters
     m_tft = new Arduino_NV3007(
-        m_bus, TFT_RST, 3 /* Rotation */, false /* IPS */, SCREEN_HEIGHT, SCREEN_WIDTH,
+        m_bus, TFT_RST, TFT_ROTATION, false /* IPS */, SCREEN_HEIGHT, SCREEN_WIDTH,
         12, 0, 14, 0, nv3007_279_init_operations, sizeof(nv3007_279_init_operations)
     );
 
-    // 24MHz is the actual hardware ceiling here: RP2040's SPI clock is
-    // clk_peri / (even prescaler >= 2) / (postdiv >= 1), and clk_peri is
-    // fixed at 48MHz by default on Arduino-Pico (independent of CPU clock,
-    // so UART/peripheral timing stays stable regardless of CPU overclock).
-    // That makes 48MHz/2 = 24MHz the fastest SPI rate achievable without
-    // reconfiguring clk_peri itself. Requesting anything higher (we tried
-    // 41.67MHz) just gets silently clamped back down to this same ceiling.
+    // SPI clock = clk_peri / (even prescaler >= 2) / postdiv. With the
+    // default 48MHz clk_peri that caps out at 24MHz; with CUSTOM_CLOCKS_ENABLED
+    // main.cpp binds clk_peri to clk_sys, so SPI_SPEED_HZ (Config.hpp) can go
+    // higher. The actual rate achieved is printed below.
+    //
+    // Signal integrity note: every bar screen draws incrementally (it only
+    // paints what changed since last frame), so a single write lost or
+    // corrupted on the bus is never repaired -- a missed black erase stays
+    // on screen as a stale peak line or bar remnant until something paints
+    // over it. If those artifacts appear, try a lower SPI_SPEED_HZ first.
     if (CUSTOM_CLOCKS_ENABLED && SPI_SPEED_HZ>0) {
         m_tft->begin(SPI_SPEED_HZ);
     }

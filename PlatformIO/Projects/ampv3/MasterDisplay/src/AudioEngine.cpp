@@ -1,5 +1,4 @@
 #include "AudioEngine.hpp"
-#include "hardware/clocks.h"
 #include "PersistentSettings.hpp"
 
 namespace {
@@ -149,7 +148,7 @@ void AudioEngine::runCore1() {
         rawAdcAccumUs += micros() - rawAdcStartUs;
 
         uint32_t rawDebugNowMs = millis();
-        if (rawDebugNowMs - lastRawDebugMs >= 1000) {
+        if (DEBUG_AUDIO_DIAGNOSTICS && rawDebugNowMs - lastRawDebugMs >= 1000) {
             lastRawDebugMs = rawDebugNowMs;
             Serial.print("[RawADC] L pp=");
             Serial.print(rawMaxL - rawMinL);
@@ -204,85 +203,69 @@ void AudioEngine::runCore1() {
         if (timingNowMs - lastTimingDebugMs >= 1000) {
             lastTimingDebugMs = timingNowMs;
 
-            // One-time diagnostic, fired here (guaranteed at least 1s into
-            // runtime, well after core0's Serial.begin()) rather than
-            // immediately after adc_init() -- that earlier placement was
-            // racing against Serial initialization from core0's setup()
-            // and apparently losing, since the line never appeared at all.
-            // Measures the ADC's ACTUAL live clock rather than assuming
-            // the RP2040-derived 48MHz reference still holds on RP2350;
-            // the gap between assumed capture time (~2.9ms, from
-            // 48MHz/545) and measured chunk timing (~4.05-4.33ms) implies
-            // an actual combined sample rate closer to ~59-63kHz.
-            static bool printedClockInfo = false;
-            if (!printedClockInfo) {
-                printedClockInfo = true;
-                uint32_t adcClockHz = clock_get_hz(clk_adc);
-                Serial.print("[Clock] clk_adc = ");
-                Serial.print(adcClockHz);
-                Serial.print(" Hz (assumed 48000000) | with clkdiv=544, implied combined sample rate = ");
-                Serial.print(static_cast<float>(adcClockHz) / 545.0f, 1);
-                Serial.println(" Hz");
+            // Per-second timing report -- debug only (DEBUG_AUDIO_DIAGNOSTICS
+            // in Config.hpp). The accumulators are reset below either way.
+            if (DEBUG_AUDIO_DIAGNOSTICS) {
+                float avgChunkUs = (chunkCountSinceRpt > 0)
+                                        ? static_cast<float>(chunkAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                        : 0.0f;
+                float avgWaveformUs = (chunkCountSinceRpt > 0)
+                                           ? static_cast<float>(waveformAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                           : 0.0f;
+                float avgSpectrumUs = (chunkCountSinceRpt > 0)
+                                           ? static_cast<float>(spectrumAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                           : 0.0f;
+                float avgWaitUs = (chunkCountSinceRpt > 0)
+                                       ? static_cast<float>(waitAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                       : 0.0f;
+                float avgRawAdcUs = (chunkCountSinceRpt > 0)
+                                         ? static_cast<float>(rawAdcAccumUs) / static_cast<float>(chunkCountSinceRpt)
+                                         : 0.0f;
+
+                Serial.print("[Timing] waveform chunk avg=");
+                Serial.print(avgChunkUs / 1000.0f, 3);
+                Serial.print("ms (~");
+                Serial.print(avgChunkUs > 0.0f ? 1000000.0f / avgChunkUs : 0.0f, 1);
+                Serial.print("Hz) | spectrum fft=");
+                Serial.print(m_spectrum.lastFftDurationUs() / 1000.0f, 2);
+                Serial.print("ms @ ");
+                Serial.print(m_spectrum.observedRefreshHz(), 1);
+                Serial.println("Hz");
+
+                Serial.print("[Timing] per-chunk dispatch avg -- waveform=");
+                Serial.print(avgWaveformUs / 1000.0f, 3);
+                Serial.print("ms | spectrum=");
+                Serial.print(avgSpectrumUs / 1000.0f, 3);
+                Serial.print("ms | wait=");
+                Serial.print(avgWaitUs / 1000.0f, 3);
+                Serial.print("ms | rawAdcScan=");
+                Serial.print(avgRawAdcUs / 1000.0f, 3);
+                Serial.print("ms | sum=");
+                Serial.print((avgWaveformUs + avgSpectrumUs + avgWaitUs + avgRawAdcUs) / 1000.0f, 3);
+                Serial.println("ms");
+
+                // Direct DMA hardware probe: how many of the just-started
+                // channel's CAPTURE_CHUNK_SAMPLES actually got captured WHILE
+                // we were busy dispatching, on average -- vs. what real
+                // concurrent capture (at the confirmed 88073.4Hz combined
+                // rate) over that same dispatch duration SHOULD have produced.
+                // A big gap between "actual" and "expected" here means the two
+                // DMA channels aren't genuinely overlapping with our
+                // processing, regardless of what the aggregate timing implied.
+                float avgTransferProgress = (chunkCountSinceRpt > 0)
+                                                 ? static_cast<float>(transferProgressAccum) / static_cast<float>(chunkCountSinceRpt)
+                                                 : 0.0f;
+                float avgDispatchUs = avgWaveformUs + avgSpectrumUs + avgRawAdcUs;
+                float expectedProgress = avgDispatchUs * (88073.4f / 1000000.0f);
+
+                Serial.print("[Timing] DMA overlap check -- actual capture progress during dispatch=");
+                Serial.print(avgTransferProgress, 1);
+                Serial.print(" samples | expected if fully overlapped=");
+                Serial.print(expectedProgress, 1);
+                Serial.print(" samples (of ");
+                Serial.print(CAPTURE_CHUNK_SAMPLES);
+                Serial.println(" per chunk)");
             }
-            float avgChunkUs = (chunkCountSinceRpt > 0)
-                                    ? static_cast<float>(chunkAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                    : 0.0f;
-            float avgWaveformUs = (chunkCountSinceRpt > 0)
-                                       ? static_cast<float>(waveformAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                       : 0.0f;
-            float avgSpectrumUs = (chunkCountSinceRpt > 0)
-                                       ? static_cast<float>(spectrumAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                       : 0.0f;
-            float avgWaitUs = (chunkCountSinceRpt > 0)
-                                   ? static_cast<float>(waitAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                   : 0.0f;
-            float avgRawAdcUs = (chunkCountSinceRpt > 0)
-                                     ? static_cast<float>(rawAdcAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                     : 0.0f;
-
-            Serial.print("[Timing] waveform chunk avg=");
-            Serial.print(avgChunkUs / 1000.0f, 3);
-            Serial.print("ms (~");
-            Serial.print(avgChunkUs > 0.0f ? 1000000.0f / avgChunkUs : 0.0f, 1);
-            Serial.print("Hz) | spectrum fft=");
-            Serial.print(m_spectrum.lastFftDurationUs() / 1000.0f, 2);
-            Serial.print("ms @ ");
-            Serial.print(m_spectrum.observedRefreshHz(), 1);
-            Serial.println("Hz");
-
-            Serial.print("[Timing] per-chunk dispatch avg -- waveform=");
-            Serial.print(avgWaveformUs / 1000.0f, 3);
-            Serial.print("ms | spectrum=");
-            Serial.print(avgSpectrumUs / 1000.0f, 3);
-            Serial.print("ms | wait=");
-            Serial.print(avgWaitUs / 1000.0f, 3);
-            Serial.print("ms | rawAdcScan=");
-            Serial.print(avgRawAdcUs / 1000.0f, 3);
-            Serial.print("ms | sum=");
-            Serial.print((avgWaveformUs + avgSpectrumUs + avgWaitUs + avgRawAdcUs) / 1000.0f, 3);
-            Serial.println("ms");
-
-            // Direct DMA hardware probe: how many of the just-started
-            // channel's CAPTURE_CHUNK_SAMPLES actually got captured WHILE
-            // we were busy dispatching, on average -- vs. what real
-            // concurrent capture (at the confirmed 88073.4Hz combined
-            // rate) over that same dispatch duration SHOULD have produced.
-            // A big gap between "actual" and "expected" here means the two
-            // DMA channels aren't genuinely overlapping with our
-            // processing, regardless of what the aggregate timing implied.
-            float avgTransferProgress = (chunkCountSinceRpt > 0)
-                                             ? static_cast<float>(transferProgressAccum) / static_cast<float>(chunkCountSinceRpt)
-                                             : 0.0f;
-            float avgDispatchUs = avgWaveformUs + avgSpectrumUs + avgRawAdcUs;
-            float expectedProgress = avgDispatchUs * (88073.4f / 1000000.0f);
-
-            Serial.print("[Timing] DMA overlap check -- actual capture progress during dispatch=");
-            Serial.print(avgTransferProgress, 1);
-            Serial.print(" samples | expected if fully overlapped=");
-            Serial.print(expectedProgress, 1);
-            Serial.print(" samples (of ");
-            Serial.print(CAPTURE_CHUNK_SAMPLES);
-            Serial.println(" per chunk)");
 
             chunkAccumUs           = 0;
             chunkCountSinceRpt     = 0;

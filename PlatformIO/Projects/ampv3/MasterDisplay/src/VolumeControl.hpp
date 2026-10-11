@@ -1,23 +1,22 @@
 #pragma once
 #include "Config.hpp"
 
-// Unified mute/volume control. Always drives BOTH the direct DRV8833 motor
-// + MUTE_PIN AND UART commands to a daughter board, unconditionally,
-// regardless of whether either is actually physically connected on a given
-// unit -- whichever is wired takes effect, the other silently has no
-// effect (an unconnected GPIO toggling, or a UART command with nothing
-// listening and no reply ever arriving). Firmware never needs to know or
-// decide which hardware variant is actually present.
+// Unified mute/volume control.
+//  - Volume is driven through BOTH the DRV8833 motor (continuous while held)
+//    and the daughter board (discrete VOL UP/DOWN steps), unconditionally --
+//    whichever is fitted takes effect.
+//  - Mute is the daughter board's alone (its LDR mute). There is no local
+//    mute pin any more; isMuted() mirrors what the daughter reports in its
+//    STATUS line, updated optimistically the moment the user toggles it.
 class VolumeControl {
 public:
     static VolumeControl& instance();
 
     void init();
 
-    // Call every loop iteration -- always services the motor and the
-    // daughter board link (so replies/timeouts are processed) and, while
-    // held, drives both volume paths. wantVolUpHeld/wantVolDownHeld
-    // reflect continuous held-state (same semantics as VolumeMotor::update()).
+    // Call every loop iteration -- services the motor and the daughter link,
+    // adopts fresh STATUS data, retries any command the busy link couldn't
+    // take yet, and while held, drives both volume paths.
     void update(bool wantVolUpHeld, bool wantVolDownHeld);
 
     void muteOn();
@@ -25,54 +24,31 @@ public:
     void toggleMute();
     bool isMuted() const { return m_muted; }
 
-    // Independent amp-output mute path (the daughter's own opto circuit --
-    // protocol v2's AMP_MUTE), deliberately NOT bundled into muteOn()/
-    // muteOff()/toggleMute() above: the daughter treats these as two
-    // unrelated mechanisms (muting one has no effect on the other's
-    // state), so this stays a separate control rather than assuming they
-    // should always move together. Not currently wired to any button/IR/
-    // menu item -- these exist so that wiring can be added deliberately
-    // once it's decided how (or whether) to expose it. UART-only, unlike
-    // muteOn()/muteOff() above -- there's no local master-side GPIO
-    // equivalent of this particular mute.
+    // The daughter's separate amp mute (AMP_MUTE). Not bundled into
+    // muteOn()/muteOff() -- the daughter treats them as unrelated. Not wired
+    // to any button/menu yet.
     void ampMuteOn();
     void ampMuteOff();
     bool isAmpMuted() const { return m_ampMuted; }
 
-    // Fires CAL over UART unconditionally. No-op on the motor/mute path,
-    // which has no defined calibration procedure. Fire-and-forget in the
-    // sense that this call itself doesn't block or return a result -- but
-    // completion IS now tracked asynchronously (protocol v2: a real CAL
-    // DONE/FAIL reply, not a blind fixed wait) via DaughterBoardLink::
-    // isCalibrating()/getLastStatus()/getLastError(), which update() below
-    // polls and logs to Serial once calibration actually finishes.
+    // Asks the daughter to calibrate (plain "CAL" -- it decides how much
+    // work it needs). Retried until the link takes it; progress/outcome are
+    // learned from STATUS polling and logged by update().
     void calibrate();
 
 private:
     VolumeControl() = default;
 
-    // Actually drives the GPIO + (optionally) sends the UART command; no
-    // gating. init() and muteOn()/muteOff() all funnel through this so
-    // the hardware-driving logic exists once.
-    //
-    // sendOverUart defaults to true for every normal caller (muteOn()/
-    // muteOff()); init() alone passes false, for its very first boot-time
-    // call specifically -- sending "MUTE ON" over UART at t=0 was racing
-    // the daughter's own independent boot-hold (which already keeps its
-    // side safe regardless of what the master sends, refusing every
-    // command with an ERR reply until its own hold elapses), and an
-    // unexpected/garbled reply during that race could leave
-    // DaughterBoardLink stuck thinking a command was still in flight. The
-    // local GPIO mute (which has no such race -- it's a plain
-    // digitalWrite) still happens unconditionally either way; only the
-    // redundant, risky UART send at boot is skipped. There's no boot-hold
-    // timer on this side at all -- muteOn()/muteOff() work immediately,
-    // and whatever happens to arrive while the daughter is still in its
-    // own hold just gets its ERR reply handled the same as any other.
-    void applyMuteState(bool muted, bool sendOverUart = true);
+    void requestMute(bool muted);
+    void syncFromDaughterStatus();
+    void retryPendingCommands();
 
-    bool     m_muted             = true;
-    bool     m_ampMuted          = false; // optimistic local mirror, same convention as m_muted -- see applyMuteState()'s comment on why that's the established pattern here
-    uint32_t m_lastVolCommandMs  = 0; // throttles the daughter-board VOL UP/DOWN repeat rate
-    bool     m_wasCalibrating    = false; // edge-detects isCalibrating() true->false in update(), to log the outcome exactly once
+    bool     m_muted             = false; // daughter's MUTE (until the first STATUS arrives: assumed unmuted)
+    bool     m_ampMuted          = false;
+    uint32_t m_lastMuteChangeMs  = 0;     // last user mute change -- see DAUGHTER_MUTE_ADOPT_GRACE_MS
+    bool     m_mutePending       = false; // a MUTE ON/OFF still waiting for the link to be free
+    bool     m_calPending        = false; // a CAL still waiting for the link to be free
+    uint32_t m_lastVolCommandMs  = 0;     // throttles VOL UP/DOWN repeats
+    uint32_t m_lastSeenStatusCount = 0;
+    bool     m_wasCalibrating    = false; // edge-detects the daughter's calibration start/end for logging
 };

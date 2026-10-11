@@ -73,61 +73,22 @@ void DigitalVuMeterScreen::processAndDrawBar(BarPhysicsState& state, float val, 
     uint16_t w     = static_cast<uint16_t>(state.decay * maxBarWidth);
     uint16_t peakW = static_cast<uint16_t>(state.peak);
 
-    bool peaksEnabled = DisplaySettings::instance().getPeaksEnabled();
-
-    // ==========================================
-    // ZERO-ARTIFACT RENDERING LOOP
-    // ==========================================
     updateBarRow(y, barHeight, state.prevUnits, w, maxBarWidth);
 
-    if (peaksEnabled) {
-        // Temporary diagnostic, now matching SpectrumScreen's own: only
-        // prints when there's genuine risk of a gap -- the explicit erase
-        // didn't fire, AND the bar's own growth didn't happen to cover
-        // the old peak's position either, AND the new draw doesn't land
-        // exactly on top of it. Remove once the peak-glitch root cause is
-        // confirmed.
-        uint16_t oldWidth            = state.prevUnits;
-        uint16_t oldPeak             = state.prevPeakUnits;
-        bool     willErase           = (oldPeak > w);
-        bool     isGrowing           = (w > oldWidth);
-        uint16_t growthRepaintFloor  = (oldWidth > 0) ? (oldWidth - 1) : 0;
-        bool     growthCoversOldPeak = isGrowing && (oldPeak >= growthRepaintFloor) && (oldPeak < w);
-        bool     newDrawOverlapsOld  = (peakW == oldPeak);
-        bool     gapRisk = (oldPeak > 0) && !willErase && !growthCoversOldPeak && !newDrawOverlapsOld;
-
-        if (gapRisk) {
-            Serial.print("[PeakGap] y="); Serial.print(y);
-            Serial.print(" oldW="); Serial.print(oldWidth);
-            Serial.print(" newW="); Serial.print(w);
-            Serial.print(" oldPeak="); Serial.print(oldPeak);
-            Serial.print(" newPeak="); Serial.print(peakW);
-            Serial.print(" growthRepaintFloor="); Serial.print(growthRepaintFloor);
+    // Peak marker: touched only when it moved -- same reasoning as
+    // SpectrumScreen::processAndDrawBar() (the peak is never left of the
+    // bar's end, so the bar update can't paint over an unmoved marker).
+    if (DisplaySettings::instance().getPeaksEnabled() && peakW != state.prevPeakUnits) {
+        uint16_t oldPeak = state.prevPeakUnits;
+        if (oldPeak > w) {
+            gfx->fillRect(kBarX + oldPeak, y, 1, barHeight, COLOR_BLACK); // still beyond the bar -- erase it
         }
-
-        // Peak indicator uses fillRect (a 1px-wide rect) rather than
-        // drawFastVLine -- diagnostic swap for a rotation-3 glitch that
-        // only affected peak markers, never the fillRect-painted bar body
-        // above. See SpectrumScreen::processAndDrawBar()'s matching
-        // comment for the reasoning -- same swap, same hypothesis, same
-        // fallback choice.
-        if (state.prevPeakUnits > w) {
-            gfx->fillRect(kBarX + state.prevPeakUnits, y, 1, barHeight, COLOR_BLACK);
-        }
-
-        if (peakW >= w && peakW > 0) {
+        if (peakW > 0) {
             gfx->fillRect(kBarX + peakW, y, 1, barHeight, COLOR_WHITE);
         }
-
-        if (gapRisk) Serial.println(" <-- POTENTIAL GAP");
     }
 
-    // 3. Cache state track points for the next loop frame step. onEnter()
-    // (called whenever the menu closes, including right after toggling
-    // Peaks Enabled) always resets prevPeakUnits to 0 and clears the
-    // screen -- so there's no stale mark to worry about from the moment
-    // this flips off, and no special handling needed here beyond just not
-    // drawing while it's off.
+    // Tracked even while peaks are disabled -- see SpectrumScreen.
     state.prevUnits     = w;
     state.prevPeakUnits = peakW;
 }

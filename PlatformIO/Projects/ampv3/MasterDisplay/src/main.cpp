@@ -4,6 +4,7 @@
 #include "hardware/structs/sysinfo.h" // Fixes the 'sysinfo_hw' declaration error
 
 #include "Config.hpp"
+#include "Version.hpp"
 #include "AudioEngine.hpp"
 #include "InputEngine.hpp"
 #include "Renderer.hpp"
@@ -16,6 +17,7 @@
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
+#include "VolumeOverlay.hpp"
 #include "MenuContent.hpp"
 #include "PersistentSettings.hpp"
 #include "ScreenRegistry.hpp"
@@ -55,12 +57,19 @@ static_assert(kNumScreens == kScreenCount,
 static size_t g_currentScreenIdx = 0;
 
 static MenuScreen g_menuScreen;
+
+// Transient volume readout (see VolumeOverlay.hpp). g_overlayShown tracks
+// whether it currently owns the panel, so the transitions in and out can
+// trigger the right full redraws.
+static VolumeOverlay g_volumeOverlay;
+static bool          g_overlayShown = false;
 static bool       g_menuOpen = false;
 static size_t     g_screenIdxBeforeMenu = 0;
 
 void bootInfo() {
 
-    Serial.println("\n--- HARDWARE & CLOCK VALIDATION ---");
+    Serial.println("\n--- " FW_NAME " " FW_VERSION " ---");
+    Serial.println("--- HARDWARE & CLOCK VALIDATION ---");
 
     // 1. Compile-time check
     #if defined(PICO_RP2350) && PICO_RP2350
@@ -103,11 +112,6 @@ void bootInfo() {
 }
 
 void setup() {
-
-    //ensure startup local mute state
-    //this routine will be moved to the actual daughterboard firmware once ready
-    digitalWrite(MUTE_PIN, (MUTE_ACTIVE_HIGH) ? HIGH : LOW);
-    pinMode(MUTE_PIN, OUTPUT);
 
     // Force the internal SMPS out of PFM mode into low-noise PWM mode
     digitalWrite(REGULATOR_MODE_PIN, HIGH);
@@ -241,14 +245,19 @@ void loop() {
                                       ? (g_currentScreenIdx + 1) % kNumScreens
                                       : (g_currentScreenIdx + kNumScreens - 1) % kNumScreens;
 
+            g_volumeOverlay.dismiss();
+            g_overlayShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
             Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
+            g_volumeOverlay.poke();
             Serial.printf("[Volume] Mute toggled -> %s\n",
                            VolumeControl::instance().isMuted() ? "MUTED" : "UNMUTED");
         } else if (event == UIEvent::CHANNEL_MODE_TOGGLE) {
             DisplaySettings::instance().toggleChannelMode();
+            g_volumeOverlay.dismiss();
+            g_overlayShown = false;
             // Channel mode changes a screen's whole layout (bar count/
             // width, trace split), so force the current screen to
             // re-enter and rebuild its geometry rather than continuing
@@ -258,6 +267,8 @@ void loop() {
                            DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO ? "STEREO" : "MONO");
         } else if (event == UIEvent::MENU_TOGGLE) {
             g_menuOpen = true;
+            g_volumeOverlay.dismiss();
+            g_overlayShown = false;
             g_screenIdxBeforeMenu = g_currentScreenIdx;
             g_menuScreen.onEnter();
             Serial.println("[Menu] Opened");
@@ -285,10 +296,29 @@ void loop() {
     }
     VolumeControl::instance().update(wantVolUp, wantVolDown);
 
+    // Volume overlay: any held volume input keeps it up (the daughter's own
+    // VOL/DB arrive a few ms later via STATUS and update the readout);
+    // update() also pops it for changes seen in STATUS and expires it.
+    if (wantVolUp || wantVolDown) g_volumeOverlay.poke();
+    g_volumeOverlay.update();
+    if (g_menuOpen) g_volumeOverlay.dismiss();
+
+    bool wantOverlay = g_volumeOverlay.isActive();
+    if (wantOverlay && !g_overlayShown) {
+        g_volumeOverlay.onEnter();
+    } else if (!wantOverlay && g_overlayShown) {
+        // The overlay painted over the whole panel -- let the screen
+        // rebuild from scratch rather than trust its delta-redraw state.
+        g_screens[g_currentScreenIdx]->onEnter();
+    }
+    g_overlayShown = wantOverlay;
+
     uint32_t renderStartUs = micros();
 
     if (g_menuOpen) {
         g_menuScreen.render();
+    } else if (g_overlayShown) {
+        g_volumeOverlay.render();
     } else {
         g_screens[g_currentScreenIdx]->render();
     }
@@ -317,14 +347,20 @@ void loop() {
         float avgRenderMs  = (g_renderTimeSumUs / 1000.0f) / g_frameCount;
         float avgLoopMs    = (g_loopTimeSumUs   / 1000.0f) / g_frameCount;
 
-        Serial.print("[Perf] FPS: ");
-        Serial.print(fps, 1);
-        Serial.print(" | render: ");
-        Serial.print(avgRenderMs, 2);
-        Serial.print("ms avg | loop: ");
-        Serial.print(avgLoopMs, 2);
-        Serial.print("ms avg | screen: ");
-        Serial.println(g_menuOpen ? g_menuScreen.name() : g_screens[g_currentScreenIdx]->name());
+        if (DEBUG_PERF) {
+            Serial.print("[Perf] FPS: ");
+            Serial.print(fps, 1);
+            Serial.print(" | render: ");
+            Serial.print(avgRenderMs, 2);
+            Serial.print("ms avg | loop: ");
+            Serial.print(avgLoopMs, 2);
+            Serial.print("ms avg | screen: ");
+            Serial.println(g_menuOpen ? g_menuScreen.name()
+                           : g_overlayShown ? g_volumeOverlay.name()
+                           : g_screens[g_currentScreenIdx]->name());
+        }
+
+        // Heartbeat: the diagnostic LED blinks once a second while loop() runs.
 
         int led_state = digitalRead(DIAGNOSTIC_LED_PIN);
         digitalWrite(DIAGNOSTIC_LED_PIN, !led_state);
