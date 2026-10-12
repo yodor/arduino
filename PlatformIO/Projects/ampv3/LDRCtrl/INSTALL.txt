@@ -1,9 +1,13 @@
-LDR daughter board firmware -- 2026-10-10d (driver v1a, one relay session per DIAG ALL)  (driver v1a)
+LDR daughter board firmware -- 2026-10-11a (driver v1a, sweep: dark start, lag islands dropped)  (driver v1a)
 
-DIAG ALL engages both relays once after the snapshot and hands the audio back once at the
-end (both channels together, amp muted); the health check reports a same-direction shift
-with L and R close together as a common drift.
+Fix: the shunt sweep could read a cell still recovering from the series sweep's bright hold
+(readable at the darkest duties, then unreadable) and those "lag island" readings hid the
+real dark edge -> no dark-edge refinement -> the shunt curve stopped at ~261k and capped RMAX.
+Now each sweep starts from a cell held dark for 4 s, lag islands are dropped, and the dark
+edge is found where the continuous readable run begins.
 
 1. DELETE your project's src/ folder, copy this package's src/ next to platformio.ini.
 2. pio run -t clean ; pio run ; flash .pio/build/picow/firmware.uf2 (BOOTSEL + copy).
-3. Boot: no recalibration (same file format as 2026-10-10c).
+3. Boot: no format change, the stored calibration is kept. To re-measure the reach:
+     DEBUG, FORGET, CAL      (a plain CAL would only resync -- the cells match)
+   Look in the shunt sweep for "dark edge, pass ..." lines and in the summary for RMAX/AUTO.

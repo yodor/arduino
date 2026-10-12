@@ -1,4 +1,4 @@
-Firmware source package: 2026-10-10d (driver v1a, one relay session per DIAG ALL)
+Firmware source package: 2026-10-11a (driver v1a, sweep: dark start, lag islands dropped)
 
 6ebee75731a34c9f  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
@@ -15,13 +15,13 @@ eed8c4c0ade06b46  src/Board.hpp
 71e3096f4aef0635  src/Calibration.hpp
 56deea4f9fd0e914  src/Capabilities.hpp
 3839079788ac793d  src/CellCheck.hpp
-0e8a0ba0a688034c  src/Config.hpp
+ae297f51460e1a23  src/Config.hpp
 62b007817fe9c92a  src/DarkProfile.hpp
 290c3971502681e9  src/Dither.hpp
 b4baf1bc76555548  src/DividerMath.hpp
 fbd2c8a463e468a3  src/DriverChannels.cpp
 7f795fefa3c66f07  src/DriverChannels.hpp
-137154af61c9da78  src/DualCalibration.cpp
+20744f128eac498f  src/DualCalibration.cpp
 0c5cfb251965814a  src/DualCalibration.hpp
 473814de2b1c1af8  src/LDRVolume.cpp
 27582e8bdfe43f91  src/LDRVolume.hpp
@@ -34,7 +34,7 @@ a68f8fd7dba3f84a  src/LdrSensor.hpp
 1518a7d671993e89  src/Relay.hpp
 032500db0f980194  src/SerialConsole.cpp
 092b5cf02d8a0c19  src/SerialConsole.hpp
-a3959dbfd421b91f  src/SweepLadder.hpp
+3d457f35cd1f372a  src/SweepLadder.hpp
 6e71fac86e21cfac  src/TrimSearch.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
 cac5e982d3f1974f  src/VolumeRamp.hpp

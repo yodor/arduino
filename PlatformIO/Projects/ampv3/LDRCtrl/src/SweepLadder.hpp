@@ -67,11 +67,36 @@ inline uint8_t build(uint16_t lowest, uint8_t round, uint16_t wrap, uint16_t out
 // ---------------------------------------------------------------------------
 constexpr uint8_t EDGE_MAX_PASSES = 4;   // 16-count gap -> 1 count
 
-inline bool darkEdgeMid(const uint16_t *duty, const float *ohms, uint8_t n, float rTotalOhms, uint16_t &mid) {
-  int v = -1;
-  for (uint8_t i = 0; i < n; i++) {
-    if (ohms[i] > 0.0f) { v = i; break; }      // darkest readable (samples are in ascending duty)
+// Index of the first sample of the CONTINUOUS readable run that ends at the bright end
+// (samples in ascending duty), or -1 if the brightest sample is unreadable. Readable
+// samples before an unreadable one are not part of it: a cell still recovering from being
+// held bright reads at the darkest duties, then goes properly dark (unreadable) -- a
+// physically impossible order for settled readings, i.e. a lag island.
+// A SINGLE unreadable sample between two readable ones is a read glitch and is bridged;
+// a gap of two or more unreadable samples (the cell really went dark) ends the run.
+inline int brightRunStart(const float *ohms, uint8_t n) {
+  if (n == 0 || !(ohms[n - 1] > 0.0f)) return -1;
+  int v = (int)n - 1;
+  while (v > 0) {
+    if (ohms[v - 1] > 0.0f) { v--; continue; }
+    if (v >= 2 && ohms[v - 2] > 0.0f) { v -= 2; continue; }  // lone glitch: bridge it
+    break;
   }
+  return v;
+}
+
+// Mark every lag island (readable samples darker than an unreadable one) unreadable, so it
+// can neither enter the curve nor hide the real dark edge. Returns how many were dropped.
+inline uint8_t dropLagIslands(float *ohms, uint8_t n) {
+  const int v = brightRunStart(ohms, n);
+  uint8_t dropped = 0;
+  for (int i = 0; i < v; i++) if (ohms[i] > 0.0f) { ohms[i] = 0.0f; dropped++; }
+  return dropped;
+}
+
+inline bool darkEdgeMid(const uint16_t *duty, const float *ohms, uint8_t n, float rTotalOhms, uint16_t &mid) {
+  // The real dark edge: where the continuous readable run towards the bright end begins.
+  const int v = brightRunStart(ohms, n);
   if (v <= 0) return false;                     // nothing readable, or nothing darker was measured
   if (!tooLow(ohms[v], rTotalOhms)) return false; // already dark enough for this Rtotal
   const uint16_t lo = duty[v - 1], hi = duty[v];

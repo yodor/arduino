@@ -26,6 +26,9 @@ constexpr uint8_t       REFINE_MAX_PASSES    = 4;
 // Each refinement pass starts from a relaxed dark state so its points are
 // reached the same way the coarse sweep reached its own (ascending).
 constexpr unsigned long REFINE_DARK_DWELL_MS = 1200;
+// Before each sweep the swept cell is held fully dark this long, so the coarse sweep never
+// reads a cell still recovering from being held bright (the other sweep's bright hold).
+constexpr unsigned long SWEEP_DARK_PRE_MS = 4000;
 
 constexpr uint8_t MAX_CH = 2;
 constexpr uint8_t MAX_SWEEP_POINTS = 96;
@@ -193,6 +196,21 @@ bool needsRefine(const Sample &a, const Sample &b, uint8_t na) {
 // One sweep of the swept element (series or shunt) across all channels,
 // the other element held bright. Measures a coarse list, refines across
 // the knee, then feeds every point to the curves in ascending duty order.
+// Drop each channel's lag islands from the samples (in ascending duty) and say so.
+void dropIslands(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *labels, uint8_t ns, Stream &out) {
+  for (uint8_t c = 0; c < na; c++) {
+    for (uint8_t i = 0; i < ns; i++) gEdgeOhms[i] = gSamples[i].ohms[c];
+    const uint8_t d = SweepLadder::dropLagIslands(gEdgeOhms, ns);
+    if (!d) continue;
+    for (uint8_t i = 0; i < ns; i++) gSamples[i].ohms[c] = gEdgeOhms[i];
+    out.print(F("  -- "));
+    if (labels) out.print(labels[idx[c]]);
+    out.print(F(": dropped "));
+    out.print(d);
+    out.println(F(" lag reading(s) darker than an unreadable point (cell still recovering) --"));
+  }
+}
+
 void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *labels,
                 bool wantSeries, const uint16_t *pts, uint8_t n,
                 unsigned long timeoutMs, Stream &out) {
@@ -202,6 +220,9 @@ void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
     // scale: it only needs to be near its floor, and more current just heats it.
     ch[c]->driveElementFine(!wantSeries, (uint32_t)CAL_BRIGHT_HOLD_DUTY * FPC);
   }
+  // Start from a truly dark cell (see SWEEP_DARK_PRE_MS).
+  driveSwept(ch, na, wantSeries, 0);
+  BusyHook::wait(SWEEP_DARK_PRE_MS);
 
   uint8_t ns = 0;
   for (uint8_t i = 0; i < n && ns < MAX_SWEEP_POINTS; i++) {
@@ -245,6 +266,10 @@ void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
     for (uint8_t k = 0; k < nl; k++) gSamples[k] = gAdded[k];
     ns = (uint8_t)(ns + nl);
   }
+
+  // Lag islands (readable samples darker than an unreadable one) out before the dark-edge
+  // logic looks for the edge -- see SweepLadder::brightRunStart.
+  dropIslands(ch, na, idx, labels, ns, out);
 
   // Dark-edge bisection (see SweepLadder::darkEdgeMid): where a channel jumps from
   // UNREADABLE straight to a reading that is still too low-resistance for its Rtotal,
@@ -320,6 +345,7 @@ void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
     ns = m;
   }
 
+  dropIslands(ch, na, idx, labels, ns, out); // once more over the final, refined set
   uint8_t accepted[MAX_CH] = {0, 0};
   uint8_t rejected[MAX_CH] = {0, 0};
   for (uint8_t c = 0; c < na; c++) {
