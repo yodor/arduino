@@ -70,7 +70,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-11a (driver v1a, sweep: dark start, lag islands dropped)"
+#define FW_VERSION "2026-10-12b (driver v1a, sweep dark edge: deeper target, more passes, re-read)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 

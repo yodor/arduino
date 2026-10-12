@@ -44,7 +44,10 @@ struct Sample {
 // bisection): enough to give the settled dark-end walk a starting point well past
 // DarkWalk::START_OHMS, whatever Rtotal was requested. An algorithm constant, not a
 // hardware value: the walk, not the sweep, measures what the cells can really do.
-constexpr float SWEEP_DARK_REF_OHMS = 150000.0f;
+// How dark the sweeps' dark edge must reach (x SweepLadder::BELOW_FACTOR): deeper than any
+// realistic Rtotal, so the curves never cap AUTO below what the cells can do (they settle to
+// 500-650k). 150k let the shunt edge stop at ~300k by chance on a cool board.
+constexpr float SWEEP_DARK_REF_OHMS = 500000.0f;
 float darkRefOhms(const LDRVolume *v) {
   return v->rTotalOhms() > SWEEP_DARK_REF_OHMS ? v->rTotalOhms() : SWEEP_DARK_REF_OHMS;
 }
@@ -275,39 +278,73 @@ void sweepPhase(LDRVolume *ch[], uint8_t na, const uint8_t *idx, const char *lab
   // UNREADABLE straight to a reading that is still too low-resistance for its Rtotal,
   // split that gap until the curve reaches far enough into the dark (or the gap is one
   // count). Without it a steep knee leaves the loudest steps unsolvable.
-  for (uint8_t pass = 0; pass < SweepLadder::EDGE_MAX_PASSES; pass++) {
-    uint16_t mids[MAX_CH];
-    uint8_t nm = 0;
+  for (uint8_t rr = 0; rr <= SweepLadder::EDGE_REREADS; rr++) {
+    for (uint8_t pass = 0; pass < SweepLadder::EDGE_MAX_PASSES; pass++) {
+      uint16_t mids[MAX_CH];
+      uint8_t nm = 0;
+      for (uint8_t c = 0; c < na; c++) {
+        for (uint8_t i = 0; i < ns; i++) { gEdgeDuty[i] = gSamples[i].duty; gEdgeOhms[i] = gSamples[i].ohms[c]; }
+        uint16_t m;
+        if (!SweepLadder::darkEdgeMid(gEdgeDuty, gEdgeOhms, ns, darkRefOhms(ch[c]), m)) continue;
+        bool dup = false;
+        for (uint8_t k = 0; k < nm; k++) if (mids[k] == m) dup = true;
+        if (!dup) mids[nm++] = m;
+      }
+      if (nm == 0 || (uint16_t)ns + nm > MAX_SWEEP_POINTS) break;
+      if (nm == 2 && mids[1] < mids[0]) { uint16_t t = mids[0]; mids[0] = mids[1]; mids[1] = t; }
+
+      out.print(F("  -- dark edge, pass "));
+      out.print(pass + 1);
+      out.print(F(": "));
+      out.print(nm);
+      out.println(F(" point(s) between unreadable and the first reading --"));
+
+      driveSwept(ch, na, wantSeries, mids[0]); // approach from the dark side, like every other point
+      BusyHook::wait(REFINE_DARK_DWELL_MS);
+      for (uint8_t k = 0; k < nm; k++) {
+        unsigned long el;
+        measurePoint(ch, na, wantSeries, mids[k], timeoutMs, gAdded[k], el);
+        printPoint(out, gAdded[k], na, idx, labels, wantSeries, el, true);
+        // insert in duty order
+        uint8_t at = 0;
+        while (at < ns && gSamples[at].duty < gAdded[k].duty) at++;
+        for (int j = (int)ns; j > (int)at; j--) gSamples[j] = gSamples[j - 1];
+        gSamples[at] = gAdded[k];
+        ns++;
+      }
+    }
+
+    // Stalled at a one-count gap but still not dark enough: re-read the "unreadable"
+    // neighbour with a settled dwell (see SweepLadder::edgeStalled), then bisect on.
+    if (rr == SweepLadder::EDGE_REREADS) break;
+    uint16_t los[MAX_CH];
+    uint8_t nl = 0;
     for (uint8_t c = 0; c < na; c++) {
       for (uint8_t i = 0; i < ns; i++) { gEdgeDuty[i] = gSamples[i].duty; gEdgeOhms[i] = gSamples[i].ohms[c]; }
-      uint16_t m;
-      if (!SweepLadder::darkEdgeMid(gEdgeDuty, gEdgeOhms, ns, darkRefOhms(ch[c]), m)) continue;
+      uint16_t lo;
+      if (!SweepLadder::edgeStalled(gEdgeDuty, gEdgeOhms, ns, darkRefOhms(ch[c]), lo)) continue;
       bool dup = false;
-      for (uint8_t k = 0; k < nm; k++) if (mids[k] == m) dup = true;
-      if (!dup) mids[nm++] = m;
+      for (uint8_t k = 0; k < nl; k++) if (los[k] == lo) dup = true;
+      if (!dup) los[nl++] = lo;
     }
-    if (nm == 0 || (uint16_t)ns + nm > MAX_SWEEP_POINTS) break;
-    if (nm == 2 && mids[1] < mids[0]) { uint16_t t = mids[0]; mids[0] = mids[1]; mids[1] = t; }
-
-    out.print(F("  -- dark edge, pass "));
-    out.print(pass + 1);
-    out.print(F(": "));
-    out.print(nm);
-    out.println(F(" point(s) between unreadable and the first reading --"));
-
-    driveSwept(ch, na, wantSeries, mids[0]); // approach from the dark side, like every other point
-    BusyHook::wait(REFINE_DARK_DWELL_MS);
-    for (uint8_t k = 0; k < nm; k++) {
+    if (nl == 0) break;
+    out.print(F("  -- dark edge: re-reading "));
+    out.print(nl);
+    out.println(F(" timed-out point(s) next to the edge, settled --"));
+    bool gained = false;
+    for (uint8_t k = 0; k < nl; k++) {
+      driveSwept(ch, na, wantSeries, los[k]);
+      BusyHook::wait(REFINE_DARK_DWELL_MS);
       unsigned long el;
-      measurePoint(ch, na, wantSeries, mids[k], timeoutMs, gAdded[k], el);
+      measurePoint(ch, na, wantSeries, los[k], timeoutMs, gAdded[k], el);
       printPoint(out, gAdded[k], na, idx, labels, wantSeries, el, true);
-      // insert in duty order
-      uint8_t at = 0;
-      while (at < ns && gSamples[at].duty < gAdded[k].duty) at++;
-      for (int j = (int)ns; j > (int)at; j--) gSamples[j] = gSamples[j - 1];
-      gSamples[at] = gAdded[k];
-      ns++;
+      for (uint8_t i = 0; i < ns; i++) {
+        if (gSamples[i].duty != los[k]) continue;
+        for (uint8_t c = 0; c < na; c++)
+          if (!(gSamples[i].ohms[c] > 0.0f) && gAdded[k].ohms[c] > 0.0f) { gSamples[i].ohms[c] = gAdded[k].ohms[c]; gained = true; }
+      }
     }
+    if (!gained) break;   // truly dark there: the edge is real
   }
 
   for (uint8_t pass = 0; pass < REFINE_MAX_PASSES; pass++) {
@@ -604,6 +641,8 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
     } else {
       out.print(F(": worst x")); out.print(w, 3);
       out.print(e ? F(" (shunt @") : F(" (series @")); out.print(st.duty[i]); out.print(')');
+      out.print(F(", ")); out.print(CellCheck::offDuties(st, now[c]));
+      out.print(F(" of ")); out.print(CellCheck::NFP); out.print(F(" duties >5%"));
     }
     out.print(F(", die ")); out.print(now[c].tempC, 1); out.print(F(" C now / ")); out.print(st.tempC, 1);
     out.print(F(" C at calibration -> "));

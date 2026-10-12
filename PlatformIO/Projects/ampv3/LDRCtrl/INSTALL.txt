@@ -1,13 +1,11 @@
-LDR daughter board firmware -- 2026-10-11a (driver v1a, sweep: dark start, lag islands dropped)  (driver v1a)
+LDR daughter board firmware -- 2026-10-12b (driver v1a, sweep dark edge: deeper target, more passes, re-read)  (driver v1a)
 
-Fix: the shunt sweep could read a cell still recovering from the series sweep's bright hold
-(readable at the darkest duties, then unreadable) and those "lag island" readings hid the
-real dark edge -> no dark-edge refinement -> the shunt curve stopped at ~261k and capped RMAX.
-Now each sweep starts from a cell held dark for 4 s, lag islands are dropped, and the dark
-edge is found where the continuous readable run begins.
+Sweep dark edge: the edge now aims at ~1 Mohm (a 500k reference, was 150k), may take up to
+7 halving passes (was 4), and re-reads a timed-out "unreadable" point next to the edge with
+a settled dwell. On a cool board the knee sits a few counts higher, and the old edge stopped
+at ~295k by chance, capping RMAX. Adds roughly 10 s to a full characterization.
 
 1. DELETE your project's src/ folder, copy this package's src/ next to platformio.ini.
 2. pio run -t clean ; pio run ; flash .pio/build/picow/firmware.uf2 (BOOTSEL + copy).
 3. Boot: no format change, the stored calibration is kept. To re-measure the reach:
-     DEBUG, FORGET, CAL      (a plain CAL would only resync -- the cells match)
-   Look in the shunt sweep for "dark edge, pass ..." lines and in the summary for RMAX/AUTO.
+     DEBUG, FORGET, CAL       (ideally on a warm board, ~40 min after power-up)

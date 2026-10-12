@@ -65,7 +65,8 @@ inline uint8_t build(uint16_t lowest, uint8_t round, uint16_t wrap, uint16_t out
 // BELOW_FACTOR x Rtotal and the next darker sample is more than one count away, return
 // the duty halfway between them. Each call halves the gap.
 // ---------------------------------------------------------------------------
-constexpr uint8_t EDGE_MAX_PASSES = 4;   // 16-count gap -> 1 count
+constexpr uint8_t EDGE_MAX_PASSES = 7;   // 128-count gap -> 1 count (the coarse list is ~41 apart at the knee)
+constexpr uint8_t EDGE_REREADS    = 2;   // re-reads of a timed-out unreadable point next to the edge
 
 // Index of the first sample of the CONTINUOUS readable run that ends at the bright end
 // (samples in ascending duty), or -1 if the brightest sample is unreadable. Readable
@@ -102,6 +103,18 @@ inline bool darkEdgeMid(const uint16_t *duty, const float *ohms, uint8_t n, floa
   const uint16_t lo = duty[v - 1], hi = duty[v];
   if (hi <= lo + 1) return false;               // adjacent counts: nothing left to split
   mid = (uint16_t)(lo + (hi - lo) / 2);
+  return true;
+}
+
+// The edge has closed to one count but its first readable point is still not dark enough,
+// and the neighbour is "unreadable". A coarse reading taken while the cell was still rising
+// from fully dark can simply time out (a 2-count step cannot go from ~300k to beyond the
+// sense range), so that point deserves one settled re-read. Returns its duty in `lo`.
+inline bool edgeStalled(const uint16_t *duty, const float *ohms, uint8_t n, float rTotalOhms, uint16_t &lo) {
+  const int v = brightRunStart(ohms, n);
+  if (v <= 0 || !tooLow(ohms[v], rTotalOhms)) return false;
+  if (duty[v] > duty[v - 1] + 1) return false;    // still a gap to split: darkEdgeMid's job
+  lo = duty[v - 1];
   return true;
 }
 

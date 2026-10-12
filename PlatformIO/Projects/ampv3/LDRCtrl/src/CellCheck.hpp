@@ -33,7 +33,14 @@
 // ============================================================================
 namespace CellCheck {
 constexpr uint8_t  NFP = 4;
-constexpr float    MATCH_TOL = 1.05f;     // more than 5 percent off at any duty = a different cell
+// A different cell differs at EVERY fingerprint duty (12-50 percent between real cells);
+// drive drift (e.g. a cooler room overnight) moves mainly the duty nearest the knee, by a
+// few percent. So a cell counts as CHANGED when at least TWO of its duties are more than
+// MATCH_TOL off, or ANY single duty is more than STRONG_TOL off. (One-duty-over-5% alone
+// was a false alarm on a 2 C cooler morning: x1.055 at the lowest duty, the rest close.)
+constexpr float    MATCH_TOL = 1.05f;
+constexpr float    STRONG_TOL = 1.20f;
+constexpr uint8_t  MIN_OFF_DUTIES = 2;
 constexpr uint32_t SETTLE_MS = 400;       // bright end: settled well within this
 constexpr float    BRIGHT_FACTOR = 4.0f;  // lowest fingerprint duty: both cells within 4x their floor
 } // namespace CellCheck
@@ -109,13 +116,40 @@ inline void chooseDuties(const LdrCurve &series, const LdrCurve &shunt, uint16_t
   for (uint8_t i = 0; i < NFP; i++) out[i] = (uint16_t)(lo + (uint32_t)(top - lo) * i / (NFP - 1));
 }
 
+// How many of one element's fingerprint duties are more than MATCH_TOL off, and its worst
+// ratio. e: 0 = series, 1 = shunt. Returns false if a reading is missing.
+inline bool elementOff(const CellFingerprint &a, const CellFingerprint &b, uint8_t e, uint8_t &nOff, float &worstR) {
+  nOff = 0; worstR = 1.0f;
+  for (uint8_t i = 0; i < NFP; i++) {
+    const float x = e ? a.shu[i] : a.ser[i], y = e ? b.shu[i] : b.ser[i];
+    if (!(x > 0.0f) || !(y > 0.0f)) return false;
+    const float r = x > y ? x / y : y / x;
+    if (r > MATCH_TOL) nOff++;
+    if (r > worstR) worstR = r;
+  }
+  return true;
+}
+
+// The duties beyond MATCH_TOL on the element that decided the verdict (the larger count).
+inline uint8_t offDuties(const CellFingerprint &a, const CellFingerprint &b) {
+  uint8_t best = 0;
+  for (uint8_t e = 0; e < 2; e++) {
+    uint8_t n; float w;
+    if (elementOff(a, b, e, n, w) && n > best) best = n;
+  }
+  return best;
+}
+
 inline CellState judge(bool haveStored, const CellFingerprint &stored, const CellFingerprint &now) {
   if (!haveStored || !stored.valid) return CellState::NO_DATA;
   for (uint8_t i = 0; i < NFP; i++) if (stored.duty[i] != now.duty[i] || stored.duty[i] == 0) return CellState::NO_DATA;
-  uint8_t e, i;
-  const float w = worst(stored, now, e, i);
-  if (w <= 0.0f) return CellState::CHANGED;   // a reading failed: do not trust the old calibration
-  return w <= MATCH_TOL ? CellState::MATCH : CellState::CHANGED;
+  if (!stored.valid || !now.valid) return CellState::CHANGED;
+  for (uint8_t e = 0; e < 2; e++) {
+    uint8_t n; float w;
+    if (!elementOff(stored, now, e, n, w)) return CellState::CHANGED; // a reading failed: do not trust it
+    if (n >= MIN_OFF_DUTIES || w > STRONG_TOL) return CellState::CHANGED;
+  }
+  return CellState::MATCH;
 }
 
 inline CalAction plan(CellState cs, const CalRequest &req, bool currentlyAuto) {
