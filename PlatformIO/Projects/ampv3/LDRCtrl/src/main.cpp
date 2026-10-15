@@ -11,6 +11,8 @@
 // main.cpp is just the wiring.
 // ============================================================================
 
+#include "CellTemps.hpp"
+#include "RailComp.hpp"
 #include <Arduino.h>
 #include <Wire.h>
 #include "Pins.hpp"
@@ -64,6 +66,8 @@ void setup() {
 
   leftChannel.begin();  // relay de-energized (audio mode), i2c bus left inactive
   rightChannel.begin();
+  CellTemps::begin();   // the DS18B20s next to the cells (bounded search; a bad bus just reports)
+  RailComp::begin(driver); // 3.3 V rail compensation (TL431) against the stored reference
 
   // begin() only LOADS a saved calibration; it no longer sweeps. If either
   // channel has no usable one (fresh flash, PWM resolution change, corrupt
@@ -84,6 +88,7 @@ void setup() {
 
 void loop() {
   board.update();        // non-blocking heartbeat LED toggle
+  RailComp::tick();      // re-measure the rail every few s; re-scale the drive if it moved
   masterLinkUsb.poll();  // strict protocol by default on USB; DEBUG -> consoleUsb
   masterLinkUart.poll(); // strict protocol by default on UART0; DEBUG -> consoleUart
 }

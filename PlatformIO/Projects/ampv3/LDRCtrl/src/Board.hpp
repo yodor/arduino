@@ -88,6 +88,10 @@ public:
   // and its absolute accuracy is only ~+/-2 degC. Look at CHANGES, not the level.
   // Average of 16 conversions (~0.1 degC resolution), degrees Celsius.
   static float dieTempC();
+  // v1b driver board sensors (BoardSensors.hpp): the aluminium block's NTC in C, and the
+  // 3.3 V rail via the TL431, in volts. NAN when the sensor is missing or implausible.
+  static float blockTempC();
+  static float railVolts();
 
   // Whole seconds since power-up or reset (millis()/1000). There is no wall
   // clock on the daughter, and for warm-up analysis time-since-power-on is the

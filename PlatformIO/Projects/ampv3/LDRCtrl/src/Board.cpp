@@ -3,6 +3,8 @@
 #include "Pins.hpp"
 #include "Config.hpp"
 #include "DriverChannels.hpp"
+#include "BoardSensors.hpp"
+#include "CellTemps.hpp"
 #include <LittleFS.h>
 #ifdef LDR_BOARD_IS_PICO_W
 #include <WiFi.h>
@@ -46,6 +48,11 @@ void Board::bootInfo() {
   // mapping) is actually compiled into THIS build -- the one thing that
   // directly affects this firmware's own behavior, as distinct from just
   // knowing which physical chip is on the board.
+  Serial.print("Driver board: ");
+  Serial.print(DRIVER_BOARD_NAME);
+  Serial.print("  (calibration hardware rev ");
+  Serial.print(CAL_HW_REV);
+  Serial.println(")");
   Serial.print("Wireless-chip code path active (LDR_BOARD_IS_PICO_W): ");
   #ifdef LDR_BOARD_IS_PICO_W
     Serial.println("YES");
@@ -82,6 +89,14 @@ void Board::begin() {
   // even one instant when it's first enabled.
   digitalWrite(AMP_MUTE_PIN, (MUTE_ACTIVE_HIGH) ? HIGH : LOW);
   pinMode(AMP_MUTE_PIN, OUTPUT);
+
+  // Analog sensor pins: configure them for the ADC NOW. Out of reset an RP2040 pin has its
+  // pull-down on; on the NTC node that sits in parallel with the thermistor (and the 100 nF
+  // there needs tens of ms to recover), so the first reading after boot came out ~60 C.
+  // The first analogRead() switches the pad to analog (pulls off, digital input off).
+  analogReadResolution(12);
+  (void)analogRead(ADC_NTC_PIN);
+  (void)analogRead(ADC_REF_PIN);
 
 #ifdef LDR_BOARD_IS_PICO_W
   // Confirmed on real hardware: a bare digitalWrite() on the WL_GPIO1
@@ -150,6 +165,7 @@ void Board::begin() {
   } else {
     Serial.println(F("LittleFS mounted."));
   }
+  LittleFS.remove("/relay_hold.txt"); // left over from the withdrawn PWM coil hold (2026-10-15e..i)
 
 }
 
@@ -219,6 +235,22 @@ float Board::dieTempC() {
   return sum / N;
 }
 
+namespace {
+// 256 averaged 12-bit reads (~3 ms): the RP2040 ADC's noise and its few uneven codes average out.
+float adcAverage(uint8_t pin) {
+  analogReadResolution(12);
+  (void)analogRead(pin);   // selects the input; the first conversion after a switch is discarded
+  delayMicroseconds(50);
+  const int N = 256;
+  uint32_t sum = 0;
+  for (int i = 0; i < N; i++) sum += (uint32_t)analogRead(pin);
+  return (float)sum / N;
+}
+} // namespace
+
+float Board::blockTempC() { return BoardSensors::ntcCelsius(adcAverage(ADC_NTC_PIN)); }
+float Board::railVolts()  { return BoardSensors::railVolts(adcAverage(ADC_REF_PIN)); }
+
 uint32_t Board::uptimeSeconds() { return millis() / 1000UL; }
 
 void Board::reportDieTemp(Stream &out, const __FlashStringHelper *label, uint32_t elapsedMs) {
@@ -227,7 +259,22 @@ void Board::reportDieTemp(Stream &out, const __FlashStringHelper *label, uint32_
   out.print(label);
   out.print(F(": "));
   out.print(dieTempC(), 1);
-  out.print(F(" C (RP2040 die)  uptime "));
+  out.print(F(" C (RP2040 die)  block "));
+  const float tb = blockTempC(), vr = railVolts();
+  if (isnan(tb)) out.print(F("--")); else out.print(tb, 2);
+  out.print(F(" C (NTC)  rail "));
+  if (isnan(vr)) out.print(F("--")); else out.print(vr, 3);
+  out.print(F(" V (TL431)  "));
+  if (CellTemps::count() > 0) {
+    float tc[2];
+    CellTemps::read(tc);
+    out.print(F("cells L "));
+    if (isnan(tc[0])) out.print(F("--")); else out.print(tc[0], 2);
+    out.print(F(" R "));
+    if (isnan(tc[1])) out.print(F("--")); else out.print(tc[1], 2);
+    out.print(F(" C (DS18B20)  "));
+  }
+  out.print(F("uptime "));
   out.print(formatHms(up, hms, sizeof(hms)));
   out.print(F(" ("));
   out.print((unsigned long)up);

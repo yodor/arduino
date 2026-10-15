@@ -1,4 +1,6 @@
 #include "DualCalibration.hpp"
+#include "ThermalLog.hpp"
+#include "RailComp.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
@@ -503,7 +505,12 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
 // duty equals the quietest step's (they share one operating point) gets the result.
 // Each probe arrives from one count darker; secant on the curve's settled slope.
 // ---------------------------------------------------------------------------
+// Each channel's knee shift from the last settleQuietPoint, by side (0 = L, 1 = R), in PWM
+// counts; NAN where a channel was not seeked. ThermalLog records it after a resync.
+float gKneeShiftLR[2] = {NAN, NAN};
+
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
+  gKneeShiftLR[0] = gKneeShiftLR[1] = NAN;
   const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
   constexpr uint8_t MAX_PROBES = 6;
   constexpr float TOL = 1.015f;        // each channel within 1.5% of its target ...
@@ -573,6 +580,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     out.print(F(": seriesDuty ")); out.print(oldF[c] / Lc, 2); out.print(F("->")); out.print(f[c] / Lc, 2);
     out.print(F("  Rs ")); out.print(got[c] / 1000.0f, 1); out.print(F("k (target ")); out.print(target[c] / 1000.0f, 1);
     out.print(F("k, ")); out.print(probes[c]); out.print(F(" settled probes)"));
+    gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0] = ((float)f[c] - (float)oldF[c]) / Lc;
     const uint8_t shifted = ch[c]->applyQuietSeek(oldF[c], f[c]);
     if (shifted) {
       out.print(F("; knee shift "));
@@ -769,6 +777,8 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   }
   for (uint8_t c = 0; c < n; c++) ch[c]->calSave();
   out.println(F("Trimmed calibration saved to flash."));
+  RailComp::onCalibrated(false);         // keeps the reference (or sets the first one)
+  ThermalLog::onCalibrated(true, gKneeShiftLR, ThermalLog::snapshot(), out);
 
   // Back to each channel's CURRENT volume while the audio is still disconnected, let the
   // cells relax, then reconnect both channels together.
@@ -778,6 +788,8 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
 
 void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char *labels) {
   BusyHook::Scope busy; // a long operation: keep the links answering "busy" throughout
+  RailComp::beginFullCharacterization(); // new curves: measured uncorrected, at this rail
+  struct RailGuard { ~RailGuard() { RailComp::endFullCharacterization(); } } railGuard; // any exit
   if (count == 0) return;
   Board::CalHold ampHold(channels[0]->board()); // amp muted for the whole calibration (boot one included), restored after
   LDRVolume *act[MAX_CH];
@@ -922,6 +934,8 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
     if (labels) { out.print(F(" ")); out.print(labels[idx[c]]); }
     out.println();
   }
+  RailComp::onCalibrated(true);          // these curves' rail is the new reference
+  ThermalLog::onCalibrated(false, nullptr, ThermalLog::snapshot(), out);
 
   // Land on a defined step and let the cells relax from the sweep's bright
   // end WHILE the audio path is still disconnected, then reconnect.

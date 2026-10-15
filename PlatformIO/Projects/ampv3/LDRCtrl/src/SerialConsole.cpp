@@ -1,4 +1,9 @@
 #include "SerialConsole.hpp"
+#include "Pins.hpp"
+#include "CellTemps.hpp"
+#include "ThermalLog.hpp"
+#include "RailComp.hpp"
+#include "BoardSensors.hpp"
 #include "Config.hpp"
 #include "DualCalibration.hpp"
 #include "CalArgs.hpp"
@@ -97,7 +102,9 @@ void SerialConsole::diagWalk() {
   // last full characterization stored -- do the cells still behave the way they were calibrated?
   LDRVolume *v[2] = {&left_, &right_};
   for (uint8_t c = 0; c < 2; c++) {
-    if (v[c]->seriesCurve().empty() || !v[c]->adsPresent()) {
+    // adsLastSeen(), NOT adsPresent(): the probe de-inits the I2C bus, and inside DIAG ALL's
+    // relay session that left every later reading (walk, creep) unreadable.
+    if (v[c]->seriesCurve().empty() || v[c]->adsLastSeen() == 0) {
       stream_.println(F("  skipped: needs curves (a calibration) and an ADS1115 on both sides"));
       return;
     }
@@ -139,6 +146,8 @@ float avgRead(LDRVolume &v, float &rsh) {
 }
 } // namespace
 
+
+
 // Both channels at once: every LUT step driven, read after VERIFY_SETTLE_MS (the
 // accepted settling time), volume up then down. Per channel: the real loaded gain and
 // its error, and the live/target ratio of each cell; then L-R and up-minus-down.
@@ -161,6 +170,9 @@ void SerialConsole::diagVerify() {
     float worst[2] = {0, 0}, sumSq[2] = {0, 0}; uint8_t cnt[2] = {0, 0};
     for (uint8_t k = 0; k < n; k++) {
       const uint8_t i = down ? (uint8_t)(n - 1 - k) : k;
+      // The transparent step (shunt open) cannot be measured by the sense circuit, and
+      // driving it only adds a bright excursion before the down pass: skip it.
+      if (left_.lut().isTransparent(i) || right_.lut().isTransparent(i)) continue;
       bool any = false;
       for (uint8_t c = 0; c < 2; c++) if (v[c]->driveLutStep(i)) any = true;
       if (!any) continue;
@@ -300,6 +312,9 @@ void SerialConsole::printHelp() {
   stream_.println(F("  AMP_MUTE ON|OFF         amplifier mute"));
   stream_.println(F("  SET <channel> <duty>    raw duty 0-4095 on SER_L, SER_R, SHUNT_L or SHUNT_R"));
   stream_.println(F("  RELAY ON|OFF            both relays (OFF restores the volume, then reconnects)"));
+  stream_.println(F("  TEMP                    all temperatures: die, driver block (NTC), rail, both cells"));
+  stream_.println(F("  TEMP ID L|R             assign the cell sensors: warm that board's sensor by hand"));
+  stream_.println(F("  LEARN [CLEAR]           thermal learning log: knee shift per resync vs temperature changes"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
   stream_.println(F("  DIAG ALL                + cell check, verify up/down, dark-end walk, creep (~8-9 min)"));
@@ -382,7 +397,9 @@ void SerialConsole::printStored(LDRVolume &v, const char *label) {
 }
 
 void SerialConsole::diagSnapshot() {
-  stream_.print(F("Firmware: " FW_VERSION ", built " __DATE__ " " __TIME__ "  HW rev "));
+  stream_.print(F("Firmware: " FW_VERSION ", built " __DATE__ " " __TIME__ "  driver "));
+  stream_.print(DRIVER_BOARD_NAME);
+  stream_.print(F("  HW rev "));
   stream_.print(CAL_HW_REV);
   stream_.print(F("  cal rev "));
   stream_.print(CAL_ALGO_REV);
@@ -394,6 +411,8 @@ void SerialConsole::diagSnapshot() {
   stream_.print(DriverChannels::frequencyHz());
   stream_.println(F(" Hz"));
   Board::reportDieTemp(stream_, F("Die temp"));
+  ThermalLog::printSince(stream_);
+  RailComp::report(stream_);
   stream_.println(F("--- STATE ---"));
   printState();
   stream_.println(F("--- STORED CALIBRATION ---"));
@@ -735,6 +754,27 @@ void SerialConsole::handleLine(String line) {
     }
     printVolumeDetail(left_, "L");
     printVolumeDetail(right_, "R");
+
+  } else if (cmd == "LEARN") {
+    if (n >= 2 && tok[1].equalsIgnoreCase("CLEAR")) { ThermalLog::clear(); stream_.println(F("OK thermal learning log cleared")); return; }
+    ThermalLog::printLog(stream_);
+
+  } else if (cmd == "TEMP") {
+    if (n >= 3 && tok[1].equalsIgnoreCase("ID")) {
+      if (tok[2].equalsIgnoreCase("L")) CellTemps::identify(stream_, 0);
+      else if (tok[2].equalsIgnoreCase("R")) CellTemps::identify(stream_, 1);
+      else stream_.println(F("ERR usage: TEMP ID L|R"));
+      return;
+    }
+    stream_.println(F("--- temperatures ---"));
+    stream_.print(F("  RP2040 die     ")); stream_.print(Board::dieTempC(), 1); stream_.println(F(" C"));
+    const float tb = Board::blockTempC(), vr = Board::railVolts();
+    stream_.print(F("  driver block   ")); if (isnan(tb)) stream_.println(F("-- (NTC open/shorted)")); else { stream_.print(tb, 2); stream_.println(F(" C (NTC)")); }
+    stream_.print(F("  3.3 V rail     ")); if (isnan(vr)) stream_.println(F("-- (TL431 not read)")); else { stream_.print(vr, 3); stream_.println(F(" V (TL431)")); }
+    CellTemps::printSensors(stream_);
+    ThermalLog::printSince(stream_);
+    RailComp::report(stream_);
+    stream_.print(F("  uptime         ")); stream_.print(Board::uptimeSeconds()); stream_.println(F(" s"));
 
   } else if (cmd == "MUTE" || cmd == "AMP_MUTE" || cmd == "RELAY") {
     String a = n >= 2 ? tok[1] : String("");

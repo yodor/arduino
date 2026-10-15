@@ -53,7 +53,12 @@ public:
   void setDuty(Channel ch, uint16_t duty);
 
   void setDutyFine(Channel ch, uint32_t fine); // clamped to FINE_MAX
-  uint32_t getDutyFine(Channel ch) const;
+  uint32_t getDutyFine(Channel ch) const;       // the REQUESTED duty (before the rail scale)
+  // 3.3 V rail compensation (RailComp.hpp): the PWM gets requested x scale, so the filtered
+  // drive (duty x rail) stays what the calibration measured. Setting it rewrites all four
+  // channels from their requested duties at once. 1.0 = no correction.
+  void setRailScale(float scale);
+  float railScale() const { return railScale_; }
 
   // Actual PWM frequency, computed from the live system clock rather than
   // a comment -- stays correct across CPU_SPEED_KHZ changes in Config.hpp.
@@ -67,6 +72,8 @@ public:
 
 private:
   uint32_t fine_[NUM_CHANNELS] = {0, 0, 0, 0};
+  float railScale_ = 1.0f;
+  uint32_t scaled(uint32_t fine) const;
 
   static const uint8_t PINS[NUM_CHANNELS];
   static const char *const NAMES[NUM_CHANNELS];

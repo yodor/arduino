@@ -89,14 +89,26 @@ void DriverChannels::setDuty(Channel ch, uint16_t duty) {
   setDutyFine(ch, (uint32_t)duty * FINE_PER_COUNT);
 }
 
+uint32_t DriverChannels::scaled(uint32_t fine) const {
+  if (fine == 0 || railScale_ == 1.0f) return fine;   // dark stays exactly dark
+  const float v = (float)fine * railScale_ + 0.5f;
+  return v >= (float)FINE_MAX ? FINE_MAX : (uint32_t)v;
+}
+
 void DriverChannels::setDutyFine(Channel ch, uint32_t fine) {
   if (ch >= NUM_CHANNELS) return;
   if (fine > FINE_MAX) fine = FINE_MAX;
   fine_[ch] = fine;
-  gFine[ch] = fine; // a single aligned 32-bit store: the ISR never sees a torn value
+  const uint32_t out = scaled(fine);
+  gFine[ch] = out; // a single aligned 32-bit store: the ISR never sees a torn value
   if (PWM_DITHER_LEVELS == 1) {
-    pwm_set_gpio_level(PINS[ch], (uint16_t)fine); // no engine running: write it directly
+    pwm_set_gpio_level(PINS[ch], (uint16_t)out); // no engine running: write it directly
   }
+}
+
+void DriverChannels::setRailScale(float scale) {
+  railScale_ = scale;
+  for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) setDutyFine(static_cast<Channel>(ch), fine_[ch]);
 }
 
 uint32_t DriverChannels::getDutyFine(Channel ch) const {
