@@ -8,6 +8,13 @@ void WaveformScreen::onEnter() {
     m_waveTraceValid = false; // next render() call must redraw gridlines fresh
 }
 
+namespace {
+// x position of sample i when `count` samples span the panel width.
+uint16_t sampleX(size_t i, size_t count) {
+    return static_cast<uint16_t>((i * (SCREEN_WIDTH - 1)) / (count - 1));
+}
+} // namespace
+
 void WaveformScreen::drawWavePolylineRange(const int16_t* y, size_t count, size_t rangeStart, size_t rangeEndExclusive, uint16_t color) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     if (!gfx || !y || rangeEndExclusive <= rangeStart + 1) return;
@@ -20,14 +27,14 @@ void WaveformScreen::drawWavePolylineRange(const int16_t* y, size_t count, size_
                 ++runEnd;
             }
 
-            uint16_t x0 = static_cast<uint16_t>((i * (SCREEN_WIDTH - 1)) / (count - 1));
-            uint16_t x1 = static_cast<uint16_t>((runEnd * (SCREEN_WIDTH - 1)) / (count - 1));
+            uint16_t x0 = sampleX(i, count);
+            uint16_t x1 = sampleX(runEnd, count);
             gfx->drawLine(x0, y[i], x1, y[runEnd], color);
 
             i = runEnd;
         } else {
-            uint16_t x0 = static_cast<uint16_t>((i * (SCREEN_WIDTH - 1)) / (count - 1));
-            uint16_t x1 = static_cast<uint16_t>(((i + 1) * (SCREEN_WIDTH - 1)) / (count - 1));
+            uint16_t x0 = sampleX(i, count);
+            uint16_t x1 = sampleX(i + 1, count);
             gfx->drawLine(x0, y[i], x1, y[i + 1], color);
             ++i;
         }
@@ -40,7 +47,11 @@ void WaveformScreen::render() {
 
     int16_t leftWave[WAVEFORM_SAMPLES];
     int16_t rightWave[WAVEFORM_SAMPLES];
-    AudioEngine::instance().getWaveform(leftWave, rightWave, WAVEFORM_SAMPLES);
+    // Triggered in Oscilloscope mode (a stable picture of the wave shape);
+    // free-running in Track Preview, which shows an envelope, not cycles.
+    bool trigger = WAVEFORM_TRIGGER &&
+                   AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::OSCILLOSCOPE;
+    AudioEngine::instance().getWaveform(leftWave, rightWave, WAVEFORM_SAMPLES, trigger);
 
     if (WAVEFORM_SAMPLES < 2) return;
 
@@ -59,11 +70,10 @@ void WaveformScreen::renderStereo(const int16_t* leftWave, const int16_t* rightW
     constexpr uint16_t rightMidY  = halfHeight + halfHeight / 2;
     constexpr float ampScale = (halfHeight / 2 - 4) / 2048.0f;
 
+    // Plain black background, no gridlines -- nothing for the trace's erase
+    // pass to cut through and repair.
     if (!m_waveTraceValid) {
         gfx->fillScreen(COLOR_BLACK);
-        gfx->drawFastHLine(0, leftMidY, SCREEN_WIDTH, COLOR_DIM_GREEN);
-        gfx->drawFastHLine(0, rightMidY, SCREEN_WIDTH, COLOR_DIM_GREEN);
-        gfx->drawFastHLine(0, halfHeight, SCREEN_WIDTH, COLOR_DIM_GREEN);
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {
@@ -78,26 +88,17 @@ void WaveformScreen::renderStereo(const int16_t* leftWave, const int16_t* rightW
         size_t chunkEnd = chunkStart + WAVE_CHUNK_SAMPLES + 1;
         if (chunkEnd > sampleCount) chunkEnd = sampleCount;
 
-        // A. Erase previous frame traces
         if (m_waveTraceValid) {
             drawWavePolylineRange(m_prevWaveYL, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
             drawWavePolylineRange(m_prevWaveYR, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
         }
 
-        // =================================================================
-        // THE GRID FIX: Re-patch the background lines only for this chunk's width
-        // =================================================================
-        uint16_t x0 = static_cast<uint16_t>((chunkStart * (SCREEN_WIDTH - 1)) / (sampleCount - 1));
-        uint16_t x1 = static_cast<uint16_t>(((chunkEnd - 1) * (SCREEN_WIDTH - 1)) / (sampleCount - 1));
-        uint16_t segmentWidth = x1 - x0 + 1;
-
-        gfx->drawFastHLine(x0, leftMidY,   segmentWidth, COLOR_DIM_GREEN);
-        gfx->drawFastHLine(x0, rightMidY,  segmentWidth, COLOR_DIM_GREEN);
-        gfx->drawFastHLine(x0, halfHeight, segmentWidth, COLOR_DIM_GREEN);
-
-        // B. Draw new frame traces over the refreshed background
-        drawWavePolylineRange(m_curWaveYL, sampleCount, chunkStart, chunkEnd, COLOR_CYAN);
-        drawWavePolylineRange(m_curWaveYR, sampleCount, chunkStart, chunkEnd, COLOR_YELLOW);
+        // Start one point early: that also redraws the previous chunk's last
+        // segment, which this chunk's erase may have nicked where the two
+        // chunks meet.
+        size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
+        drawWavePolylineRange(m_curWaveYL, sampleCount, drawFrom, chunkEnd, COLOR_CYAN);
+        drawWavePolylineRange(m_curWaveYR, sampleCount, drawFrom, chunkEnd, COLOR_YELLOW);
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {
@@ -112,14 +113,17 @@ void WaveformScreen::renderMono(const int16_t* leftWave, const int16_t* rightWav
     Arduino_GFX* gfx = Renderer::instance().gfx();
 
     constexpr uint16_t midY = SCREEN_HEIGHT / 2;
+    // Nearly the full height is available for a single trace, vs. half of
+    // it per channel in stereo mode.
     constexpr float ampScale = (SCREEN_HEIGHT / 2 - 4) / 2048.0f;
 
     if (!m_waveTraceValid) {
-        gfx->fillScreen(COLOR_BLACK);
-        gfx->drawFastHLine(0, midY, SCREEN_WIDTH, COLOR_DIM_GREEN);
+        gfx->fillScreen(COLOR_BLACK); // plain background, see renderStereo()
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {
+        // Average, not sum, so a mono-duplicated stereo source (L==R)
+        // reads at the same amplitude as either channel alone.
         int16_t monoSample = static_cast<int16_t>((leftWave[i] + rightWave[i]) / 2);
         int16_t y = midY - static_cast<int16_t>(monoSample * ampScale);
         m_curWaveYMono[i] = constrain(y, 0, static_cast<int16_t>(SCREEN_HEIGHT - 1));
@@ -129,21 +133,12 @@ void WaveformScreen::renderMono(const int16_t* leftWave, const int16_t* rightWav
         size_t chunkEnd = chunkStart + WAVE_CHUNK_SAMPLES + 1;
         if (chunkEnd > sampleCount) chunkEnd = sampleCount;
 
-        // A. Erase previous frame trace
         if (m_waveTraceValid) {
             drawWavePolylineRange(m_prevWaveYMono, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
         }
 
-        // =================================================================
-        // THE GRID FIX: Re-patch the background line only for this chunk's width
-        // =================================================================
-        uint16_t x0 = static_cast<uint16_t>((chunkStart * (SCREEN_WIDTH - 1)) / (sampleCount - 1));
-        uint16_t x1 = static_cast<uint16_t>(((chunkEnd - 1) * (SCREEN_WIDTH - 1)) / (sampleCount - 1));
-        
-        gfx->drawFastHLine(x0, midY, (x1 - x0 + 1), COLOR_DIM_GREEN);
-
-        // B. Draw new frame trace over the refreshed background
-        drawWavePolylineRange(m_curWaveYMono, sampleCount, chunkStart, chunkEnd, COLOR_CYAN);
+        size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
+        drawWavePolylineRange(m_curWaveYMono, sampleCount, drawFrom, chunkEnd, COLOR_CYAN);
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {

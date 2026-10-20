@@ -42,7 +42,9 @@ void VolumeControl::ampMuteOff() {
     m_ampMuted = false;
 }
 
-void VolumeControl::calibrate() {
+void VolumeControl::calibrate(CalR mode, uint32_t ohms) {
+    m_calMode    = mode;
+    m_calOhms    = ohms;
     m_calPending = true;
     retryPendingCommands();
 }
@@ -54,7 +56,10 @@ void VolumeControl::retryPendingCommands() {
         if (sent) m_mutePending = false;
     }
     if (m_calPending && !link.isBusy()) {
-        if (link.sendCalibrate()) m_calPending = false;
+        bool sent = (m_calMode == CalR::AUTO_R) ? link.sendCalibrateAuto()
+                  : (m_calMode == CalR::SET_R)  ? link.sendCalibrateR(m_calOhms)
+                                                : link.sendCalibrate();
+        if (sent) m_calPending = false;
     }
 }
 

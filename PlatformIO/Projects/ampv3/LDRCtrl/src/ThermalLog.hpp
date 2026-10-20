@@ -14,4 +14,8 @@ void onCalibrated(bool resync, const float *shift, const Env &now, Stream &out);
 void printSince(Stream &out);                            // the change since the last calibration
 void printLog(Stream &out);                              // LEARN
 void clear();                                            // LEARN CLEAR
+bool savedBlock(float &t);                               // block temperature at the last calibration
+// The learned slopes vs the BLOCK (counts per C, L/R) and their R2; false where the fit is
+// not usable yet (n, spread).
+void blockSlopes(float k[2], float r2[2], bool usable[2]);
 } // namespace ThermalLog

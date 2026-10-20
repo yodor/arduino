@@ -32,6 +32,10 @@ constexpr unsigned long MOTOR_MAX_RUN_TIME_MS = 10000;
 // the daughter board's alone (its LDR mute; the amp mute/boot hold is its
 // own AMP_MUTE) -- the master no longer has a local mute pin.
 
+// Amp mains power (PowerControl): the relay state right after boot. The
+// power key toggles it; it isn't remembered across a power cut.
+constexpr bool POWER_ON_AT_BOOT = false;
+
 // UART daughter board link (pins in Pins.hpp).
 constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
 
@@ -42,7 +46,7 @@ constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter 
 // Protocol revision this master is written for. A daughter reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 7;
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 8;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held, since
 // each command is a single discrete step on the daughter board rather than
@@ -63,6 +67,12 @@ constexpr uint32_t DAUGHTER_RESPONSE_TIMEOUT_MS = 500;
 // daughter's real VOL/DB rather than a local guess.
 constexpr uint32_t DAUGHTER_STATUS_POLL_IDLE_MS = 5000;
 constexpr uint32_t DAUGHTER_STATUS_POLL_BUSY_MS = 2000;
+
+// Revision 8 read-only queries: PROGRESS polled this often while a
+// calibration runs (for the progress page), ENV this often while a page
+// that shows it is open.
+constexpr uint32_t DAUGHTER_PROGRESS_POLL_MS = 1000;
+constexpr uint32_t DAUGHTER_ENV_POLL_MS      = 5000;
 
 // A STATUS older than this is treated as "no link" (the daughter stopped
 // answering, or isn't fitted on this unit) -- comfortably more than two
@@ -85,6 +95,33 @@ constexpr bool DAUGHTER_LINK_TRACE = false;
 //  - DEBUG_PERF: core0's once-a-second [Perf] FPS/render-time line.
 constexpr bool DEBUG_AUDIO_DIAGNOSTICS = false;
 constexpr bool DEBUG_PERF              = true;
+
+// Oscilloscope trigger for the Waveform screen (Oscilloscope mode only): each
+// frame starts at a rising zero crossing, so the trace stands still and
+// frames line up -- see WaveformPipeline::getWaveform(). The visible span is
+// 3/4 of the window (the first quarter is where the crossing is searched).
+constexpr bool WAVEFORM_TRIGGER = true;
+
+// Panel workaround (see PanelDriver.hpp): this panel stores pixel columns in
+// pairs, so every write window is widened to whole even-aligned pairs, using
+// a shadow copy of the screen for the extra columns' colors. The Display Test
+// flips this at runtime with the remote's mute button to compare.
+constexpr bool DISPLAY_ALIGN_PIXEL_PAIRS = true;
+
+// Second panel workaround: very short write windows (1-3 rows) are grown to
+// this many rows, the extra rows again filled from the shadow. Confirmed on
+// the device: the Waveform -- thousands of tiny windows per frame -- kept a
+// few stray dots with only the pair fix, and is clean with this at 4.
+// 0 = off. The display test toggles 0 <-> 4 with the remote's channel button.
+constexpr uint8_t DISPLAY_MIN_WINDOW_ROWS = 4;
+
+// Menu editors (Set Time / Set Date): holding a physical Up/Down button
+// auto-repeats after this delay, at this rate.
+constexpr uint32_t MENU_REPEAT_DELAY_MS = 500;
+constexpr uint32_t MENU_REPEAT_RATE_MS  = 120;
+
+// i2c1 bus speed for the DS3231 RTC (it supports up to 400kHz).
+constexpr uint32_t RTC_I2C_CLOCK_HZ = 400000;
 
 // On-screen volume overlay: how long it stays up after the last volume/
 // mute change (from the buttons/IR, or seen in the daughter's STATUS).
@@ -126,16 +163,6 @@ constexpr float BAR_COLOR_RED_THRESHOLD    = 0.85f;
 // keeping the same delta-redraw performance characteristics as the
 // flat-zone themes.
 constexpr uint16_t GRADIENT_BAND_COUNT = 24;
-
-// Menu screen text/layout sizing. 3 is Adafruit_GFX's nearest supported
-// integer multiplier to "1.5x the previous size-2 default" (2*1.5=3
-// exactly -- the built-in bitmap font only scales by whole integers, no
-// fractional sizes). Row height/list top were retuned to fit the same
-// max-4-item lists without needing to scroll at the larger size.
-constexpr uint8_t  MENU_TEXT_SIZE  = 3;
-constexpr uint16_t MENU_TITLE_Y    = 2;
-constexpr uint16_t MENU_LIST_TOP_Y = 30;
-constexpr uint16_t MENU_ROW_HEIGHT = 26;
 
 // Number of waveform samples rendered per frame. Each sample costs its own
 // short SPI line-draw transaction (erase + redraw), and per-transaction
@@ -275,6 +302,17 @@ constexpr uint32_t FPS_REPORT_INTERVAL_MS = 1000;
 // FFT_SIZE's half-window overlap point below, so it never needs an
 // awkward partial-chunk shift.
 constexpr uint16_t CAPTURE_CHUNK_SAMPLES = 256; // 128 samples/channel, ~2.9ms/chunk at 44.1kHz/channel
+
+// The DMA captures into a continuous ring of this many chunks (16 = 4096
+// samples, 8KB, ~46ms of audio), which core1 reads chunk by chunk. Any chunk
+// whose processing runs long (the ones where an FFT runs) only builds up a
+// backlog that the next, quicker chunks work off -- nothing is lost as long
+// as processing keeps up on average. (It used to be a two-buffer ping-pong:
+// one slow chunk there meant the next one was silently skipped, splicing gaps
+// into every analysis window -- visible as a waveform jumping phase partway
+// across the screen.) Power of two, so the ring-wrap addressing works.
+constexpr uint16_t CAPTURE_RING_CHUNKS = 16;
+static_assert((CAPTURE_RING_CHUNKS & (CAPTURE_RING_CHUNKS - 1)) == 0, "CAPTURE_RING_CHUNKS must be a power of two");
 
 // WaveformScreen's own sliding window size now lives in
 // WaveformPipeline.hpp (kOscilloscopeSamples/kTrackPreviewSamples), not

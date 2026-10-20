@@ -20,6 +20,52 @@ void DaughterBoardLink::init(uint8_t txPin, uint8_t rxPin, uint32_t baud) {
     // flapping between up and lost). Must be set before begin().
     Serial1.setFIFOSize(kRxFifoSize);
     Serial1.begin(baud);
+
+    // If the master rebooted while the daughter was left in its DEBUG bench
+    // console (e.g. mid pass-through), every STATUS reply would be human
+    // text. EXIT puts it back on the strict protocol; on a daughter already
+    // in strict mode it's only answered with an error (or the boot-hold
+    // status line), which is swallowed here.
+    Serial1.print("EXIT\n");
+    drainAfterExit(kExitDrainMs);
+}
+
+void DaughterBoardLink::drainAfterExit(uint32_t ms) {
+    m_discardUntilMs = millis() + ms;
+    m_lineLen        = 0;
+    m_lineOverflow   = false;
+    m_status         = DaughterCmdStatus::IDLE;
+    m_pending        = PendingCmd::NONE;
+    m_statusRefreshRequested = true; // re-sync as soon as the drain window ends
+}
+
+void DaughterBoardLink::enterPassthrough() {
+    if (m_passthrough) return;
+    m_passthrough = true;
+    // Anything in flight is abandoned -- its reply (if any) is forwarded raw.
+    m_status  = DaughterCmdStatus::IDLE;
+    m_pending = PendingCmd::NONE;
+    m_lineLen = 0;
+    Serial1.print("DEBUG\n");
+}
+
+void DaughterBoardLink::exitPassthrough() {
+    if (!m_passthrough) return;
+    m_passthrough = false;
+    Serial1.print("EXIT\n");
+    drainAfterExit(kExitDrainMs);
+    m_linkUp = isStatusFresh(); // no "link lost" log just because the session ran long
+}
+
+void DaughterBoardLink::passthroughWrite(char c) {
+    if (m_passthrough) Serial1.write(static_cast<uint8_t>(c));
+}
+
+void DaughterBoardLink::passthroughPump(Print& out) {
+    if (!m_passthrough) return;
+    while (Serial1.available() > 0) {
+        out.write(static_cast<uint8_t>(Serial1.read()));
+    }
 }
 
 bool DaughterBoardLink::isStatusFresh() const {
@@ -33,6 +79,7 @@ void DaughterBoardLink::setError(const char* text) {
 }
 
 bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
+    if (m_passthrough) return false;                          // the console owns the UART
     if (m_status == DaughterCmdStatus::PENDING) return false; // one command in flight at a time
 
     if (DAUGHTER_LINK_TRACE) { Serial.print("[UART TX] "); Serial.println(line); }
@@ -44,7 +91,10 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     m_status        = DaughterCmdStatus::PENDING;
     m_pending       = cmd;
     m_commandSentMs = millis();
-    if (cmd == PendingCmd::STATUS) m_lastStatusSentMs = m_commandSentMs;
+    if (cmd == PendingCmd::STATUS)   m_lastStatusSentMs   = m_commandSentMs;
+    if (cmd == PendingCmd::ENV)      m_lastEnvSentMs      = m_commandSentMs;
+    if (cmd == PendingCmd::PROGRESS) m_lastProgressSentMs = m_commandSentMs;
+    if (cmd == PendingCmd::CAL)      m_calStart           = DaughterCalStart::PENDING;
     m_lineLen       = 0;     // fresh reply incoming; discard anything stale
     m_lineOverflow  = false;
     return true;
@@ -57,7 +107,15 @@ bool DaughterBoardLink::sendVolDown()    { return sendLine("VOL DOWN",     Pendi
 bool DaughterBoardLink::sendAmpMuteOn()  { return sendLine("AMP_MUTE ON",  PendingCmd::AMP_MUTE_ON); }
 bool DaughterBoardLink::sendAmpMuteOff() { return sendLine("AMP_MUTE OFF", PendingCmd::AMP_MUTE_OFF); }
 bool DaughterBoardLink::sendCalibrate()  { return sendLine("CAL",          PendingCmd::CAL); }
+bool DaughterBoardLink::sendCalibrateAuto() { return sendLine("CAL R=AUTO", PendingCmd::CAL); }
+bool DaughterBoardLink::sendCalibrateR(uint32_t ohms) {
+    char line[24];
+    snprintf(line, sizeof(line), "CAL R=%lu", static_cast<unsigned long>(ohms));
+    return sendLine(line, PendingCmd::CAL);
+}
 bool DaughterBoardLink::sendStatus()     { return sendLine("STATUS",       PendingCmd::STATUS); }
+bool DaughterBoardLink::sendEnv()        { return sendLine("ENV",          PendingCmd::ENV); }
+bool DaughterBoardLink::sendProgress()   { return sendLine("PROGRESS",     PendingCmd::PROGRESS); }
 
 bool DaughterBoardLink::sendVolSet(int16_t step) {
     // The valid range lives on the daughter now (VOLMIN/VOLMAX in STATUS),
@@ -158,6 +216,80 @@ bool DaughterBoardLink::parseStatusLine(const char* line) {
     return true;
 }
 
+namespace {
+// Walks "KEY=value KEY=value ..." starting at p, calling fn(key, value) for
+// each pair (values without spaces; tokens without '=' are skipped).
+template <typename Fn>
+void forEachField(const char* p, Fn fn) {
+    char key[16], val[16];
+    while (*p) {
+        while (*p == ' ') ++p;
+        if (!*p) break;
+        const char* sp = strchr(p, ' ');
+        if (!sp) sp = p + strlen(p);
+        const char* eq = strchr(p, '=');
+        if (eq && eq < sp) {
+            size_t klen = static_cast<size_t>(eq - p), vlen = static_cast<size_t>(sp - eq - 1);
+            if (klen < sizeof(key) && vlen < sizeof(val)) {
+                memcpy(key, p, klen);      key[klen] = '\0';
+                memcpy(val, eq + 1, vlen); val[vlen] = '\0';
+                fn(key, val);
+            }
+        }
+        p = sp;
+    }
+}
+
+template <size_t N>
+void copyField(char (&dst)[N], const char* src) {
+    strncpy(dst, src, N - 1);
+    dst[N - 1] = '\0';
+}
+} // namespace
+
+// "OK ENV BLOCK=22.81 CELLL=21.75 ..." (rev 8)
+bool DaughterBoardLink::parseEnvLine(const char* line) {
+    static const char kPrefix[] = "OK ENV ";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterEnv e;
+    forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* v) {
+        if      (!strcmp(k, "BLOCK"))  copyField(e.block, v);
+        else if (!strcmp(k, "CELLL"))  copyField(e.cellL, v);
+        else if (!strcmp(k, "CELLR"))  copyField(e.cellR, v);
+        else if (!strcmp(k, "RAIL"))   copyField(e.rail, v);
+        else if (!strcmp(k, "COMP"))   copyField(e.comp, v);
+        else if (!strcmp(k, "OFFL"))   copyField(e.offL, v);
+        else if (!strcmp(k, "OFFR"))   copyField(e.offR, v);
+        else if (!strcmp(k, "KL"))     copyField(e.kL, v);
+        else if (!strcmp(k, "KR"))     copyField(e.kR, v);
+        else if (!strcmp(k, "DBLOCK")) copyField(e.dBlock, v);
+        else if (!strcmp(k, "MATCH"))  copyField(e.match, v);
+    });
+    e.valid      = true;
+    e.receivedMs = millis();
+    m_env = e;
+    return true;
+}
+
+// "OK PROGRESS KIND=RESYNC PHASE=TRIM SIDE=L STEP=12/32 PCT=11 ETA=122" (rev 8)
+bool DaughterBoardLink::parseProgressLine(const char* line) {
+    static const char kPrefix[] = "OK PROGRESS";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterProgress pr;
+    forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* v) {
+        if      (!strcmp(k, "KIND"))  copyField(pr.kind, v);
+        else if (!strcmp(k, "PHASE")) copyField(pr.phase, v);
+        else if (!strcmp(k, "SIDE"))  copyField(pr.side, v);
+        else if (!strcmp(k, "STEP"))  copyField(pr.step, v);
+        else if (!strcmp(k, "PCT"))   pr.pct  = (v[0] == '-') ? -1 : static_cast<int16_t>(atoi(v));
+        else if (!strcmp(k, "ETA"))   pr.etaS = (v[0] == '-') ? -1 : static_cast<int32_t>(atol(v));
+    });
+    pr.valid      = true;
+    pr.receivedMs = millis();
+    m_progress = pr;
+    return true;
+}
+
 void DaughterBoardLink::handleResponseLine(const char* line) {
     if (DAUGHTER_LINK_TRACE) { Serial.print("[UART RX] "); Serial.println(line); }
 
@@ -173,12 +305,18 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         const DaughterStatus& s = m_statusData;
         if (cmd == PendingCmd::CAL) {
             if (s.calibrating()) {
-                m_status = DaughterCmdStatus::OK; // started
+                m_status   = DaughterCmdStatus::OK; // started
+                m_calStart = DaughterCalStart::STARTED;
+                m_progress = DaughterProgress();     // forget the previous run's "DONE"
+                m_lastProgressSentMs = 0;            // ask for progress right away
                 Serial.println("[Daughter] Calibration started");
             } else {
                 // Rejected (IDLE + CAL=ERR) or the boot hold -- either way
                 // nothing was changed on the daughter.
                 setError(s.hasErr ? s.err : "calibration did not start");
+                m_calStart = DaughterCalStart::REJECTED;
+                strncpy(m_calStartError, m_lastError, sizeof(m_calStartError) - 1);
+                m_calStartError[sizeof(m_calStartError) - 1] = '\0';
             }
         } else if (cmd != PendingCmd::STATUS && s.bootHold) {
             // Any setter during the boot hold is answered with a status
@@ -187,6 +325,11 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         } else {
             m_status = DaughterCmdStatus::OK;
         }
+        return;
+    }
+
+    if (parseEnvLine(line) || parseProgressLine(line)) {
+        if (wasPending) m_status = DaughterCmdStatus::OK;
         return;
     }
 
@@ -228,6 +371,13 @@ uint32_t DaughterBoardLink::currentPollIntervalMs() const {
 }
 
 void DaughterBoardLink::update() {
+    if (m_passthrough) return; // MasterConsole moves the bytes
+
+    if (static_cast<int32_t>(m_discardUntilMs - millis()) > 0) {
+        while (Serial1.available() > 0) Serial1.read();
+        return; // no polls either until the EXIT reply has been swallowed
+    }
+
     while (Serial1.available() > 0) {
         char c = static_cast<char>(Serial1.read());
 
@@ -258,6 +408,10 @@ void DaughterBoardLink::update() {
     if (m_status == DaughterCmdStatus::PENDING &&
         (now - m_commandSentMs > DAUGHTER_RESPONSE_TIMEOUT_MS)) {
         if (DAUGHTER_LINK_TRACE) Serial.println("[UART] TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
+        if (m_pending == PendingCmd::CAL) {
+            m_calStart = DaughterCalStart::REJECTED;
+            strncpy(m_calStartError, "no reply from the daughter board", sizeof(m_calStartError) - 1);
+        }
         m_status  = DaughterCmdStatus::TIMEOUT;
         m_pending = PendingCmd::NONE;
     }
@@ -275,11 +429,25 @@ void DaughterBoardLink::update() {
         }
     }
 
-    // Poll STATUS whenever the link is free and it's due (or was asked for).
+    // A calibration just ended: one fresh ENV for its result (MATCH etc.).
+    bool calibrating = m_statusData.valid && m_statusData.calibrating();
+    if (m_wasCalibrating && !calibrating) m_lastEnvSentMs = 0, m_envWantedUntilMs = now + 3000;
+    m_wasCalibrating = calibrating;
+
+    // Polls, whenever the link is free: STATUS when due (or asked for);
+    // PROGRESS every second while a calibration runs; ENV while a page
+    // showing it is open.
     if (m_status != DaughterCmdStatus::PENDING) {
-        bool due = (now - m_lastStatusSentMs >= currentPollIntervalMs());
-        if (m_statusRefreshRequested || due) {
+        bool statusDue   = m_statusRefreshRequested || (now - m_lastStatusSentMs >= currentPollIntervalMs());
+        bool progressDue = calibrating && (now - m_lastProgressSentMs >= DAUGHTER_PROGRESS_POLL_MS);
+        bool envDue      = static_cast<int32_t>(m_envWantedUntilMs - now) > 0 &&
+                           (m_lastEnvSentMs == 0 || now - m_lastEnvSentMs >= DAUGHTER_ENV_POLL_MS);
+        if (statusDue) {
             if (sendStatus()) m_statusRefreshRequested = false;
+        } else if (progressDue) {
+            sendProgress();
+        } else if (envDue) {
+            sendEnv();
         }
     }
 }

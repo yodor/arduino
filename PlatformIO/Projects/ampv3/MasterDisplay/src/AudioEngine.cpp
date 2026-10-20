@@ -37,250 +37,140 @@ void AudioEngine::runCore1() {
     adc_fifo_setup(true, true, 1, false, false);
     adc_set_clkdiv(544.0f);     // ~44.1 kHz sampling per channel
 
-    // --- Two-channel chained ping-pong ring capture ---
-    // Each channel writes into its OWN CAPTURE_CHUNK_SAMPLES-sized buffer,
-    // ring-wrapping WITHIN that buffer only, and chains to the OTHER
-    // channel on completion -- so finishing chunk A automatically starts
-    // filling chunk B, and vice versa, forever, with no CPU involvement
-    // between chunks. This is the single physical capture stream all
-    // three independent pipelines below build their own differently-sized
-    // sliding windows from.
+    // --- Continuous ring capture ---
+    // Two DMA channels, BOTH writing into the same ring buffer (wrapping
+    // within it), chained to each other. Each runs for a whole number of
+    // ring laps (kLapsPerChannel), so it ends exactly back at the ring start,
+    // where the other one -- also pointed at the ring start -- carries on
+    // without missing a sample. (Two channels only because a single channel's
+    // transfer count eventually runs out; at 88k samples/s each one lasts
+    // over three minutes.) The CPU never has to re-arm anything.
     int chanA = dma_claim_unused_channel(true);
     int chanB = dma_claim_unused_channel(true);
 
-    constexpr uint32_t kRingBytes    = static_cast<uint32_t>(CAPTURE_CHUNK_SAMPLES) * sizeof(uint16_t);
-    constexpr uint32_t kRingSizeBits = log2_constexpr(kRingBytes);
+    constexpr uint32_t kRingBytes      = static_cast<uint32_t>(kRingSamples) * sizeof(uint16_t);
+    constexpr uint32_t kRingSizeBits   = log2_constexpr(kRingBytes);
+    constexpr uint32_t kLapsPerChannel = 4096;
+    constexpr uint32_t kTransfers      = static_cast<uint32_t>(kRingSamples) * kLapsPerChannel;
+    static_assert((1u << kRingSizeBits) == kRingBytes, "ring size must be a power of two");
+    static_assert(kTransfers < (1u << 28), "transfer count must fit the DMA counter");
 
-    dma_channel_config confA = dma_channel_get_default_config(chanA);
-    channel_config_set_transfer_data_size(&confA, DMA_SIZE_16);
-    channel_config_set_read_increment(&confA, false);
-    channel_config_set_write_increment(&confA, true);
-    channel_config_set_dreq(&confA, DREQ_ADC);
-    channel_config_set_ring(&confA, true, kRingSizeBits);
-    channel_config_set_chain_to(&confA, chanB);
-
-    dma_channel_config confB = dma_channel_get_default_config(chanB);
-    channel_config_set_transfer_data_size(&confB, DMA_SIZE_16);
-    channel_config_set_read_increment(&confB, false);
-    channel_config_set_write_increment(&confB, true);
-    channel_config_set_dreq(&confB, DREQ_ADC);
-    channel_config_set_ring(&confB, true, kRingSizeBits);
-    channel_config_set_chain_to(&confB, chanA);
-
-    dma_channel_configure(chanA, &confA, m_audioBuffer[0], &adc_hw->fifo, CAPTURE_CHUNK_SAMPLES, false);
-    dma_channel_configure(chanB, &confB, m_audioBuffer[1], &adc_hw->fifo, CAPTURE_CHUNK_SAMPLES, false);
+    auto configure = [&](int chan, int chainTo) {
+        dma_channel_config c = dma_channel_get_default_config(chan);
+        channel_config_set_transfer_data_size(&c, DMA_SIZE_16);
+        channel_config_set_read_increment(&c, false);
+        channel_config_set_write_increment(&c, true);
+        channel_config_set_dreq(&c, DREQ_ADC);
+        channel_config_set_ring(&c, true, kRingSizeBits);
+        channel_config_set_chain_to(&c, chainTo);
+        dma_channel_configure(chan, &c, m_ring, &adc_hw->fifo, kTransfers, false);
+    };
+    configure(chanA, chanB);
+    configure(chanB, chanA);
 
     dma_channel_start(chanA);
     adc_run(true); // started ONCE here -- never stopped again during normal operation
 
-    bool waitingForA = true;
-    constexpr size_t kChunkPerChannel = CAPTURE_CHUNK_SAMPLES / 2;
+    const uintptr_t ringBase = reinterpret_cast<uintptr_t>(m_ring);
+    // Where the DMA will write next, in samples from the ring start. Read
+    // from whichever channel is running; at a handoff both point at the ring
+    // start, so either reading is right.
+    auto writePos = [&]() -> uint32_t {
+        int active = dma_channel_is_busy(chanA) ? chanA : chanB;
+        uintptr_t addr = dma_channel_hw_addr(active)->write_addr;
+        return static_cast<uint32_t>(((addr - ringBase) / sizeof(uint16_t)) % kRingSamples);
+    };
 
-    // --- Diagnostic accumulators (see the periodic report near the end
-    // of the loop for what each one means) ---
-    uint32_t chunkAccumUs       = 0;
-    uint32_t chunkCountSinceRpt = 0;
-    uint32_t lastRawDebugMs     = 0;
-    uint32_t lastTimingDebugMs  = 0;
+    constexpr uint32_t kChunk = CAPTURE_CHUNK_SAMPLES;
+    uint32_t readPos = 0; // next chunk to process (samples, always a multiple of kChunk)
 
-    // Per-pipeline dispatch cost, isolated -- the chunk-average timing
-    // didn't drop as expected after batching the octave/bar9 window
-    // shifts, meaning something else is the real dominant cost. Rather
-    // than guess again, measure each pushChunk() call directly so we can
-    // see exactly which pipeline (or the DMA wait itself, by elimination)
-    // actually accounts for the time.
-    uint32_t waveformAccumUs = 0;
-    uint32_t spectrumAccumUs = 0;
-
-    // Dispatch sum alone didn't add up to chunk avg -- isolating the wait
-    // and the RawADC scan directly (the two remaining unmeasured pieces)
-    // to find exactly where the rest of the time goes, rather than assume.
-    uint32_t waitAccumUs   = 0;
-    uint32_t rawAdcAccumUs = 0;
-
-    // clk_adc measured and confirmed correct (48MHz, exactly as assumed),
-    // ruling that out -- this probes the DMA hardware DIRECTLY instead of
-    // inferring from aggregate timing: reads the just-started channel's
-    // live remaining-transfer-count register right as dispatch begins and
-    // again right as it ends, to see definitively whether that channel is
-    // actually progressing (i.e. genuinely continuing to capture) DURING
-    // our dispatch work, or sitting idle until dispatch finishes.
-    uint32_t transferProgressAccum = 0;
+    // Diagnostics (DEBUG_AUDIO_DIAGNOSTICS): per-chunk cost, deepest backlog,
+    // overruns -- reported once a second.
+    uint32_t chunkCount = 0, waveformAccumUs = 0, spectrumAccumUs = 0;
+    uint32_t maxBacklogChunks = 0, overruns = 0, totalOverruns = 0;
+    uint32_t lastReportMs = 0;
 
     while (true) {
-        uint32_t chunkStartUs = micros();
-
-        uint16_t* captureBuf;
-        int justStartedChannel;
-        uint32_t waitStartUs = micros();
-        if (waitingForA) {
-            // chanA is currently running; chanB going busy is the signal
-            // that chanA just completed (its chain_to triggered chanB).
-            while (!dma_channel_is_busy(chanB)) tight_loop_contents();
-            captureBuf = m_audioBuffer[0];
-            justStartedChannel = chanB;
-        } else {
-            while (!dma_channel_is_busy(chanA)) tight_loop_contents();
-            captureBuf = m_audioBuffer[1];
-            justStartedChannel = chanA;
-        }
-        waitingForA = !waitingForA;
-        waitAccumUs += micros() - waitStartUs;
-
-        uint32_t transferCountAtDispatchStart = dma_channel_hw_addr(justStartedChannel)->transfer_count;
-
-        // --- Diagnostic: raw ADC peak-to-peak, straight off THIS chunk,
-        // before any accumulation into any pipeline's window -- the
-        // cleanest possible checkpoint to tell whether cross-channel
-        // bleed exists at the hardware/ADC level or gets introduced
-        // downstream in our own code.
-        uint32_t rawAdcStartUs = micros();
-        uint16_t rawMinL = 4095, rawMaxL = 0;
-        uint16_t rawMinR = 4095, rawMaxR = 0;
-        for (size_t i = 0; i < kChunkPerChannel; ++i) {
-            uint16_t vL = captureBuf[i * 2]     & 0x0FFF;
-            uint16_t vR = captureBuf[i * 2 + 1] & 0x0FFF;
-            if (vL < rawMinL) rawMinL = vL;
-            if (vL > rawMaxL) rawMaxL = vL;
-            if (vR < rawMinR) rawMinR = vR;
-            if (vR > rawMaxR) rawMaxR = vR;
-        }
-        rawAdcAccumUs += micros() - rawAdcStartUs;
-
-        uint32_t rawDebugNowMs = millis();
-        if (DEBUG_AUDIO_DIAGNOSTICS && rawDebugNowMs - lastRawDebugMs >= 1000) {
-            lastRawDebugMs = rawDebugNowMs;
-            Serial.print("[RawADC] L pp=");
-            Serial.print(rawMaxL - rawMinL);
-            Serial.print(" (min=");
-            Serial.print(rawMinL);
-            Serial.print(" max=");
-            Serial.print(rawMaxL);
-            Serial.print(") | R pp=");
-            Serial.print(rawMaxR - rawMinR);
-            Serial.print(" (min=");
-            Serial.print(rawMinR);
-            Serial.print(" max=");
-            Serial.print(rawMaxR);
-            Serial.println(")");
+        // Settings save on core0 parks core1 here (see PersistentSettings).
+        // A long pause can let the DMA lap us; if so, skip to fresh audio.
+        uint32_t pauseStartUs = micros();
+        PersistentSettings::checkAndPauseForFlashWrite();
+        if (micros() - pauseStartUs > 10000) {
+            readPos = ((writePos() / kChunk) * kChunk + kRingSamples - kChunk) % kRingSamples;
         }
 
-        // Dispatch this chunk to both independent pipelines. Each decides
-        // internally whether/how to act on it -- WaveformPipeline always
-        // updates immediately; SpectrumPipeline only actually runs its
-        // FFT once enough samples have accumulated (see FftEngine::
-        // pushChunk()).
-        uint32_t waveformStartUs = micros();
-        m_waveform.pushChunk(captureBuf);
-        waveformAccumUs += micros() - waveformStartUs;
-
-        uint32_t spectrumStartUs = micros();
-        m_spectrum.pushChunk(captureBuf);
-        spectrumAccumUs += micros() - spectrumStartUs;
-
-        uint32_t transferCountAtDispatchEnd = dma_channel_hw_addr(justStartedChannel)->transfer_count;
-        // transfer_count COUNTS DOWN as the channel progresses, so a
-        // healthy amount of REAL, concurrent capture during dispatch
-        // shows up as a large drop here. If this is consistently near
-        // zero, the channel is NOT actually capturing while we're busy --
-        // meaning the two channels aren't overlapping the way the design
-        // intends, regardless of what the aggregate timing implied.
-        if (transferCountAtDispatchStart >= transferCountAtDispatchEnd) {
-            transferProgressAccum += transferCountAtDispatchStart - transferCountAtDispatchEnd;
+        uint32_t avail = (writePos() + kRingSamples - readPos) % kRingSamples;
+        if (avail < kChunk) {
+            tight_loop_contents(); // next chunk not complete yet
+            continue;
         }
 
-        // --- Diagnostic: three independent refresh cadences, once/sec ---
-        // chunk avg reflects the waveform pipeline's refresh rate (it
-        // updates every chunk, so this IS its effective refresh period).
-        // bar9/octave each report their OWN measured FFT duration and
-        // observed refresh rate, since they run on independent,
-        // intermittent schedules now -- neither is tied to the chunk
-        // rate or to each other.
-        chunkAccumUs += (micros() - chunkStartUs);
-        chunkCountSinceRpt++;
+        // Fallen nearly a whole lap behind: the oldest chunks are about to be
+        // overwritten under us. Jump to the newest complete chunk instead.
+        if (avail > kRingSamples - 2 * kChunk) {
+            readPos = ((writePos() / kChunk) * kChunk + kRingSamples - kChunk) % kRingSamples;
+            ++overruns;
+            ++totalOverruns;
+            avail = kChunk;
+        }
+        uint32_t backlog = avail / kChunk;
+        if (backlog > maxBacklogChunks) maxBacklogChunks = backlog;
 
-        uint32_t timingNowMs = millis();
-        if (timingNowMs - lastTimingDebugMs >= 1000) {
-            lastTimingDebugMs = timingNowMs;
+        const uint16_t* chunk = &m_ring[readPos];
 
-            // Per-second timing report -- debug only (DEBUG_AUDIO_DIAGNOSTICS
-            // in Config.hpp). The accumulators are reset below either way.
-            if (DEBUG_AUDIO_DIAGNOSTICS) {
-                float avgChunkUs = (chunkCountSinceRpt > 0)
-                                        ? static_cast<float>(chunkAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                        : 0.0f;
-                float avgWaveformUs = (chunkCountSinceRpt > 0)
-                                           ? static_cast<float>(waveformAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                           : 0.0f;
-                float avgSpectrumUs = (chunkCountSinceRpt > 0)
-                                           ? static_cast<float>(spectrumAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                           : 0.0f;
-                float avgWaitUs = (chunkCountSinceRpt > 0)
-                                       ? static_cast<float>(waitAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                       : 0.0f;
-                float avgRawAdcUs = (chunkCountSinceRpt > 0)
-                                         ? static_cast<float>(rawAdcAccumUs) / static_cast<float>(chunkCountSinceRpt)
-                                         : 0.0f;
+        uint32_t t0 = micros();
+        m_waveform.pushChunk(chunk);
+        uint32_t t1 = micros();
+        m_spectrum.pushChunk(chunk);
+        uint32_t t2 = micros();
+        waveformAccumUs += t1 - t0;
+        spectrumAccumUs += t2 - t1;
+        ++chunkCount;
 
-                Serial.print("[Timing] waveform chunk avg=");
-                Serial.print(avgChunkUs / 1000.0f, 3);
-                Serial.print("ms (~");
-                Serial.print(avgChunkUs > 0.0f ? 1000000.0f / avgChunkUs : 0.0f, 1);
-                Serial.print("Hz) | spectrum fft=");
+        readPos = (readPos + kChunk) % kRingSamples;
+
+        uint32_t nowMs = millis();
+        if (nowMs - lastReportMs >= 1000) {
+            lastReportMs = nowMs;
+            if (DEBUG_AUDIO_DIAGNOSTICS && chunkCount > 0) {
+                // ~344 chunks/s means every chunk was processed.
+                uint16_t minL = 4095, maxL = 0, minR = 4095, maxR = 0;
+                for (uint32_t i = 0; i < kChunk / 2; ++i) {
+                    uint16_t vL = chunk[i * 2] & 0x0FFF, vR = chunk[i * 2 + 1] & 0x0FFF;
+                    if (vL < minL) minL = vL;
+                    if (vL > maxL) maxL = vL;
+                    if (vR < minR) minR = vR;
+                    if (vR > maxR) maxR = vR;
+                }
+                Serial.print("[Audio] ");
+                Serial.print(chunkCount);
+                Serial.print(" chunks/s | per chunk: waveform ");
+                Serial.print(waveformAccumUs / 1000.0f / chunkCount, 3);
+                Serial.print("ms, spectrum ");
+                Serial.print(spectrumAccumUs / 1000.0f / chunkCount, 3);
+                Serial.print("ms | fft ");
                 Serial.print(m_spectrum.lastFftDurationUs() / 1000.0f, 2);
                 Serial.print("ms @ ");
                 Serial.print(m_spectrum.observedRefreshHz(), 1);
-                Serial.println("Hz");
-
-                Serial.print("[Timing] per-chunk dispatch avg -- waveform=");
-                Serial.print(avgWaveformUs / 1000.0f, 3);
-                Serial.print("ms | spectrum=");
-                Serial.print(avgSpectrumUs / 1000.0f, 3);
-                Serial.print("ms | wait=");
-                Serial.print(avgWaitUs / 1000.0f, 3);
-                Serial.print("ms | rawAdcScan=");
-                Serial.print(avgRawAdcUs / 1000.0f, 3);
-                Serial.print("ms | sum=");
-                Serial.print((avgWaveformUs + avgSpectrumUs + avgWaitUs + avgRawAdcUs) / 1000.0f, 3);
-                Serial.println("ms");
-
-                // Direct DMA hardware probe: how many of the just-started
-                // channel's CAPTURE_CHUNK_SAMPLES actually got captured WHILE
-                // we were busy dispatching, on average -- vs. what real
-                // concurrent capture (at the confirmed 88073.4Hz combined
-                // rate) over that same dispatch duration SHOULD have produced.
-                // A big gap between "actual" and "expected" here means the two
-                // DMA channels aren't genuinely overlapping with our
-                // processing, regardless of what the aggregate timing implied.
-                float avgTransferProgress = (chunkCountSinceRpt > 0)
-                                                 ? static_cast<float>(transferProgressAccum) / static_cast<float>(chunkCountSinceRpt)
-                                                 : 0.0f;
-                float avgDispatchUs = avgWaveformUs + avgSpectrumUs + avgRawAdcUs;
-                float expectedProgress = avgDispatchUs * (88073.4f / 1000000.0f);
-
-                Serial.print("[Timing] DMA overlap check -- actual capture progress during dispatch=");
-                Serial.print(avgTransferProgress, 1);
-                Serial.print(" samples | expected if fully overlapped=");
-                Serial.print(expectedProgress, 1);
-                Serial.print(" samples (of ");
-                Serial.print(CAPTURE_CHUNK_SAMPLES);
-                Serial.println(" per chunk)");
+                Serial.print("Hz | max backlog ");
+                Serial.print(maxBacklogChunks);
+                Serial.print("/");
+                Serial.print(static_cast<unsigned>(CAPTURE_RING_CHUNKS));
+                Serial.print(" chunks | overruns ");
+                Serial.print(overruns);
+                Serial.print(" (total ");
+                Serial.print(totalOverruns);
+                Serial.print(") | raw pp L=");
+                Serial.print(static_cast<unsigned>(maxL - minL));
+                Serial.print(" R=");
+                Serial.println(static_cast<unsigned>(maxR - minR));
+            } else if (overruns > 0) {
+                Serial.print("[Audio] Capture overrun: chunks skipped in the last second: ");
+                Serial.println(overruns);
             }
-
-            chunkAccumUs           = 0;
-            chunkCountSinceRpt     = 0;
-            waveformAccumUs        = 0;
-            spectrumAccumUs        = 0;
-            waitAccumUs            = 0;
-            rawAdcAccumUs          = 0;
-            transferProgressAccum  = 0;
+            chunkCount = waveformAccumUs = spectrumAccumUs = 0;
+            maxBacklogChunks = overruns = 0;
         }
-
-        // Safe checkpoint for a pending flash write (settings save) --
-        // between chunk dispatches, no DMA/FFT work mid-flight. See
-        // PersistentSettings::checkAndPauseForFlashWrite()'s own comment
-        // for why this must stay a cheap, RAM-resident check.
-        PersistentSettings::checkAndPauseForFlashWrite();
     }
 }
 
@@ -308,8 +198,8 @@ SpectrumPipeline::EnergyMode AudioEngine::getSpectrumEnergyMode() const {
     return m_spectrum.getEnergyMode();
 }
 
-void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const {
-    m_waveform.getWaveform(leftWave, rightWave, count);
+void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger) const {
+    m_waveform.getWaveform(leftWave, rightWave, count, trigger);
 }
 
 void AudioEngine::setWaveformWindowMode(WaveformPipeline::WindowMode mode) {

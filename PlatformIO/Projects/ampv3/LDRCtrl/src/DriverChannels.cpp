@@ -89,9 +89,12 @@ void DriverChannels::setDuty(Channel ch, uint16_t duty) {
   setDutyFine(ch, (uint32_t)duty * FINE_PER_COUNT);
 }
 
-uint32_t DriverChannels::scaled(uint32_t fine) const {
-  if (fine == 0 || railScale_ == 1.0f) return fine;   // dark stays exactly dark
-  const float v = (float)fine * railScale_ + 0.5f;
+uint32_t DriverChannels::scaled(Channel ch, uint32_t fine) const {
+  if (fine == 0) return 0;                            // dark stays exactly dark
+  const int32_t off = offset_[ch];
+  if (railScale_ == 1.0f && off == 0) return fine;
+  const float v = (float)fine * railScale_ + (float)off + 0.5f;
+  if (v <= 0.0f) return 0;
   return v >= (float)FINE_MAX ? FINE_MAX : (uint32_t)v;
 }
 
@@ -99,7 +102,7 @@ void DriverChannels::setDutyFine(Channel ch, uint32_t fine) {
   if (ch >= NUM_CHANNELS) return;
   if (fine > FINE_MAX) fine = FINE_MAX;
   fine_[ch] = fine;
-  const uint32_t out = scaled(fine);
+  const uint32_t out = scaled(ch, fine);
   gFine[ch] = out; // a single aligned 32-bit store: the ISR never sees a torn value
   if (PWM_DITHER_LEVELS == 1) {
     pwm_set_gpio_level(PINS[ch], (uint16_t)out); // no engine running: write it directly
@@ -108,6 +111,12 @@ void DriverChannels::setDutyFine(Channel ch, uint32_t fine) {
 
 void DriverChannels::setRailScale(float scale) {
   railScale_ = scale;
+  for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) setDutyFine(static_cast<Channel>(ch), fine_[ch]);
+}
+
+void DriverChannels::setThermalOffsetFine(int32_t left, int32_t right) {
+  offset_[SHUNT_L] = offset_[SER_L] = left;
+  offset_[SHUNT_R] = offset_[SER_R] = right;
   for (uint8_t ch = 0; ch < NUM_CHANNELS; ch++) setDutyFine(static_cast<Channel>(ch), fine_[ch]);
 }
 

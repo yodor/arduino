@@ -1,4 +1,8 @@
 #include "Renderer.hpp"
+
+bool     NV3007Display::alignPairs = DISPLAY_ALIGN_PIXEL_PAIRS;
+uint8_t  NV3007Display::minRows    = DISPLAY_MIN_WINDOW_ROWS;
+uint16_t NV3007Display::s_shadow[SCREEN_HEIGHT][SCREEN_WIDTH]; // ~119 KB shadow of the panel
 #include "hardware/spi.h"
 
 Renderer& Renderer::instance() {
@@ -11,7 +15,7 @@ void Renderer::init() {
     m_bus = new Arduino_RPiPicoSPI(TFT_DC, TFT_CS, TFT_SCK, TFT_MOSI, TFT_MISO, spi0);
 
     // Instantiate NV3007 display panel driver using Config.hpp parameters
-    m_tft = new Arduino_NV3007(
+    m_tft = new NV3007Display(
         m_bus, TFT_RST, TFT_ROTATION, false /* IPS */, SCREEN_HEIGHT, SCREEN_WIDTH,
         12, 0, 14, 0, nv3007_279_init_operations, sizeof(nv3007_279_init_operations)
     );

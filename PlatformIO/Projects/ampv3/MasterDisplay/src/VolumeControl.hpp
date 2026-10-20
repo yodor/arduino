@@ -31,10 +31,14 @@ public:
     void ampMuteOff();
     bool isAmpMuted() const { return m_ampMuted; }
 
-    // Asks the daughter to calibrate (plain "CAL" -- it decides how much
-    // work it needs). Retried until the link takes it; progress/outcome are
-    // learned from STATUS polling and logged by update().
-    void calibrate();
+    // Asks the daughter to calibrate. KEEP_R sends plain "CAL" (the daughter
+    // decides how much work it needs, Rtotal unchanged); AUTO_R "CAL R=AUTO";
+    // SET_R "CAL R=<ohms>" (must lie within the daughter's RMIN..RMAX).
+    // Retried until the link takes it; progress/outcome come from STATUS and
+    // PROGRESS polling and are logged by update().
+    enum class CalR : uint8_t { KEEP_R, AUTO_R, SET_R };
+    void calibrate(CalR mode = CalR::KEEP_R, uint32_t ohms = 0);
+    bool isCalibrationPending() const { return m_calPending; } // requested, not yet sent
 
 private:
     VolumeControl() = default;
@@ -48,6 +52,8 @@ private:
     uint32_t m_lastMuteChangeMs  = 0;     // last user mute change -- see DAUGHTER_MUTE_ADOPT_GRACE_MS
     bool     m_mutePending       = false; // a MUTE ON/OFF still waiting for the link to be free
     bool     m_calPending        = false; // a CAL still waiting for the link to be free
+    CalR     m_calMode           = CalR::KEEP_R;
+    uint32_t m_calOhms           = 0;
     uint32_t m_lastVolCommandMs  = 0;     // throttles VOL UP/DOWN repeats
     uint32_t m_lastSeenStatusCount = 0;
     bool     m_wasCalibrating    = false; // edge-detects the daughter's calibration start/end for logging

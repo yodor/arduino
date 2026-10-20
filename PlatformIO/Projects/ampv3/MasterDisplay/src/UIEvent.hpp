@@ -14,5 +14,6 @@ enum class UIEvent {
     GAIN_DOWN,
     MUTE_TOGGLE,
     CHANNEL_MODE_TOGGLE,
-    MENU_TOGGLE
+    MENU_TOGGLE,
+    POWER_TOGGLE
 };

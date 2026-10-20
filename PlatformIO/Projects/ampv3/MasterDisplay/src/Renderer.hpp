@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include "PanelDriver.hpp"
 #include "Config.hpp"
 
 // Thin hardware layer: owns SPI/panel setup and the underlying Arduino_GFX
@@ -38,5 +39,5 @@ private:
     Renderer() = default;
 
     Arduino_DataBus* m_bus = nullptr;
-    Arduino_NV3007*  m_tft = nullptr;
+    NV3007Display*   m_tft = nullptr; // NV3007 with the pixel-pair workaround, see PanelDriver.hpp
 };

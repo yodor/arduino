@@ -14,10 +14,16 @@
 #include "WaveformScreen.hpp"
 #include "AnalogVuScreen.hpp"
 #include "DigitalVuMeterScreen.hpp"
+#include "ClockScreen.hpp"
+#include "DisplayTestScreen.hpp"
+#include "PowerControl.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
 #include "VolumeOverlay.hpp"
+#include "RtcClock.hpp"
+#include "MasterConsole.hpp"
+#include "DaughterBoardLink.hpp"
 #include "MenuContent.hpp"
 #include "PersistentSettings.hpp"
 #include "ScreenRegistry.hpp"
@@ -40,12 +46,14 @@ static SpectrumScreen        g_spectrumScreen;
 static WaveformScreen        g_waveformScreen;
 static AnalogVuScreen        g_analogVuScreen;
 static DigitalVuMeterScreen  g_digitalVuMeterScreen;
+static ClockScreen           g_clockScreen;
 
 static Screen* g_screens[] = {
     &g_spectrumScreen,
     &g_waveformScreen,
     &g_analogVuScreen,
     &g_digitalVuMeterScreen,
+    &g_clockScreen,
 };
 constexpr size_t kNumScreens = sizeof(g_screens) / sizeof(g_screens[0]);
 
@@ -56,11 +64,21 @@ static_assert(kNumScreens == kScreenCount,
 
 static size_t g_currentScreenIdx = 0;
 
+// Screen changes are remembered (the unit boots into the last screen), but
+// only written to flash after the screen has stayed put this long.
+static uint32_t           g_lastScreenChangeMs = 0;
+static constexpr uint32_t kScreenSaveDelayMs   = 10000;
+
 static MenuScreen g_menuScreen;
 
 // Transient volume readout (see VolumeOverlay.hpp). g_overlayShown tracks
 // whether it currently owns the panel, so the transitions in and out can
 // trigger the right full redraws.
+// Settings -> Diagnostics -> Display Test: an exclusive mode like the menu
+// (see DisplayTestScreen.hpp for the tests and controls).
+static DisplayTestScreen g_displayTest;
+static bool              g_displayTestOpen = false;
+
 static VolumeOverlay g_volumeOverlay;
 static bool          g_overlayShown = false;
 static bool       g_menuOpen = false;
@@ -113,6 +131,10 @@ void bootInfo() {
 
 void setup() {
 
+    // First thing: the amp's mains relay to its boot state (off by default),
+    // before anything else gets a chance to run.
+    PowerControl::instance().init();
+
     // Force the internal SMPS out of PFM mode into low-noise PWM mode
     digitalWrite(REGULATOR_MODE_PIN, HIGH);
     pinMode(REGULATOR_MODE_PIN, OUTPUT);
@@ -154,6 +176,9 @@ void setup() {
 
     VolumeControl::instance().init();
     Serial.println("[OK] VolumeControl initialized.");
+    Serial.printf("[OK] Power control: amp %s (IR power key toggles)\n", PowerControl::instance().isOn() ? "ON" : "OFF");
+
+    RtcClock::instance().begin(); // logs its own outcome
 
     g_menuScreen.init(getRootMenuItems(), getRootMenuItemCount());
 
@@ -165,6 +190,8 @@ void setup() {
     g_currentScreenIdx = DisplaySettings::instance().getStartingScreenIndex();
     if (g_currentScreenIdx >= kNumScreens) g_currentScreenIdx = 0; // safety clamp
     g_screens[g_currentScreenIdx]->onEnter();
+
+    MasterConsole::instance().begin();
 }
 
 // Rolling performance counters, reported to Serial once per second.
@@ -193,7 +220,42 @@ static void closeMenu() {
 void loop() {
     uint32_t loopStartUs = micros();
 
+    MasterConsole::instance().update(); // USB console + daughter pass-through
+
     UIEvent event = InputEngine::instance().pollEvents();
+
+    // The power key works everywhere -- menu and display test included.
+    if (event == UIEvent::POWER_TOGGLE) {
+        PowerControl::instance().toggle();
+        event = UIEvent::NONE;
+    }
+
+    // Save a remembered screen once it has stayed put for a while: each
+    // flash write briefly pauses the audio core, so stepping through the
+    // screens shouldn't write once per step. (Menu changes save on menu close.)
+    if (PersistentSettings::instance().isDirty() && !g_menuOpen &&
+        millis() - g_lastScreenChangeMs >= kScreenSaveDelayMs) {
+        PersistentSettings::instance().saveIfDirty();
+    }
+
+    if (g_displayTestOpen) {
+        // Up/Down pick the test, Right clears it, Left or the menu button
+        // leaves. Everything else is swallowed while the test runs.
+        bool irRepeat  = InputEngine::instance().lastIrWasRepeat();
+        bool upPress   = InputEngine::instance().volUpJustPressed();
+        bool downPress = InputEngine::instance().volDownJustPressed();
+        if ((event == UIEvent::GAIN_UP && !irRepeat) || upPress)     g_displayTest.prevTest();
+        if ((event == UIEvent::GAIN_DOWN && !irRepeat) || downPress) g_displayTest.nextTest();
+        if (event == UIEvent::MODE_NEXT) g_displayTest.restart();
+        if (event == UIEvent::MUTE_TOGGLE)         g_displayTest.toggleColumnFix(); // A/B the panel workarounds
+        if (event == UIEvent::CHANNEL_MODE_TOGGLE) g_displayTest.toggleMinRows();
+        if (event == UIEvent::MODE_PREV || event == UIEvent::MENU_TOGGLE) {
+            g_displayTestOpen = false;
+            g_screens[g_currentScreenIdx]->onEnter();
+            Serial.println("[Diag] Display test closed");
+        }
+        event = UIEvent::NONE;
+    }
 
     if (g_menuOpen) {
         // While the menu is open, MODE_NEXT/PREV/GAIN_UP/DOWN/MENU_TOGGLE
@@ -211,11 +273,12 @@ void loop() {
             // CONTINUOUS policy stays as-is (needed for real volume
             // control outside the menu); this only filters how the menu
             // specifically consumes it.
-            if (!InputEngine::instance().lastIrWasRepeat()) {
+            // In an editor, held IR keys auto-repeat (to run values up fast).
+            if (!InputEngine::instance().lastIrWasRepeat() || g_menuScreen.acceptsRepeats()) {
                 g_menuScreen.moveFocus(-1);
             }
         } else if (event == UIEvent::GAIN_DOWN) {
-            if (!InputEngine::instance().lastIrWasRepeat()) {
+            if (!InputEngine::instance().lastIrWasRepeat() || g_menuScreen.acceptsRepeats()) {
                 g_menuScreen.moveFocus(1);
             }
         } else if (event == UIEvent::MODE_NEXT) {
@@ -237,8 +300,25 @@ void loop() {
         // focus-step per physical press, same reasoning as the IR
         // repeat-filtering above -- checked independently of `event`
         // since these buttons never populate it themselves.
-        if (InputEngine::instance().volUpJustPressed())   g_menuScreen.moveFocus(-1);
-        if (InputEngine::instance().volDownJustPressed()) g_menuScreen.moveFocus(1);
+        bool upPressed   = InputEngine::instance().volUpJustPressed();
+        bool downPressed = InputEngine::instance().volDownJustPressed();
+        if (upPressed)   g_menuScreen.moveFocus(-1);
+        if (downPressed) g_menuScreen.moveFocus(1);
+
+        // In an editor, a held physical Up/Down auto-repeats too: after
+        // MENU_REPEAT_DELAY_MS, one step every MENU_REPEAT_RATE_MS.
+        static uint32_t s_holdStartMs = 0, s_lastRepeatMs = 0;
+        int heldDir = InputEngine::instance().isVolUpHeld()   ? -1
+                    : InputEngine::instance().isVolDownHeld() ?  1 : 0;
+        uint32_t nowMsMenu = millis();
+        if (heldDir == 0 || upPressed || downPressed) {
+            s_holdStartMs = s_lastRepeatMs = nowMsMenu;
+        } else if (g_menuScreen.acceptsRepeats() &&
+                   nowMsMenu - s_holdStartMs >= MENU_REPEAT_DELAY_MS &&
+                   nowMsMenu - s_lastRepeatMs >= MENU_REPEAT_RATE_MS) {
+            g_menuScreen.moveFocus(heldDir);
+            s_lastRepeatMs = nowMsMenu;
+        }
     } else {
         if (event == UIEvent::MODE_NEXT || event == UIEvent::MODE_PREV) {
             g_currentScreenIdx = (event == UIEvent::MODE_NEXT)
@@ -249,6 +329,12 @@ void loop() {
             g_overlayShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
             Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
+
+            // Remembered as the screen to boot into; saved by loop() once the
+            // choice has settled (see kScreenSaveDelayMs).
+            DisplaySettings::instance().setStartingScreenIndex(static_cast<uint8_t>(g_currentScreenIdx));
+            PersistentSettings::instance().markDirty();
+            g_lastScreenChangeMs = millis();
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
             g_volumeOverlay.poke();
@@ -286,8 +372,18 @@ void loop() {
     // same physical volume buttons) never also changes real volume.
     // VolumeControl::update() is still called every loop either way, since
     // it must keep servicing the daughter board link/motor regardless.
+    // The Display Test menu action fires inside the menu's enter() above.
+    if (DisplayTestScreen::consumeStartRequest()) {
+        if (g_menuOpen) closeMenu();
+        g_volumeOverlay.dismiss();
+        g_overlayShown    = false;
+        g_displayTestOpen = true;
+        g_displayTest.onEnter();
+        Serial.println("[Diag] Display test opened");
+    }
+
     bool wantVolUp = false, wantVolDown = false;
-    if (!g_menuOpen) {
+    if (!g_menuOpen && !g_displayTestOpen) {
         uint32_t nowMsForVolume = millis();
         wantVolUp   = InputEngine::instance().isVolUpHeld()
                         || (nowMsForVolume - g_lastGainUpMs < MOTOR_COMMAND_TIMEOUT_MS);
@@ -301,7 +397,7 @@ void loop() {
     // update() also pops it for changes seen in STATUS and expires it.
     if (wantVolUp || wantVolDown) g_volumeOverlay.poke();
     g_volumeOverlay.update();
-    if (g_menuOpen) g_volumeOverlay.dismiss();
+    if (g_menuOpen || g_displayTestOpen) g_volumeOverlay.dismiss();
 
     bool wantOverlay = g_volumeOverlay.isActive();
     if (wantOverlay && !g_overlayShown) {
@@ -315,7 +411,9 @@ void loop() {
 
     uint32_t renderStartUs = micros();
 
-    if (g_menuOpen) {
+    if (g_displayTestOpen) {
+        g_displayTest.render();
+    } else if (g_menuOpen) {
         g_menuScreen.render();
     } else if (g_overlayShown) {
         g_volumeOverlay.render();
@@ -347,7 +445,7 @@ void loop() {
         float avgRenderMs  = (g_renderTimeSumUs / 1000.0f) / g_frameCount;
         float avgLoopMs    = (g_loopTimeSumUs   / 1000.0f) / g_frameCount;
 
-        if (DEBUG_PERF) {
+        if (DEBUG_PERF && !DaughterBoardLink::instance().isPassthrough()) { // quiet during a pass-through session
             Serial.print("[Perf] FPS: ");
             Serial.print(fps, 1);
             Serial.print(" | render: ");
@@ -355,9 +453,20 @@ void loop() {
             Serial.print("ms avg | loop: ");
             Serial.print(avgLoopMs, 2);
             Serial.print("ms avg | screen: ");
-            Serial.println(g_menuOpen ? g_menuScreen.name()
-                           : g_overlayShown ? g_volumeOverlay.name()
-                           : g_screens[g_currentScreenIdx]->name());
+            Serial.print(g_displayTestOpen ? g_displayTest.name()
+                         : g_menuOpen ? g_menuScreen.name()
+                         : g_overlayShown ? g_volumeOverlay.name()
+                         : g_screens[g_currentScreenIdx]->name());
+
+            // RTC time -- one short I2C read, once a second.
+            RtcDateTime now;
+            if (RtcClock::instance().read(now)) {
+                char timeBuf[20];
+                RtcClock::format(now, timeBuf, sizeof(timeBuf));
+                Serial.print(" | time: ");
+                Serial.print(timeBuf);
+            }
+            Serial.println();
         }
 
         // Heartbeat: the diagnostic LED blinks once a second while loop() runs.

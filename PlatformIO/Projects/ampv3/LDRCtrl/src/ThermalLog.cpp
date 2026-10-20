@@ -191,4 +191,21 @@ void printLog(Stream &out) {
 
 void clear() { LittleFS.remove(LOG_PATH); }
 
+bool savedBlock(float &t) {
+  Env e;
+  if (!loadState(e) || isnan(e.block)) return false;
+  t = e.block;
+  return true;
+}
+
+void blockSlopes(float k[2], float r2[2], bool usable[2]) {
+  static ThermalFit::Entry e[MAX_ENTRIES];
+  const uint8_t n = loadEntries(e, MAX_ENTRIES);
+  for (uint8_t c = 0; c < 2; c++) {
+    const ThermalFit::Slope s = ThermalFit::fit(e, n, c, 0);
+    k[c] = s.k; r2[c] = s.r2;
+    usable[c] = ThermalFit::usable(s, 0.5f);
+  }
+}
+
 } // namespace ThermalLog

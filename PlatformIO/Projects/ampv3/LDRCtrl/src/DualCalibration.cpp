@@ -1,6 +1,8 @@
 #include "DualCalibration.hpp"
 #include "ThermalLog.hpp"
 #include "RailComp.hpp"
+#include "ThermalComp.hpp"
+#include "CalProgress.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
@@ -8,6 +10,8 @@
 #include "SweepLadder.hpp"
 #include "Capabilities.hpp"
 #include <math.h>
+#include <LittleFS.h>
+#include <stdlib.h>
 
 namespace DualCalibration {
 
@@ -507,6 +511,29 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
 // ---------------------------------------------------------------------------
 // Each channel's knee shift from the last settleQuietPoint, by side (0 = L, 1 = R), in PWM
 // counts; NAN where a channel was not seeked. ThermalLog records it after a resync.
+// The L/R balance the last calibration reached at the quiet point (dB, + = R quieter),
+// kept in flash so ENV can report it after a reboot.
+float gLastMatchDb = NAN;
+bool gLastMatchLoaded = false;
+void saveLastMatch(float db) {
+  gLastMatchDb = db; gLastMatchLoaded = true;
+  File f = LittleFS.open("/lastmatch.txt", "w");
+  if (f) { f.print(db, 3); f.println(); f.close(); }
+}
+float lastQuietMatchDb() {
+  if (!gLastMatchLoaded) {
+    gLastMatchLoaded = true;
+    File f = LittleFS.open("/lastmatch.txt", "r");
+    if (f) {
+      char buf[16] = {0};
+      const size_t n = f.read((uint8_t *)buf, sizeof(buf) - 1);
+      f.close(); buf[n] = 0;
+      gLastMatchDb = (float)strtod(buf, nullptr);
+    }
+  }
+  return gLastMatchDb;
+}
+
 float gKneeShiftLR[2] = {NAN, NAN};
 
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
@@ -535,8 +562,14 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
   // series cell well over a minute on the bench). Measure the quiet point as it is in
   // listening, not seconds after a loud passage.
   out.print(F("  holding the quiet step ")); out.print(QUIET_HOLD_MS / 1000); out.println(F(" s first"));
-  BusyHook::wait(QUIET_HOLD_MS);
+  CalProgress::phase(CalProgress::Phase::HOLD);
+  for (uint32_t t = 0; t < QUIET_HOLD_MS / 1000; t++) {   // 1 s waits: PROGRESS counts it down
+    CalProgress::step((uint16_t)t, (uint16_t)(QUIET_HOLD_MS / 1000));
+    BusyHook::wait(1000);
+  }
+  CalProgress::phase(CalProgress::Phase::SEEK);
   for (uint8_t it = 0; it < MAX_PROBES; it++) {
+    CalProgress::step(it, MAX_PROBES);
     bool any = false;
     for (uint8_t c = 0; c < na; c++) any = any || active[c];
     if (!any) break;
@@ -594,6 +627,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
   if (na == 2 && got[0] > 0.0f && got[1] > 0.0f) {
     // At the quiet steps the gain goes as 1/Rs: the series errors give the balance.
     const float rMinusL = 8.6859f * (err[1] - err[0]);
+    saveLastMatch(rMinusL);
     out.print(F("  stereo match at the quiet point: R is "));
     out.print(fabsf(rMinusL), 2);
     out.println(rMinusL >= 0 ? F(" dB quieter than L") : F(" dB louder than L"));
@@ -662,7 +696,32 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
 // ---------------------------------------------------------------------------
 // The single CAL (master, console, boot). See CellCheck.hpp for the plan.
 // ---------------------------------------------------------------------------
+// The source/load model a stored solution was made with ("/model.txt": "<Rsrc> <Rload>").
+// No file = unknown (solutions made before this existed) -> treated as changed, re-solved once.
+namespace {
+bool modelMatches() {
+  File f = LittleFS.open("/model.txt", "r");
+  if (!f) return false;
+  char buf[48] = {0};
+  const size_t n = f.read((uint8_t *)buf, sizeof(buf) - 1);
+  f.close();
+  buf[n] = 0;
+  char *end;
+  const float src = (float)strtod(buf, &end);
+  const float load = (float)strtod(end, nullptr);
+  return fabsf(src - AUDIO_SOURCE_OHMS) < 0.5f && fabsf(load - AMP_INPUT_LOAD_OHMS) < 0.5f;
+}
+void saveModel() {
+  File f = LittleFS.open("/model.txt", "w");
+  if (!f) return;
+  f.print(AUDIO_SOURCE_OHMS, 1); f.print(' '); f.print(AMP_INPUT_LOAD_OHMS, 1); f.println();
+  f.close();
+}
+} // namespace
+
 CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, Stream &out, bool boot) {
+  CalProgress::begin();                 // PROGRESS: CHECK until the kind is decided
+  struct ProgGuard { ~ProgGuard() { CalProgress::end(); } } progGuard;
   BusyHook::Scope busy;
   Board::CalHold ampHold(left.board());
   LDRVolume *ch[2] = {&left, &right};
@@ -701,12 +760,22 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
       out.println(left.rAuto() ? F(" (AUTO, under this firmware's limits)") : F(" (manual R clamped into the range)"));
     }
   }
-  if (boot && cs == CellState::MATCH && policyR <= 0.0f) {
+  // Same cells, same Rtotal -- but was the stored solution made with the source/load model
+  // Config has now (AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS)? If not, re-solve from the stored
+  // measurements (a new splitter, a buffer...): no full scan needed.
+  const bool modelChanged = (cs == CellState::MATCH) && !modelMatches();
+  if (modelChanged) {
+    out.print(F("CAL: the source/load model changed since the last solve (now Rsrc "));
+    out.print(AUDIO_SOURCE_OHMS, 0); out.print(F(" ohm, Rload ")); out.print(AMP_INPUT_LOAD_OHMS, 0);
+    out.println(F(" ohm) -- re-solving"));
+  }
+  if (boot && cs == CellState::MATCH && policyR <= 0.0f && !modelChanged) {
     out.println(F("Boot: the cells match the stored calibration -- using it as saved."));
     LDRVolume::releaseToAudio(ch, 2);
     return cs;
   }
   CalAction a = CellCheck::plan(cs, req, left.rAuto() && right.rAuto());
+  if (modelChanged && a == CalAction::RESYNC) a = CalAction::RESOLVE_RESYNC;
   if (policyR > 0.0f) {
     a = CalAction::RESOLVE_RESYNC;
     const bool manual = !(left.rAuto() && right.rAuto());
@@ -718,11 +787,14 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     // A full characterization reveals RMIN/RMAX/AUTO afresh: use AUTO unless an R was asked for.
     for (uint8_t c = 0; c < 2; c++) ch[c]->setRAuto();
   }
+  CalProgress::setKind(a == CalAction::FULL ? CalProgress::Kind::FULL
+                       : a == CalAction::RESYNC ? CalProgress::Kind::RESYNC : CalProgress::Kind::RESOLVE);
   switch (a) {
     case CalAction::FULL:
       out.println(cs == CellState::NO_DATA ? F("CAL: full characterization (nothing usable stored)")
                                            : F("CAL: full characterization (the cells have CHANGED)"));
       characterizeBoth(left, right, out);
+      saveModel();
       break;
     case CalAction::RESYNC:
       out.println(F("CAL: cells match -- resync (trim + settled quiet point)"));
@@ -745,8 +817,10 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
       out.print(F("Rtotal used: ")); out.print(left.rTotalOhms(), 0);
       out.println(left.rAuto() ? F("  (AUTO)") : F("  (MANUAL)"));
       uint8_t vl = 0, vr = 0;
+      CalProgress::phase(CalProgress::Phase::SOLVE);
       solveBoth(left, right, out, vl, vr);
       touchUp(ch, 2, out, lab, CalKind::RESOLVE);
+      saveModel();
       break;
     }
   }
@@ -756,6 +830,8 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
 void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKind kind) {
   BusyHook::Scope busy;
   if (n == 0) return;
+  ThermalComp::suspend();                // measure the RAW knee shift: the learning depends on it
+  struct ThermalGuard { ~ThermalGuard() { ThermalComp::resumeIfSuspended(); } } thermalGuard;
   Board::CalHold ampHold(ch[0]->board()); // amp muted for the whole run, restored after
   // Read at idle, before the relays/PWM start working, so the number is the
   // board's resting temperature rather than the die's self-heating.
@@ -765,9 +841,11 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
 
   for (uint8_t c = 0; c < n; c++) {
     if (labels) { out.print(F("Channel ")); out.println(labels[c]); }
+    CalProgress::phase(CalProgress::Phase::TRIM, labels ? labels[c] : 0, c, n);
     ch[c]->trimLoop(out);
   }
   settleQuietPoint(ch, n, labels, out);
+  CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < n; c++) {
     CalMeta m = ch[c]->calMeta();
     m.resyncCount++;
@@ -779,6 +857,7 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   out.println(F("Trimmed calibration saved to flash."));
   RailComp::onCalibrated(false);         // keeps the reference (or sets the first one)
   ThermalLog::onCalibrated(true, gKneeShiftLR, ThermalLog::snapshot(), out);
+  ThermalComp::onCalibrated();           // refit with this resync, new reference, resume
 
   // Back to each channel's CURRENT volume while the audio is still disconnected, let the
   // cells relax, then reconnect both channels together.
@@ -790,6 +869,8 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   BusyHook::Scope busy; // a long operation: keep the links answering "busy" throughout
   RailComp::beginFullCharacterization(); // new curves: measured uncorrected, at this rail
   struct RailGuard { ~RailGuard() { RailComp::endFullCharacterization(); } } railGuard; // any exit
+  ThermalComp::suspend();
+  struct ThermalGuard { ~ThermalGuard() { ThermalComp::resumeIfSuspended(); } } thermalGuard;
   if (count == 0) return;
   Board::CalHold ampHold(channels[0]->board()); // amp muted for the whole calibration (boot one included), restored after
   LDRVolume *act[MAX_CH];
@@ -817,8 +898,10 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   Board::reportDieTemp(out, F("Die temp at start"));
   for (uint8_t c = 0; c < na; c++) act[c]->calBegin(); // energize relay, clear curves
 
+  CalProgress::phase(CalProgress::Phase::SWEEP_SERIES);
   out.println(F("--- CAL: series sweep (shunt held bright) ---"));
   sweepPhase(act, na, idx, labels, true, pts, n, timeoutMs, out);
+  CalProgress::phase(CalProgress::Phase::SWEEP_SHUNT);
   out.println(F("--- CAL: shunt sweep (series held bright) ---"));
   sweepPhase(act, na, idx, labels, false, pts, n, timeoutMs, out);
 
@@ -832,6 +915,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // works from settled measurements.
   {
     DarkProfile prof[MAX_CH];
+    CalProgress::phase(CalProgress::Phase::WALK);
     walkDarkEnd(act, na, lab, prof, out);
     for (uint8_t c = 0; c < na; c++) {
       if (!act[c]->adoptDarkProfile(prof[c])) {
@@ -892,6 +976,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   }
 
   uint8_t valid[MAX_CH] = {0, 0};
+  CalProgress::phase(CalProgress::Phase::SOLVE);
   if (na == 2) {
     solveBoth(*act[0], *act[1], out, valid[0], valid[1]);
   } else {
@@ -915,11 +1000,13 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // the trim: flash keeps the previous calibration until then.
   for (uint8_t c = 0; c < na; c++) {
     if (labels) { out.print(F("Channel ")); out.println(labels[idx[c]]); }
+    CalProgress::phase(CalProgress::Phase::TRIM, labels ? labels[idx[c]] : 0, c, na);
     act[c]->trimLoop(out);
   }
   // The quiet-end series point (shared by the quietest steps), placed with settled
   // readings -- the quick trim above leaves the deep series duties alone.
   settleQuietPoint(act, na, lab, out);
+  CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < na; c++) {
     CalMeta m = act[c]->calMeta();
     m.fullCount++;
@@ -936,6 +1023,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   }
   RailComp::onCalibrated(true);          // these curves' rail is the new reference
   ThermalLog::onCalibrated(false, nullptr, ThermalLog::snapshot(), out);
+  ThermalComp::onCalibrated();
 
   // Land on a defined step and let the cells relax from the sweep's bright
   // end WHILE the audio path is still disconnected, then reconnect.

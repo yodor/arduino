@@ -1,4 +1,8 @@
 #include "MasterLink.hpp"
+#include "CellTemps.hpp"
+#include "RailComp.hpp"
+#include "ThermalComp.hpp"
+#include "CalProgress.hpp"
 #include <string.h>
 #include <stdio.h>
 #include "Config.hpp"
@@ -134,6 +138,10 @@ void MasterLink::serviceWhileBusy() {
     line.toUpperCase();
     if (line == "STATUS") {
       reportStatus(StatusKind::CALIBRATING);
+    } else if (line == "PROGRESS") {
+      reportProgress();
+    } else if (line == "ENV") {
+      reportEnv();
     } else {
       // Everything else must wait until STATUS reads IDLE -- but say so,
       // rather than leaving the master's command timing out.
@@ -147,6 +155,48 @@ void MasterLink::replyBootHold() {
   snprintf(text, sizeof(text), "boot mute hold active, %lums remaining",
            (unsigned long)board_.bootHoldRemainingMs());
   reportStatus(StatusKind::BOOT_HOLD, text);
+}
+
+// Protocol 8. One short line each (well under 120 characters), fixed key order, so a master
+// with a small receive buffer or a fixed-format parser handles them like STATUS. Values that
+// are unknown or not applicable read "--".
+namespace {
+void kv(Print &o, const __FlashStringHelper *key, float v, uint8_t dec, bool sign = false) {
+  o.print(' '); o.print(key); o.print('=');
+  if (isnan(v)) { o.print(F("--")); return; }
+  if (sign && v >= 0) o.print('+');
+  o.print(v, dec);
+}
+} // namespace
+
+void MasterLink::reportEnv() {
+  // OK ENV BLOCK= CELLL= CELLR= RAIL= COMP= OFFL= OFFR= KL= KR= DBLOCK= MATCH=
+  float cell[2];
+  CellTemps::cached(cell);
+  const bool aL = ThermalComp::sideActive(0), aR = ThermalComp::sideActive(1);
+  stream_.print(F("OK ENV"));
+  kv(stream_, F("BLOCK"), ThermalComp::blockAverage(), 2);
+  kv(stream_, F("CELLL"), cell[0], 2);
+  kv(stream_, F("CELLR"), cell[1], 2);
+  kv(stream_, F("RAIL"), RailComp::averageVolts(), 4);
+  // COMP: ON (both sides compensated), PART (one side), LEARNING (on, fit not trusted yet), OFF
+  stream_.print(F(" COMP="));
+  stream_.print(!ThermalComp::enabled() ? F("OFF") : (aL && aR) ? F("ON") : (aL || aR) ? F("PART") : F("LEARNING"));
+  kv(stream_, F("OFFL"), aL ? ThermalComp::sideOffsetCounts(0) : NAN, 2, true);
+  kv(stream_, F("OFFR"), aR ? ThermalComp::sideOffsetCounts(1) : NAN, 2, true);
+  kv(stream_, F("KL"), ThermalComp::sideSlope(0), 2, true);
+  kv(stream_, F("KR"), ThermalComp::sideSlope(1), 2, true);
+  const float b = ThermalComp::blockAverage(), b0 = ThermalComp::blockAtCalibration();
+  kv(stream_, F("DBLOCK"), (isnan(b) || isnan(b0)) ? NAN : b - b0, 2, true);
+  kv(stream_, F("MATCH"), DualCalibration::lastQuietMatchDb(), 2, true);
+  stream_.println();
+}
+
+void MasterLink::reportProgress() {
+  // OK PROGRESS KIND= PHASE= [SIDE=] [STEP=i/n] PCT= ETA=
+  stream_.print(F("OK PROGRESS"));
+  CalProgress::report(stream_);
+  stream_.println();
 }
 
 void MasterLink::reportStatus(StatusKind kind, const char *text) {
@@ -290,6 +340,9 @@ void MasterLink::handleStrictLine(const String &lineIn) {
   // way as any other "busy". DEBUG is deliberately exempt (checked above,
   // already returned) -- a technician needs to be able to reach the bench
   // console at any time, hold or no hold.
+  // Read-only queries (ENV, PROGRESS) are answered even during the hold: they change nothing.
+  if (upper == "ENV") { reportEnv(); return; }
+  if (upper == "PROGRESS") { reportProgress(); return; }
   if (board_.bootHoldRemainingMs() > 0) {
     replyBootHold();
     return;

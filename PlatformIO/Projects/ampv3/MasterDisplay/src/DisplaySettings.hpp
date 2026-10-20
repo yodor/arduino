@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "ScreenRegistry.hpp"
 
 // Whether screens display left/right channels separately or combine them
 // into a single summed trace/bar-set.
@@ -32,7 +33,9 @@ public:
         m_channelMode = (m_channelMode == ChannelMode::STEREO) ? ChannelMode::MONO : ChannelMode::STEREO;
     }
 
-    // Index into main.cpp's g_screens[] array to boot into.
+    // Index into main.cpp's g_screens[] array to boot into -- the screen last
+    // shown (main.cpp updates it on every screen change and saves it after a
+    // few seconds); a fresh unit starts on the Clock (kDefaultScreenIndex).
     uint8_t getStartingScreenIndex() const { return m_startingScreenIndex; }
     void setStartingScreenIndex(uint8_t idx) { m_startingScreenIndex = idx; }
 
@@ -80,12 +83,25 @@ public:
     bool getPeaksEnabled() const { return m_peaksEnabled; }
     void setPeaksEnabled(bool enabled) { m_peaksEnabled = enabled; }
 
+    // Clock screen (Settings -> Clock). Read by ClockScreen when it lays
+    // itself out in onEnter() -- the menu always re-enters the active screen
+    // on close, so changes apply as soon as the menu closes.
+    bool getClockShowDate() const    { return m_clockShowDate; }
+    void setClockShowDate(bool on)   { m_clockShowDate = on; }
+    bool getClockShowSeconds() const { return m_clockShowSeconds; }
+    void setClockShowSeconds(bool on){ m_clockShowSeconds = on; }
+    bool getClock24h() const         { return m_clock24h; }
+    void setClock24h(bool on)        { m_clock24h = on; }
+
 private:
     DisplaySettings() = default;
     ChannelMode  m_channelMode         = ChannelMode::STEREO;
-    uint8_t      m_startingScreenIndex = 0;
+    uint8_t      m_startingScreenIndex = kDefaultScreenIndex;
     StereoLayout m_stereoLayout        = StereoLayout::SIDE_BY_SIDE;
     bool         m_mirrorLeftBars      = true; // matches the old MIRROR_LEFT_CHANNEL_BARS default
     uint8_t      m_brightnessPercent   = 100;  // matches the original always-on digitalWrite(HIGH) behavior
     bool         m_peaksEnabled        = true; // matches current always-on behavior
+    bool         m_clockShowDate       = true;
+    bool         m_clockShowSeconds    = false;
+    bool         m_clock24h            = true;
 };

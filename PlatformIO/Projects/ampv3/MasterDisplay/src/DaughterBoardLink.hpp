@@ -64,6 +64,31 @@ struct DaughterStatus {
 // One command in flight at a time; update() must run every loop() -- it
 // reads replies, times out stalled commands and polls STATUS on its own
 // (DAUGHTER_STATUS_POLL_*), so nothing else has to.
+// Revision 8 ENV reply -- temperatures, rail, compensation. Kept as the
+// daughter's own text ("--" when not applicable): it is only displayed.
+struct DaughterEnv {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    char block[8] = "--", cellL[8] = "--", cellR[8] = "--", rail[8] = "--", comp[10] = "--";
+    char offL[8] = "--", offR[8] = "--", kL[8] = "--", kR[8] = "--", dBlock[8] = "--", match[8] = "--";
+};
+
+// Revision 8 PROGRESS reply -- what a running calibration is doing.
+struct DaughterProgress {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    char     kind[10]  = "";   // FULL | RESYNC | RESOLVE | NONE
+    char     phase[14] = "";   // IDLE CHECK SWEEP_SERIES SWEEP_SHUNT WALK SOLVE TRIM HOLD SEEK SAVE DONE
+    char     side[3]   = "";   // L / R, only for per-channel phases
+    char     step[12]  = "";   // "i/n", only where the phase has a count
+    int16_t  pct       = -1;   // 0..100, -1 unknown
+    int32_t  etaS      = -1;   // seconds left, -1 unknown
+};
+
+// Outcome of the last CAL command (the reply to CAL itself; completion is
+// learned from STATUS afterwards).
+enum class DaughterCalStart : uint8_t { NONE, PENDING, STARTED, REJECTED };
+
 class DaughterBoardLink {
 public:
     static DaughterBoardLink& instance();
@@ -81,8 +106,16 @@ public:
     bool sendVolSet(int16_t step);   // 0-based; rejected locally unless a fresh status says it's within VOLMIN..VOLMAX
     bool sendAmpMuteOn();
     bool sendAmpMuteOff();
-    bool sendCalibrate();            // plain "CAL" -- the daughter decides how much work it needs
+    bool sendCalibrate();                    // plain "CAL" -- the daughter decides how much work it needs (R unchanged)
+    bool sendCalibrateR(uint32_t ohms);      // "CAL R=<ohms>" -- must lie within RMIN..RMAX
+    bool sendCalibrateAuto();                // "CAL R=AUTO"
     bool sendStatus();
+    bool sendEnv();                          // rev 8, read-only, answered even while busy
+    bool sendProgress();                     // rev 8, read-only, answered even while busy
+
+    // ENV is polled only while someone wants it (the calibration pages ask
+    // on every refresh); at most every DAUGHTER_ENV_POLL_MS.
+    void requestEnv() { m_envWantedUntilMs = millis() + 3000; }
 
     // Ask for a STATUS as soon as the link is free (update() sends it).
     void requestStatusRefresh() { m_statusRefreshRequested = true; }
@@ -93,19 +126,41 @@ public:
     uint32_t statusCount() const { return m_statusCount; } // bumps on every parsed status line -- lets consumers spot fresh data cheaply
     bool isStatusFresh() const;                            // valid and younger than DAUGHTER_STATUS_STALE_MS
 
+    const DaughterEnv&      env()      const { return m_env; }
+    const DaughterProgress& progress() const { return m_progress; }
+
+    // The last CAL command: started, or rejected with getCalStartError().
+    DaughterCalStart calStart() const        { return m_calStart; }
+    const char*      getCalStartError() const { return m_calStartError; }
+
     DaughterCmdStatus getLastStatus() const { return m_status; }
     const char* getLastError() const { return m_lastError; } // valid when getLastStatus()==ERROR
+
+    // --- Console pass-through (driven by MasterConsole) ---
+    // While active, this class stops using the UART entirely -- no STATUS
+    // polls, every send*() refuses, update() reads nothing -- and the bytes
+    // are shuttled raw between the USB console and the daughter instead.
+    // Entering sends "DEBUG" (the daughter's bench console); leaving sends
+    // "EXIT" so the daughter is always back on the strict protocol, then
+    // swallows its reply before normal polling resumes.
+    void enterPassthrough();
+    void exitPassthrough();
+    bool isPassthrough() const { return m_passthrough; }
+    void passthroughWrite(char c);          // one byte to the daughter
+    void passthroughPump(Print& out);       // everything the daughter sent, to `out`
 
 private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS
     };
 
     bool sendLine(const char* line, PendingCmd cmd);
     void handleResponseLine(const char* line);
     bool parseStatusLine(const char* line);
+    bool parseEnvLine(const char* line);
+    bool parseProgressLine(const char* line);
     void setError(const char* text);
     uint32_t currentPollIntervalMs() const;
 
@@ -132,4 +187,21 @@ private:
     uint32_t       m_lastStatusSentMs = 0;
     bool           m_linkUp = false;                // for logging link up/lost transitions only
     bool           m_protoWarned = false;
+
+    DaughterEnv      m_env;
+    DaughterProgress m_progress;
+    uint32_t         m_lastEnvSentMs      = 0;
+    uint32_t         m_envWantedUntilMs   = 0;
+    uint32_t         m_lastProgressSentMs = 0;
+    bool             m_wasCalibrating     = false;
+    DaughterCalStart m_calStart = DaughterCalStart::NONE;
+    char             m_calStartError[128] = {};
+
+    bool     m_passthrough   = false;
+    uint32_t m_discardUntilMs = 0;  // incoming bytes are thrown away until then (see drainAfterExit())
+    void drainAfterExit(uint32_t ms);
+
+    // How long to swallow the daughter's reply to the EXIT sent when leaving
+    // pass-through (or at boot) -- the reply is a single short line.
+    static constexpr uint32_t kExitDrainMs = 300;
 };

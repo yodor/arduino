@@ -3,6 +3,7 @@
 #include "CellTemps.hpp"
 #include "ThermalLog.hpp"
 #include "RailComp.hpp"
+#include "ThermalComp.hpp"
 #include "BoardSensors.hpp"
 #include "Config.hpp"
 #include "DualCalibration.hpp"
@@ -315,6 +316,7 @@ void SerialConsole::printHelp() {
   stream_.println(F("  TEMP                    all temperatures: die, driver block (NTC), rail, both cells"));
   stream_.println(F("  TEMP ID L|R             assign the cell sensors: warm that board's sensor by hand"));
   stream_.println(F("  LEARN [CLEAR]           thermal learning log: knee shift per resync vs temperature changes"));
+  stream_.println(F("  COMP [ON|OFF]           thermal compensation from the learned fit (A/B; boots ON)"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
   stream_.println(F("  DIAG ALL                + cell check, verify up/down, dark-end walk, creep (~8-9 min)"));
@@ -413,6 +415,7 @@ void SerialConsole::diagSnapshot() {
   Board::reportDieTemp(stream_, F("Die temp"));
   ThermalLog::printSince(stream_);
   RailComp::report(stream_);
+  ThermalComp::report(stream_);
   stream_.println(F("--- STATE ---"));
   printState();
   stream_.println(F("--- STORED CALIBRATION ---"));
@@ -755,6 +758,11 @@ void SerialConsole::handleLine(String line) {
     printVolumeDetail(left_, "L");
     printVolumeDetail(right_, "R");
 
+  } else if (cmd == "COMP") {
+    if (n >= 2 && tok[1].equalsIgnoreCase("OFF")) ThermalComp::setEnabled(false);
+    else if (n >= 2 && tok[1].equalsIgnoreCase("ON")) ThermalComp::setEnabled(true);
+    ThermalComp::report(stream_);
+
   } else if (cmd == "LEARN") {
     if (n >= 2 && tok[1].equalsIgnoreCase("CLEAR")) { ThermalLog::clear(); stream_.println(F("OK thermal learning log cleared")); return; }
     ThermalLog::printLog(stream_);
@@ -774,6 +782,7 @@ void SerialConsole::handleLine(String line) {
     CellTemps::printSensors(stream_);
     ThermalLog::printSince(stream_);
     RailComp::report(stream_);
+    ThermalComp::report(stream_);
     stream_.print(F("  uptime         ")); stream_.print(Board::uptimeSeconds()); stream_.println(F(" s"));
 
   } else if (cmd == "MUTE" || cmd == "AMP_MUTE" || cmd == "RELAY") {

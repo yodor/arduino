@@ -48,6 +48,7 @@ public:
 
     // Called by every menu setter that changes a persisted setting.
     void markDirty() { m_dirty = true; }
+    bool isDirty() const { return m_dirty; }
 
     // Called when the menu closes (main.cpp's closeMenu()) -- commits to
     // flash via the interlocked raw-flash-write path if anything changed

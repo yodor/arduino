@@ -1,4 +1,5 @@
 #include "LDRVolume.hpp"
+#include "CalProgress.hpp"
 #include "DualCalibration.hpp"
 #include "BusyHook.hpp"
 #include "Board.hpp"
@@ -102,6 +103,7 @@ void LDRVolume::trimLoop(Stream &out) {
   // solved; the quietest one is then placed by settleQuietPoint().
   const float settledFrom = profile_.okCount() ? profile_.shallowestOkOhms() : 1e30f;
   for (uint8_t i = 0; i < n; i++) {
+    CalProgress::step(i, n);
     const VolumeLut::Entry &e = lut().step(i);
     if (!e.valid) continue;
     if (lut().isTransparent(i)) {

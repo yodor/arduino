@@ -49,11 +49,43 @@ void SpectrumScreen::render() {
     if (!gfx) return;
 
     size_t totalBars = AudioEngine::instance().getSpectrumBandCount();
-    if (totalBars == 0 || totalBars > MAX_BAND_COUNT) return; // defensive -- shouldn't happen, but never index past our arrays
+    if (totalBars == 0 || totalBars > MAX_BAND_COUNT) return; // defensive -- never index past our arrays
 
     float leftBars[MAX_BAND_COUNT];
     float rightBars[MAX_BAND_COUNT];
     AudioEngine::instance().getSpectrumBars(leftBars, rightBars);
+
+    const DisplaySettings& ds = DisplaySettings::instance();
+    bool stereo     = ds.getChannelMode() == ChannelMode::STEREO;
+    bool sideBySide = ds.getStereoLayout() == StereoLayout::SIDE_BY_SIDE;
+    bool mirrorLeft = ds.getMirrorLeftBars();
+    // Full mode's whole point is maximum density -- zero gap between bars,
+    // unlike Doubling/Fixed Bands which keep a visible 1-2px separation.
+    bool isFullMode = (AudioEngine::instance().getSpectrumBandLayoutMode() == SpectrumPipeline::BandLayoutMode::FULL);
+
+    // Geometry changed since the last frame (band count landing from core1
+    // after a Band Layout change, or any layout setting)? Start clean: the
+    // old bars sit at positions/widths the new layout never touches, so
+    // they'd stay on the panel forever. Peaks are stored in pixels of the
+    // layout they were measured in (side-by-side is twice as tall as
+    // top-bottom), so they restart too; the smoothed levels are 0..1 and
+    // carry over.
+    LayoutKey key;
+    key.bands    = static_cast<uint16_t>(totalBars);
+    key.channel  = static_cast<uint8_t>(ds.getChannelMode());
+    key.stereo   = static_cast<uint8_t>(ds.getStereoLayout());
+    key.mirror   = mirrorLeft;
+    key.fullMode = isFullMode;
+    if (key != m_layout) {
+        m_layout = key;
+        Renderer::instance().clear();
+        resetPrevHeights(m_left);
+        resetPrevHeights(m_right);
+        resetPrevHeights(m_mono);
+        for (size_t i = 0; i < MAX_BAND_COUNT; ++i) {
+            m_left[i].peak = m_right[i].peak = m_mono[i].peak = 0.0f;
+        }
+    }
 
     uint32_t now = millis();
 
@@ -62,71 +94,57 @@ void SpectrumScreen::render() {
     static float    s_debugMaxMag    = 0.0f;
     static size_t   s_debugMaxBarIdx = 0;
     static bool     s_debugMaxIsLeft = true;
-
     for (size_t i = 0; i < totalBars; ++i) {
-        if (leftBars[i] > s_debugMaxMag) {
-            s_debugMaxMag = leftBars[i]; s_debugMaxBarIdx = i; s_debugMaxIsLeft = true;
-        }
-        if (rightBars[i] > s_debugMaxMag) {
-            s_debugMaxMag = rightBars[i]; s_debugMaxBarIdx = i; s_debugMaxIsLeft = false;
-        }
+        if (leftBars[i] > s_debugMaxMag)  { s_debugMaxMag = leftBars[i];  s_debugMaxBarIdx = i; s_debugMaxIsLeft = true; }
+        if (rightBars[i] > s_debugMaxMag) { s_debugMaxMag = rightBars[i]; s_debugMaxBarIdx = i; s_debugMaxIsLeft = false; }
     }
 
-    // Full mode's whole point is maximum density -- zero gap between
-    // bars, unlike Doubling/Fixed Bands which keep a visible 1-2px
-    // separation for readability at their much lower band counts.
-    bool isFullMode = (AudioEngine::instance().getSpectrumBandLayoutMode() == SpectrumPipeline::BandLayoutMode::FULL);
+    // Geometry for this frame.
+    uint16_t gap, barWidth, maxBarHeight;
+    size_t   columns; // physical columns drawn: 2 per band in stereo, 1 in mono
+    if (stereo && sideBySide) {
+        gap          = isFullMode ? 0 : 2;
+        barWidth     = computeBarWidth(SCREEN_WIDTH, static_cast<uint16_t>(totalBars * 2), gap);
+        maxBarHeight = SCREEN_HEIGHT - 10;
+        columns      = totalBars * 2;
+    } else if (stereo) { // top-bottom
+        gap          = isFullMode ? 0 : 1;
+        barWidth     = computeBarWidth(SCREEN_WIDTH, static_cast<uint16_t>(totalBars), gap);
+        maxBarHeight = SCREEN_HEIGHT / 2 - 5;
+        columns      = totalBars * 2;
+    } else { // mono
+        gap          = isFullMode ? 0 : 1;
+        barWidth     = computeBarWidth(SCREEN_WIDTH, static_cast<uint16_t>(totalBars), gap);
+        maxBarHeight = SCREEN_HEIGHT - 10;
+        columns      = totalBars;
+    }
 
-    if (DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO) {
-        if (DisplaySettings::instance().getStereoLayout() == StereoLayout::SIDE_BY_SIDE) {
-            // Original BarSpectrumScreen layout: L and R groups side by
-            // side across the width, both growing up from the bottom.
-            uint16_t gap          = isFullMode ? 0 : 2;
-            uint16_t numBarsTotal = static_cast<uint16_t>(totalBars) * 2;
-            uint16_t barWidth     = computeBarWidth(SCREEN_WIDTH, numBarsTotal, gap);
-            uint16_t maxBarHeight = SCREEN_HEIGHT - 10;
-            constexpr uint16_t baseline = SCREEN_HEIGHT;
 
-            bool mirrorLeft = DisplaySettings::instance().getMirrorLeftBars();
-
-            for (size_t i = 0; i < totalBars; ++i) {
-                size_t leftDrawIndex = mirrorLeft ? (totalBars - 1 - i) : i;
-
-                uint16_t xL = gap + static_cast<uint16_t>(leftDrawIndex) * (barWidth + gap);
-                uint16_t xR = gap + static_cast<uint16_t>(i + totalBars) * (barWidth + gap);
-
-                processAndDrawBar(m_left[i],  i, totalBars, AudioLevel::dbNormalize(leftBars[i]),  xL, barWidth, maxBarHeight, baseline, true, now);
-                processAndDrawBar(m_right[i], i, totalBars, AudioLevel::dbNormalize(rightBars[i]), xR, barWidth, maxBarHeight, baseline, true, now);
-            }
-        } else { // TOP_BOTTOM
-            // Original OctaveScreen layout: L grows up, R grows down, both
-            // meeting at a shared centerline.
-            uint16_t gap      = isFullMode ? 0 : 1;
-            uint16_t barWidth = computeBarWidth(SCREEN_WIDTH, static_cast<uint16_t>(totalBars), gap);
-            constexpr uint16_t baseline    = SCREEN_HEIGHT / 2;
-            constexpr uint16_t margin      = 5;
-            constexpr uint16_t maxBarHeight = baseline - margin;
-
-            for (size_t i = 0; i < totalBars; ++i) {
-                uint16_t x = gap + static_cast<uint16_t>(i) * (barWidth + gap);
-
-                processAndDrawBar(m_left[i],  i, totalBars, AudioLevel::dbNormalize(leftBars[i]),  x, barWidth, maxBarHeight, baseline, true,  now);
-                processAndDrawBar(m_right[i], i, totalBars, AudioLevel::dbNormalize(rightBars[i]), x, barWidth, maxBarHeight, baseline, false, now);
-            }
-        }
-    } else { // MONO -- identical regardless of Stereo Layout setting, matching how both original screens' mono fallback was already the same shape
-        uint16_t gap      = isFullMode ? 0 : 1;
-        uint16_t barWidth = computeBarWidth(SCREEN_WIDTH, static_cast<uint16_t>(totalBars), gap);
-        uint16_t maxBarHeight = SCREEN_HEIGHT - 10;
+    if (stereo && sideBySide) {
+        // L and R groups side by side, both growing up from the bottom.
         constexpr uint16_t baseline = SCREEN_HEIGHT;
-
         for (size_t i = 0; i < totalBars; ++i) {
-            // Average, not sum -- same mono convention as every other
-            // screen: a mono-duplicated stereo source reads at the same
-            // level as either channel alone, not double.
+            size_t leftDrawIndex = mirrorLeft ? (totalBars - 1 - i) : i;
+            uint16_t xL = gap + static_cast<uint16_t>(leftDrawIndex) * (barWidth + gap);
+            uint16_t xR = gap + static_cast<uint16_t>(i + totalBars) * (barWidth + gap);
+            processAndDrawBar(m_left[i],  i, totalBars, AudioLevel::dbNormalize(leftBars[i]),  xL, barWidth, maxBarHeight, baseline, true, now);
+            processAndDrawBar(m_right[i], i, totalBars, AudioLevel::dbNormalize(rightBars[i]), xR, barWidth, maxBarHeight, baseline, true, now);
+        }
+    } else if (stereo) {
+        // L grows up, R grows down, meeting at the centerline.
+        constexpr uint16_t baseline = SCREEN_HEIGHT / 2;
+        for (size_t i = 0; i < totalBars; ++i) {
+            uint16_t x = gap + static_cast<uint16_t>(i) * (barWidth + gap);
+            processAndDrawBar(m_left[i],  i, totalBars, AudioLevel::dbNormalize(leftBars[i]),  x, barWidth, maxBarHeight, baseline, true, now);
+            processAndDrawBar(m_right[i], i, totalBars, AudioLevel::dbNormalize(rightBars[i]), x, barWidth, maxBarHeight, baseline, false, now);
+        }
+    } else {
+        // Mono: same shape regardless of the Stereo Layout setting. Average,
+        // not sum -- a mono-duplicated source reads like either channel alone.
+        constexpr uint16_t baseline = SCREEN_HEIGHT;
+        for (size_t i = 0; i < totalBars; ++i) {
             float monoMag = (leftBars[i] + rightBars[i]) * 0.5f;
             uint16_t x = gap + static_cast<uint16_t>(i) * (barWidth + gap);
-
             processAndDrawBar(m_mono[i], i, totalBars, AudioLevel::dbNormalize(monoMag), x, barWidth, maxBarHeight, baseline, true, now);
         }
     }
@@ -134,9 +152,7 @@ void SpectrumScreen::render() {
     uint32_t nowMs = millis();
     if (DEBUG_AUDIO_DIAGNOSTICS && nowMs - s_lastDebugMs >= 1000) {
         s_lastDebugMs = nowMs;
-
         float db = (s_debugMaxMag > 0.0001f) ? 20.0f * log10f(s_debugMaxMag) : -100.0f;
-
         Serial.print("[Spectrum] loudest bin -> band ");
         Serial.print(static_cast<int>(s_debugMaxBarIdx));
         Serial.print(s_debugMaxIsLeft ? " (L)" : " (R)");
@@ -144,11 +160,20 @@ void SpectrumScreen::render() {
         Serial.print(s_debugMaxMag, 4);
         Serial.print(" | dBFS=");
         Serial.println(db, 2);
-
-        s_debugMaxMag = 0.0f; // reset for the next reporting window
+        s_debugMaxMag = 0.0f;
     }
 }
 
+// Coordinates: a bar of height h covers height indices 0..h-1 -- rows
+// baseline-h .. baseline-1 when growing up, baseline .. baseline+h-1 when
+// growing down. The peak marker sits at height index peakH, i.e. directly
+// BEYOND the bar's last row (never on it) -- the same convention the
+// Digital VU meter uses. Since the peak is never below the bar (BarPhysics),
+// the bar's growth fill and shrink erase can then never touch a marker that
+// didn't move, which is what lets the marker be redrawn only when it moves.
+// (It used to sit ON the bar's top row when growing up: whenever the bar
+// rose to exactly the held peak, or fell away from it, the bar update
+// painted over or erased the marker and nothing redrew it.)
 void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t totalBars, float val, uint16_t x, uint16_t barWidth, uint16_t maxBarHeight, uint16_t baseline, bool growUp, uint32_t now) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     if (!gfx) return;
@@ -157,6 +182,7 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
 
     uint16_t h     = static_cast<uint16_t>(state.decay * maxBarHeight);
     uint16_t peakH = static_cast<uint16_t>(state.peak);
+    if (peakH > maxBarHeight) peakH = maxBarHeight; // defensive: stay inside the column
 
     if (growUp) {
         updateBarColumnUp(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
@@ -164,23 +190,19 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
         updateBarColumnDown(x, barWidth, state.prevUnits, h, maxBarHeight, baseline, i, totalBars);
     }
 
-    // Peak marker: touched only when it actually moved. While held it is
-    // left alone (it used to be erased and redrawn in place every frame --
-    // twice the bus traffic for nothing, and a visible flicker). The bar
-    // update above never paints over an unmoved marker: the peak is never
-    // below the bar (BarPhysics invariant), so neither the bar's growth fill
-    // nor its shrink erase reaches the marker's row unless the peak moved.
+    auto markerRow = [&](uint16_t index) -> int16_t {
+        return growUp ? static_cast<int16_t>(baseline - index - 1) : static_cast<int16_t>(baseline + index);
+    };
+
     if (DisplaySettings::instance().getPeaksEnabled() && peakH != state.prevPeakUnits) {
         uint16_t oldPeak = state.prevPeakUnits;
-        // Erase the old marker only if it's still above the bar -- otherwise
-        // the bar's own growth has already painted over it.
-        if (oldPeak > h) {
-            int16_t yOld = growUp ? (baseline - oldPeak) : (baseline + oldPeak);
-            gfx->fillRect(x, yOld, barWidth, 1, COLOR_BLACK);
+        // Erase the old marker unless the bar has grown over it (then its
+        // fill already painted that row).
+        if (oldPeak >= h && oldPeak > 0) {
+            gfx->fillRect(x, markerRow(oldPeak), barWidth, 1, COLOR_BLACK);
         }
         if (peakH > 0) {
-            int16_t yNew = growUp ? (baseline - peakH) : (baseline + peakH);
-            gfx->fillRect(x, yNew, barWidth, 1, COLOR_WHITE);
+            gfx->fillRect(x, markerRow(peakH), barWidth, 1, COLOR_WHITE);
         }
     }
 
@@ -189,6 +211,7 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
     // the menu, and closing the menu runs onEnter(), which clears the panel
     // and resets prevPeakUnits -- so the marker is simply redrawn fresh.
     state.prevPeakUnits = peakH;
+
 }
 
 void SpectrumScreen::fillGradientRangeUp(uint16_t x, uint16_t barWidth, uint16_t loHeight, uint16_t hiHeight, uint16_t maxBarHeight, uint16_t baseline, size_t barIndex, size_t totalBars) {

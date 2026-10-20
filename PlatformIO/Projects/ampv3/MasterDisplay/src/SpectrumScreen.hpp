@@ -48,7 +48,25 @@ private:
     // above for how each layout/channel-mode combination maps onto this.
     void processAndDrawBar(BarPhysicsState& state, size_t i, size_t totalBars, float val, uint16_t x, uint16_t barWidth, uint16_t maxBarHeight, uint16_t baseline, bool growUp, uint32_t now);
 
+
     static void resetPrevHeights(BarPhysicsState* state);
+
+    // Everything that decides WHERE bars are drawn. The band count follows
+    // the FFT Band Layout setting, but core1 applies that a frame or two
+    // after the menu closes -- so the geometry can change without onEnter().
+    // Any change wipes the panel and the per-bar tracking (see render()).
+    struct LayoutKey {
+        uint16_t bands      = 0;
+        uint8_t  channel    = 0xFF;
+        uint8_t  stereo     = 0xFF;
+        bool     mirror     = false;
+        bool     fullMode   = false;
+        bool operator!=(const LayoutKey& o) const {
+            return bands != o.bands || channel != o.channel || stereo != o.stereo ||
+                   mirror != o.mirror || fullMode != o.fullMode;
+        }
+    };
+    LayoutKey m_layout;
 
     BarPhysicsState m_left[MAX_BAND_COUNT];
     BarPhysicsState m_right[MAX_BAND_COUNT];

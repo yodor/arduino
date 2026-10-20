@@ -77,4 +77,7 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
 // Place the quiet-end series point with settled readings (after a solve/trim).
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out);
 
+// The L/R balance reached at the quiet point by the last calibration (dB, + = R quieter;
+// NAN if never measured). For the master's ENV query.
+float lastQuietMatchDb();
 } // namespace DualCalibration

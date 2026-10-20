@@ -19,7 +19,9 @@ public:
     void runCore1();
     void getSpectrumBars(float* leftBars, float* rightBars) const;
     size_t getSpectrumBandCount() const;
-    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const;
+    // trigger: start at a rising zero crossing (oscilloscope trigger) -- see
+    // WaveformPipeline::getWaveform(). The meters use the plain full window.
+    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
 
     // Menu-facing forwarders -- set from core0, applied on core1 inside
     // SpectrumPipeline::pushChunk() (see that class's comment for why this
@@ -41,7 +43,11 @@ private:
     // continuously (see runCore1()): the ring hardware wraps by masking
     // low address bits, which only works correctly if the buffer actually
     // starts on that same boundary.
-    alignas(CAPTURE_CHUNK_SAMPLES * sizeof(uint16_t)) uint16_t m_audioBuffer[2][CAPTURE_CHUNK_SAMPLES] = {};
+    // One continuous capture ring, CAPTURE_RING_CHUNKS chunks long, which the
+    // DMA fills nonstop (see runCore1()). Aligned to its own size -- required
+    // by the DMA ring-wrap addressing, which wraps by masking address bits.
+    static constexpr size_t kRingSamples = static_cast<size_t>(CAPTURE_CHUNK_SAMPLES) * CAPTURE_RING_CHUNKS;
+    alignas(kRingSamples * sizeof(uint16_t)) uint16_t m_ring[kRingSamples] = {};
 
     SpectrumPipeline m_spectrum;
     WaveformPipeline m_waveform;

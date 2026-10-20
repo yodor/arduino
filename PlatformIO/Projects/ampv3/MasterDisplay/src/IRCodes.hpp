@@ -10,6 +10,7 @@ constexpr uint16_t IR_CODE_GAIN_DOWN           = 0x1A; // arrow down icon
 constexpr uint16_t IR_CODE_MENU_TOGGLE         = 0x11; // home icon
 constexpr uint16_t IR_CODE_MUTE_TOGGLE         = 0x41; // mute icon
 constexpr uint16_t IR_CODE_CHANNEL_MODE_TOGGLE = 0x4C; // options icon
+constexpr uint16_t IR_CODE_POWER_TOGGLE        = 0x40; // power icon
 // 0x44 (green KD icon top right) is free -- previously IR_CODE_COLOR_TOGGLE
 // (bin-mapping mode toggle), removed along with that feature.
 
@@ -42,4 +43,5 @@ constexpr IrMapping kIrMappings[] = {
     { IR_CODE_MENU_TOGGLE,         UIEvent::MENU_TOGGLE,         IrRepeatPolicy::ONE_SHOT   },
     { IR_CODE_MUTE_TOGGLE,         UIEvent::MUTE_TOGGLE,         IrRepeatPolicy::ONE_SHOT   },
     { IR_CODE_CHANNEL_MODE_TOGGLE, UIEvent::CHANNEL_MODE_TOGGLE, IrRepeatPolicy::ONE_SHOT   },
+    { IR_CODE_POWER_TOGGLE,        UIEvent::POWER_TOGGLE,        IrRepeatPolicy::ONE_SHOT   },
 };

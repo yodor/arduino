@@ -13,5 +13,9 @@ bool assigned();                    // both L and R known
 // NAN where a side is unassigned or did not answer. Returns how many sides were read.
 uint8_t read(float out[2]);
 void printSensors(Stream &s);       // every sensor found: id, side, temperature
+// Background reading for the master's ENV: from the idle loop, starts a conversion every 30 s
+// and collects it ~1 s later (no 750 ms block). cached() returns the latest L/R values.
+void tick();
+bool cached(float out[2]);
 bool identify(Stream &s, uint8_t side); // 0 = L, 1 = R; the other sensor gets the other side
 } // namespace CellTemps

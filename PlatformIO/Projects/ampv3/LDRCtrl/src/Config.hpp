@@ -70,7 +70,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-15l (3.3 V rail compensation via the TL431)"
+#define FW_VERSION "2026-10-17a (protocol 8: ENV + PROGRESS for the master display)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -90,8 +90,24 @@ constexpr uint16_t CAL_BRIGHT_HOLD_DUTY = (uint16_t)(((uint32_t)LED_PWM_WRAP * 8
 // up to ~7 dB quieter than labelled. Set AMP_INPUT_LOAD_OHMS to 0 to solve
 // unloaded again (and bump CAL_ALGO_REV: the meaning of saved LUTs changes).
 // AUDIO_SOURCE_OHMS is approximate; its effect is <= ~0.4 dB, at the loud end only.
+
+// Set it to about 300 Ω. The difference from 400 Ω is far too small to matter, though.
+// Where 300 Ω comes from. The dual-rail board's output impedance has three parts in series:
+// The JFET's own 1/gm. At your roughly 0.6 mA per follower, that's somewhere around 130–270 Ω. The exact figure depends on how closely your low-pinch-off parts follow the square law.
+// Ra = 68 Ω.
+// The output resistor = 24 Ω.
+
+// ... and the dual-rail JFET splitter in front has ~300R output impedance
+// (1/gm ~130-270R at ~0.6 mA + Ra 68R + Rout 24R). Measured: ___ R.
+//if you want the actual number, measure it:
+// - Feed a 1 kHz sine of about 0.5–1 V RMS into the splitter input.
+// - Measure the AC voltage at J8 with nothing connected. That's V_open.
+// - Put a 1k resistor from J8 pin 1 to GND, and measure again. That's V_load.
+// - Calculate Z_out = 1k × (V_open / V_load − 1).
+// Expect roughly 200–350 Ω. Enter whatever you measure, and the setting is exact for that board.
 constexpr float AMP_INPUT_LOAD_OHMS = 10000.0f;
-constexpr float AUDIO_SOURCE_OHMS   = 400.0f;
+constexpr float AUDIO_SOURCE_OHMS   = 300.0f;
+
 
 // ---------------------------------------------------------------------------
 // What a saved calibration is stamped with (see CalStamp.hpp). A file whose
@@ -257,4 +273,4 @@ constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 // keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 7;
+constexpr uint8_t PROTO_VERSION = 8;  // 8: ENV and PROGRESS queries

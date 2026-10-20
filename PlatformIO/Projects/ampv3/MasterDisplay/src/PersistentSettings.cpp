@@ -13,7 +13,7 @@
 namespace {
 
 constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 4;          // bump whenever PersistentData's layout changes incompatibly -- 4: added peaksEnabled, peakDecaySpeed
+constexpr uint8_t  kVersion = 5;          // bump whenever PersistentData's layout changes -- 5: added the clock options (4 is still read, see loadAndApply())
 
 // Last flash sector -- same convention the Arduino-Pico EEPROM library
 // itself uses, chosen so this doesn't collide with program flash or a
@@ -23,6 +23,24 @@ constexpr uint8_t  kVersion = 4;          // bump whenever PersistentData's layo
 constexpr uint32_t kFlashOffset = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;
 
 #pragma pack(push, 1)
+// Version 4 layout, kept so an older save is migrated instead of discarded.
+struct PersistentDataV4 {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  channelMode;
+    uint8_t  startingScreenIndex;
+    uint8_t  stereoLayout;
+    uint8_t  mirrorLeftBars;
+    uint8_t  colorPreset;
+    uint8_t  bandLayoutMode;
+    uint8_t  energyMode;
+    uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
+    uint8_t  peaksEnabled;
+    uint8_t  peakDecaySpeed;
+    uint8_t  checksum;
+};
+
 struct PersistentData {
     uint32_t magic;
     uint8_t  version;
@@ -37,19 +55,42 @@ struct PersistentData {
     uint8_t  brightnessPercent;
     uint8_t  peaksEnabled;
     uint8_t  peakDecaySpeed;
+    uint8_t  clockShowDate;
+    uint8_t  clockShowSeconds;
+    uint8_t  clock24h;
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
 
-uint8_t computeChecksum(const PersistentData& d) {
+// Additive checksum over every byte but the last (the checksum field itself).
+template <typename T>
+uint8_t computeChecksum(const T& d) {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&d);
     uint8_t sum = 0;
-    for (size_t i = 0; i < sizeof(PersistentData) - 1; ++i) sum += bytes[i]; // -1: exclude the checksum field itself
+    for (size_t i = 0; i < sizeof(T) - 1; ++i) sum += bytes[i];
     return sum;
 }
 
-const PersistentData* storedData() {
-    return reinterpret_cast<const PersistentData*>(XIP_BASE + kFlashOffset);
+template <typename T>
+const T* storedAs() {
+    return reinterpret_cast<const T*>(XIP_BASE + kFlashOffset);
+}
+
+// Fields every layout version shares (v4 and v5 agree on all of these).
+template <typename T>
+void applyCommon(const T* stored) {
+    DisplaySettings::instance().setChannelMode(static_cast<ChannelMode>(stored->channelMode));
+    DisplaySettings::instance().setStartingScreenIndex(stored->startingScreenIndex); // main.cpp's setup() clamps this if it's out of range for the current screen count
+    DisplaySettings::instance().setStereoLayout(static_cast<StereoLayout>(stored->stereoLayout));
+    DisplaySettings::instance().setMirrorLeftBars(stored->mirrorLeftBars != 0);
+    ColorTheme::instance().setPreset(static_cast<ColorPreset>(stored->colorPreset));
+    AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(stored->bandLayoutMode));
+    AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(stored->energyMode));
+    AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(stored->waveformWindowMode));
+    DisplaySettings::instance().setBrightnessPercent(stored->brightnessPercent);
+    Renderer::instance().setBacklightPercent(stored->brightnessPercent); // Renderer::init() already ran with a temporary default -- this pushes the real saved value to the pin
+    DisplaySettings::instance().setPeaksEnabled(stored->peaksEnabled != 0);
+    BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(stored->peakDecaySpeed));
 }
 
 // The cross-core interlock's two flags. File-local since both sides that
@@ -67,31 +108,40 @@ PersistentSettings& PersistentSettings::instance() {
 }
 
 void PersistentSettings::loadAndApply() {
-    const PersistentData* stored = storedData();
+    const PersistentData* stored = storedAs<PersistentData>();
 
-    if (stored->magic != kMagic || stored->version != kVersion) {
-        Serial.println("[Settings] No valid saved settings found (fresh device or version change) -- using defaults");
-        return;
-    }
-    if (computeChecksum(*stored) != stored->checksum) {
-        Serial.println("[Settings] Saved settings failed checksum -- using defaults");
+    if (stored->magic != kMagic) {
+        Serial.println("[Settings] No saved settings found (fresh device) -- using defaults");
         return;
     }
 
-    DisplaySettings::instance().setChannelMode(static_cast<ChannelMode>(stored->channelMode));
-    DisplaySettings::instance().setStartingScreenIndex(stored->startingScreenIndex); // main.cpp's setup() clamps this if it's out of range for the current screen count
-    DisplaySettings::instance().setStereoLayout(static_cast<StereoLayout>(stored->stereoLayout));
-    DisplaySettings::instance().setMirrorLeftBars(stored->mirrorLeftBars != 0);
-    ColorTheme::instance().setPreset(static_cast<ColorPreset>(stored->colorPreset));
-    AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(stored->bandLayoutMode));
-    AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(stored->energyMode));
-    AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(stored->waveformWindowMode));
-    DisplaySettings::instance().setBrightnessPercent(stored->brightnessPercent);
-    Renderer::instance().setBacklightPercent(stored->brightnessPercent); // Renderer::init() already ran with a temporary default -- this pushes the real saved value to the pin
-    DisplaySettings::instance().setPeaksEnabled(stored->peaksEnabled != 0);
-    BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(stored->peakDecaySpeed));
+    if (stored->version == kVersion) {
+        if (computeChecksum(*stored) != stored->checksum) {
+            Serial.println("[Settings] Saved settings failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(stored);
+        DisplaySettings::instance().setClockShowDate(stored->clockShowDate != 0);
+        DisplaySettings::instance().setClockShowSeconds(stored->clockShowSeconds != 0);
+        DisplaySettings::instance().setClock24h(stored->clock24h != 0);
+        Serial.println("[Settings] Loaded saved settings from flash");
+        return;
+    }
 
-    Serial.println("[Settings] Loaded saved settings from flash");
+    if (stored->version == 4) {
+        // Previous layout: everything but the clock options. Keep it; the
+        // clock options start at their defaults, and the next save writes v5.
+        const PersistentDataV4* old = storedAs<PersistentDataV4>();
+        if (computeChecksum(*old) != old->checksum) {
+            Serial.println("[Settings] Saved settings (v4) failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(old);
+        Serial.println("[Settings] Loaded v4 settings from flash (clock options at defaults)");
+        return;
+    }
+
+    Serial.println("[Settings] Saved settings are from an incompatible firmware version -- using defaults");
 }
 
 void PersistentSettings::saveIfDirty() {
@@ -115,6 +165,9 @@ void PersistentSettings::commitToFlash() {
     data.brightnessPercent   = DisplaySettings::instance().getBrightnessPercent();
     data.peaksEnabled        = DisplaySettings::instance().getPeaksEnabled() ? 1 : 0;
     data.peakDecaySpeed      = static_cast<uint8_t>(BarPhysics::instance().getPeakDecaySpeed());
+    data.clockShowDate       = DisplaySettings::instance().getClockShowDate() ? 1 : 0;
+    data.clockShowSeconds    = DisplaySettings::instance().getClockShowSeconds() ? 1 : 0;
+    data.clock24h            = DisplaySettings::instance().getClock24h() ? 1 : 0;
     data.checksum            = computeChecksum(data);
 
     // flash_range_program() requires a page-aligned, page-sized source --

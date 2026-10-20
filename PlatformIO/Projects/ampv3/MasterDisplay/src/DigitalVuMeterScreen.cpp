@@ -12,8 +12,8 @@ constexpr uint16_t kMaxBarWidth = SCREEN_WIDTH - 2 * kBarX;
 }
 
 void DigitalVuMeterScreen::resetBarState(BarPhysicsState& state) {
-    state.prevUnits     = 0;
-    state.prevPeakUnits = 0;
+    state.prevUnits      = 0;
+    state.prevPeakUnits  = 0;
 }
 
 void DigitalVuMeterScreen::onEnter() {
@@ -72,16 +72,21 @@ void DigitalVuMeterScreen::processAndDrawBar(BarPhysicsState& state, float val, 
     // 2. Extract clean, integer-synchronized drawable boundaries
     uint16_t w     = static_cast<uint16_t>(state.decay * maxBarWidth);
     uint16_t peakW = static_cast<uint16_t>(state.peak);
+    if (peakW > maxBarWidth) peakW = maxBarWidth; // defensive: stay inside the meter
 
     updateBarRow(y, barHeight, state.prevUnits, w, maxBarWidth);
+
+    bool peaksOn = DisplaySettings::instance().getPeaksEnabled();
 
     // Peak marker: touched only when it moved -- same reasoning as
     // SpectrumScreen::processAndDrawBar() (the peak is never left of the
     // bar's end, so the bar update can't paint over an unmoved marker).
-    if (DisplaySettings::instance().getPeaksEnabled() && peakW != state.prevPeakUnits) {
+    if (peaksOn && peakW != state.prevPeakUnits) {
         uint16_t oldPeak = state.prevPeakUnits;
-        if (oldPeak > w) {
-            gfx->fillRect(kBarX + oldPeak, y, 1, barHeight, COLOR_BLACK); // still beyond the bar -- erase it
+        // The marker sits at index peak, just past the bar's last column
+        // (bar = indices 0..w-1). Erase it unless the bar grew over it.
+        if (oldPeak >= w && oldPeak > 0) {
+            gfx->fillRect(kBarX + oldPeak, y, 1, barHeight, COLOR_BLACK);
         }
         if (peakW > 0) {
             gfx->fillRect(kBarX + peakW, y, 1, barHeight, COLOR_WHITE);
@@ -89,8 +94,8 @@ void DigitalVuMeterScreen::processAndDrawBar(BarPhysicsState& state, float val, 
     }
 
     // Tracked even while peaks are disabled -- see SpectrumScreen.
-    state.prevUnits     = w;
-    state.prevPeakUnits = peakW;
+    state.prevUnits      = w;
+    state.prevPeakUnits  = peakW;
 }
 
 void DigitalVuMeterScreen::fillGradientRangeHorizontal(uint16_t y, uint16_t barHeight, uint16_t loWidth, uint16_t hiWidth, uint16_t maxBarWidth) {

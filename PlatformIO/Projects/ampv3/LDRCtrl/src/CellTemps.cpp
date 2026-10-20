@@ -83,6 +83,28 @@ void saveAssignment() {
 }
 
 // Convert on every sensor at once, then read each by ROM. t[i] = NAN if it did not answer.
+float gCache[2] = {NAN, NAN};
+bool gConverting = false;
+uint32_t gConvStartMs = 0, gLastCycleMs = 0;
+
+// Read every sensor's scratchpad by ROM (after a conversion). t[i] = NAN if it did not answer.
+void readAll(float t[MAX_SENSORS]) {
+  for (uint8_t i = 0; i < MAX_SENSORS; i++) t[i] = NAN;
+  for (uint8_t i = 0; i < gCount; i++) {
+    if (!gBus.reset()) continue;
+    gBus.writeByte(0x55);
+    for (uint8_t k = 0; k < 8; k++) gBus.writeByte(gRom[i][k]);
+    gBus.writeByte(0xBE);
+    uint8_t sp[9];
+    for (uint8_t k = 0; k < 9; k++) sp[k] = gBus.readByte();
+    if (OneWireMath::scratchpadValid(sp)) t[i] = OneWireMath::ds18b20Celsius(sp[0], sp[1]);
+  }
+}
+
+void toCache(const float t[MAX_SENSORS]) {
+  for (uint8_t side = 0; side < 2; side++) gCache[side] = gSide[side] >= 0 ? t[gSide[side]] : NAN;
+}
+
 void convertAndRead(float t[MAX_SENSORS]) {
   for (uint8_t i = 0; i < MAX_SENSORS; i++) t[i] = NAN;
   if (gCount == 0 || !gBus.reset()) return;
@@ -102,6 +124,7 @@ void convertAndRead(float t[MAX_SENSORS]) {
     for (uint8_t k = 0; k < 9; k++) sp[k] = gBus.readByte();
     if (OneWireMath::scratchpadValid(sp)) t[i] = OneWireMath::ds18b20Celsius(sp[0], sp[1]);
   }
+  toCache(t);
 }
 } // namespace
 
@@ -137,6 +160,31 @@ void begin() {
 }
 
 uint8_t count() { return gBegun ? gCount : 0; }
+
+void tick() {
+  if (!gBegun || gCount == 0 || gLineLow) return;
+  const uint32_t now = millis();
+  if (gConverting) {
+    if (now - gConvStartMs < 1000) return;          // 12-bit conversion: <= 750 ms
+    float t[MAX_SENSORS];
+    readAll(t);
+    toCache(t);
+    gConverting = false;
+    return;
+  }
+  if (now - gLastCycleMs < 30000 && gLastCycleMs != 0) return;
+  gLastCycleMs = now;
+  if (!gBus.reset()) return;
+  gBus.writeByte(0xCC);                              // SKIP ROM: all sensors
+  gBus.writeByte(0x44);                              // CONVERT T -- collected next pass
+  gConvStartMs = now;
+  gConverting = true;
+}
+
+bool cached(float out[2]) {
+  out[0] = gCache[0]; out[1] = gCache[1];
+  return !isnan(gCache[0]) || !isnan(gCache[1]);
+}
 bool begun() { return gBegun; }
 bool assigned() { return gSide[0] >= 0 && gSide[1] >= 0; }
 

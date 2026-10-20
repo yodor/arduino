@@ -63,7 +63,16 @@ public:
     // since the last call.
     void pushChunk(const uint16_t* interleavedChunk);
 
-    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count) const;
+    // Decimates the latest window to `count` points. With trigger=true the
+    // output starts at the first rising zero crossing (of L+R, with some
+    // hysteresis against noise) found in the window's first quarter, and
+    // spans the remaining three quarters -- like an oscilloscope's trigger,
+    // successive frames then start at the same point of the waveform, so a
+    // steady tone stands still instead of rolling, and the moment where the
+    // panel shows half the new frame and half the old one no longer shows a
+    // seam. Without a crossing (silence, very low notes) it free-runs from
+    // the window start, with the same span so the scale doesn't jump.
+    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
 
     void setWindowMode(WindowMode mode) { m_windowMode = mode; }
     WindowMode getWindowMode() const    { return m_windowMode; }
@@ -88,9 +97,17 @@ private:
     uint16_t m_slideL[kMaxWindowSamples] = {};
     uint16_t m_slideR[kMaxWindowSamples] = {};
 
-    // Raw, DC-removed (but not windowed) samples from the current
-    // waveform window, kept around purely so the UI can render an
-    // oscilloscope-style waveform.
-    int16_t m_waveL[kMaxWindowSamples] = {};
-    int16_t m_waveR[kMaxWindowSamples] = {};
+    // Raw, DC-removed samples of the current window, for the screens --
+    // DOUBLE-BUFFERED across the two cores. core1 rewrites the whole window
+    // on every capture chunk (~2.9ms); with a single buffer, core0 copying
+    // it at the same moment got half the old window and half the new one --
+    // 128 samples apart -- which showed as a sudden step or jump somewhere
+    // along the trace. Now core1 fills the back buffer and then publishes
+    // it (m_readyBuf); core0 only ever reads the published one, which core1
+    // won't touch again until the chunk after next (copying takes ~10us).
+    int16_t m_waveL[2][kMaxWindowSamples] = {};
+    int16_t m_waveR[2][kMaxWindowSamples] = {};
+    size_t  m_waveSamples[2] = {kOscilloscopeSamples, kOscilloscopeSamples}; // window size each buffer was filled for
+    volatile uint8_t m_readyBuf = 0; // last complete buffer (read by core0)
+    uint8_t          m_writeBuf = 1; // buffer core1 fills next
 };

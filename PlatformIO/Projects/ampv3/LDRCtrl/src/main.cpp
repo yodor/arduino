@@ -13,6 +13,7 @@
 
 #include "CellTemps.hpp"
 #include "RailComp.hpp"
+#include "ThermalComp.hpp"
 #include <Arduino.h>
 #include <Wire.h>
 #include "Pins.hpp"
@@ -68,6 +69,7 @@ void setup() {
   rightChannel.begin();
   CellTemps::begin();   // the DS18B20s next to the cells (bounded search; a bad bus just reports)
   RailComp::begin(driver); // 3.3 V rail compensation (TL431) against the stored reference
+  ThermalComp::begin(driver); // driver-block temperature compensation, from the learned fit
 
   // begin() only LOADS a saved calibration; it no longer sweeps. If either
   // channel has no usable one (fresh flash, PWM resolution change, corrupt
@@ -89,6 +91,8 @@ void setup() {
 void loop() {
   board.update();        // non-blocking heartbeat LED toggle
   RailComp::tick();      // re-measure the rail every few s; re-scale the drive if it moved
+  ThermalComp::tick();   // follow the block temperature; re-offset the drive if it moved
+  CellTemps::tick();     // background cell readings for ENV (never blocks ~750 ms)
   masterLinkUsb.poll();  // strict protocol by default on USB; DEBUG -> consoleUsb
   masterLinkUart.poll(); // strict protocol by default on UART0; DEBUG -> consoleUart
 }

@@ -59,6 +59,10 @@ public:
   // channels from their requested duties at once. 1.0 = no correction.
   void setRailScale(float scale);
   float railScale() const { return railScale_; }
+  // Thermal compensation (ThermalComp.hpp): a signed offset in FINE units added after the
+  // rail scale, per side (L = SHUNT_L + SER_L, R = SHUNT_R + SER_R). Dark (0) stays dark.
+  void setThermalOffsetFine(int32_t left, int32_t right);
+  int32_t thermalOffsetFine(Channel ch) const { return ch < NUM_CHANNELS ? offset_[ch] : 0; }
 
   // Actual PWM frequency, computed from the live system clock rather than
   // a comment -- stays correct across CPU_SPEED_KHZ changes in Config.hpp.
@@ -73,7 +77,8 @@ public:
 private:
   uint32_t fine_[NUM_CHANNELS] = {0, 0, 0, 0};
   float railScale_ = 1.0f;
-  uint32_t scaled(uint32_t fine) const;
+  int32_t offset_[NUM_CHANNELS] = {0, 0, 0, 0};
+  uint32_t scaled(Channel ch, uint32_t fine) const;
 
   static const uint8_t PINS[NUM_CHANNELS];
   static const char *const NAMES[NUM_CHANNELS];

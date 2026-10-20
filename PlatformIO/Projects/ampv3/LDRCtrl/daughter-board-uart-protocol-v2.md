@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 7
+# Master Board <-> Daughter Board UART Protocol — revision 8
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=7`) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=8`; revision 8 adds the `ENV` and `PROGRESS` queries below, `STATUS` itself is unchanged) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=7
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=7 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=7
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8
 ```
 
 | Key | Meaning |
@@ -123,6 +123,68 @@ OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING V
 
 Unknown keys must be ignored by the master, so fields can be appended in future
 revisions without breaking an older master.
+
+## Revision 8: `ENV` and `PROGRESS` (for the master's display)
+
+Two short read-only queries, so `STATUS` keeps its fixed field order and length. Each reply
+is one line, fixed key order, well under 140 characters. **Both are answered at any time:**
+while idle, **during a calibration** (alongside `STATUS`; every other command still gets
+`ERR busy`), and **during the boot hold**. They change nothing. Unknown or not-applicable
+values read `--`.
+
+### `ENV` -- temperatures, rail, compensation
+
+```
+ENV
+OK ENV BLOCK=22.81 CELLL=21.75 CELLR=21.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.84 KR=-5.28 DBLOCK=+0.17 MATCH=+0.05
+```
+
+| Key | Meaning |
+|---|---|
+| `BLOCK` | driver block temperature (NTC on the aluminium block), C, 1-minute average |
+| `CELLL`, `CELLR` | cell temperatures (DS18B20 next to each LDR board), C; refreshed in the background every 30 s |
+| `RAIL` | 3.3 V rail via the TL431, V, 1-minute average (the value the rail correction uses) |
+| `COMP` | thermal compensation: `ON` (both sides), `PART` (one side), `LEARNING` (enabled, fit not trusted yet), `OFF` (switched off) |
+| `OFFL`, `OFFR` | the offset each side's drive gets right now, PWM counts (`--` when not applied) |
+| `KL`, `KR` | the learned slope, counts per C of block temperature (`--` before any fit) |
+| `DBLOCK` | block temperature change since the last calibration, C |
+| `MATCH` | L/R balance the last calibration reached at the quiet point, dB (`+` = R quieter) |
+
+The reply is instant: everything comes from running averages and caches (the DS18B20s are
+read in the background, never inside the reply's 500 ms).
+
+### `PROGRESS` -- what a calibration is doing
+
+```
+PROGRESS
+OK PROGRESS KIND=RESYNC PHASE=TRIM SIDE=L STEP=12/32 PCT=11 ETA=122
+OK PROGRESS KIND=RESYNC PHASE=HOLD STEP=45/60 PCT=67 ETA=44
+OK PROGRESS KIND=RESYNC PHASE=DONE PCT=100 ETA=0
+```
+
+| Key | Meaning |
+|---|---|
+| `KIND` | `FULL`, `RESYNC`, `RESOLVE`; `NONE` while the cell check is still deciding |
+| `PHASE` | `IDLE`, `CHECK`, `SWEEP_SERIES`, `SWEEP_SHUNT`, `WALK`, `SOLVE`, `TRIM`, `HOLD`, `SEEK`, `SAVE`, `DONE` |
+| `SIDE` | `L` / `R` where the phase works per channel (`TRIM`); absent otherwise |
+| `STEP` | progress inside the phase, `i/n` (trim step, seconds of the 60 s quiet hold, seek probe); absent if the phase has no count |
+| `PCT` | overall estimate, 0-99 while running, 100 at `DONE` |
+| `ETA` | estimated seconds left |
+
+`PHASE=DONE` stays until the next calibration starts. Typical master loop while
+`STATUS=BUSY`: poll `PROGRESS` once a second and show `PHASE`/`SIDE`/`STEP` plus a bar from
+`PCT`; when `STATUS` returns to `IDLE`, show the result from `STATUS` (`LASTCAL`, `CAL`) and
+`ENV` (`MATCH`).
+
+Estimates come from logged runs on the v1b hardware: a full characterization about 378 s, a
+resync about 137 s, a re-solve about 140 s. Where a phase has a real count (trim steps, the
+hold's countdown, seek probes) that count drives the bar; otherwise time against the phase's
+nominal duration, never claiming more than 95 % of a phase until it ends.
+
+Display labels a master might use: `CHECK` "Checking cells", `SWEEP_SERIES` "Measuring series
+cells", `SWEEP_SHUNT` "Measuring shunt cells", `WALK` "Mapping the dark end", `SOLVE`
+"Computing the volume steps", `TRIM` "Trimming L/R step i/n", `HOLD` "Settling (n s)",
+`SEEK` "Stereo matching", `SAVE` "Saving".
 
 ## Calibration
 
@@ -235,7 +297,9 @@ driver (100k base bleeds), 2 = 1M base bleeds. Bump `CAL_HW_REV` in `Config.hpp`
 change as any hardware modification that alters the duty→resistance relationship, and flash
 it with BOOTSEL after the board is modified (see the comment in `Config.hpp`).
 
-## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks EVERY command
+## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks every command except `ENV` and `PROGRESS`
+
+(Revision 8: the read-only `ENV` and `PROGRESS` are answered during the hold; everything else is refused as described below.)
 
 During the boot-mute hold window the daughter refuses **every** strict-protocol
 command — `VOL`, `MUTE`, `AMP_MUTE`, `CAL …`, `STATUS` — so nothing can disturb the
@@ -244,7 +308,7 @@ is the regular status line, with **`STATUS=BUSY`** and
 **`ERR=boot mute hold active, <n>ms remaining`**, for whichever command was sent:
 
 ```
-OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=7 ERR=boot mute hold active, 3200ms remaining
+OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8 ERR=boot mute hold active, 3200ms remaining
 ```
 
 So a master treats it as any other "busy": wait `n` ms (or just poll `STATUS`) and
@@ -341,7 +405,7 @@ stored measurements at the next `CAL` or boot (`LASTCAL=RESOLVE`), without a ful
 
 - One calibration command: `CAL`, `CAL R=<ohms>` or `CAL R=AUTO`. `CAL FAST` and `CAL FULL`
   no longer exist; they get the ordinary `CAL args` error.
-- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=7`.
+- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=8`.
 - A full characterization takes about 4–5 minutes, a resync about 2 — poll `STATUS` until
   `IDLE`, as before.
 

@@ -85,6 +85,8 @@ private:
   //                 STATUS shows the true state again
   enum class StatusKind : uint8_t { IDLE, CALIBRATING, BOOT_HOLD, CAL_REJECTED };
   void reportStatus(StatusKind kind = StatusKind::IDLE, const char *text = nullptr);
+  void reportEnv();       // protocol 8: ENV -- temperatures, rail, compensation (cached, instant)
+  void reportProgress();  // protocol 8: PROGRESS -- what a running calibration is doing
 
   // The reply to any strict command while the boot mute hold is active.
   void replyBootHold();
