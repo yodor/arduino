@@ -12,7 +12,24 @@ enum class DaughterCmdStatus : uint8_t {
 };
 
 // The daughter's calibration state as reported by STATUS's CAL= field.
-enum class DaughterCalState : uint8_t { UNKNOWN, PROCESSING, OK, NONE, ERR };
+// Revision 10: CHANGED (stored calibration belongs to other cells -> full
+// characterization) and STALE (same cells, Rtotal policy or model changed ->
+// quick re-solve). Anything but OK means VOL/MUTE OFF are refused and the
+// LDR mute stays on until a calibration ends with CAL=OK.
+enum class DaughterCalState : uint8_t { UNKNOWN, PROCESSING, OK, NONE, CHANGED, STALE, ERR };
+
+// User-facing wording for a calibration state (menu, overlay, log).
+inline const char* calStateText(DaughterCalState c) {
+    switch (c) {
+        case DaughterCalState::OK:         return "OK";
+        case DaughterCalState::NONE:       return "no calibration";
+        case DaughterCalState::CHANGED:    return "cells changed";
+        case DaughterCalState::STALE:      return "re-solve needed";
+        case DaughterCalState::ERR:        return "error";
+        case DaughterCalState::PROCESSING: return "running";
+        default:                           return "--";
+    }
+}
 
 // Everything the daughter reports in one STATUS line (protocol revision 7).
 // Only `valid` / `receivedMs` are master-side bookkeeping; every other field

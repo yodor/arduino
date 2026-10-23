@@ -1,10 +1,10 @@
-Firmware source package: 2026-10-23b (NaN checked before arithmetic: no +inf from missing sensors)
+Firmware source package: 2026-10-24a (master-controlled power-up: muted until told; boot only checks)
 
 6ebee75731a34c9f  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
-81ed2ad1a5aa79ed  src/AmpHold.hpp
-4335c3c73ed7f730  src/Board.cpp
-4693b34674c5f0b2  src/Board.hpp
+8f9602ed44d93d66  src/AmpHold.hpp
+a1b5fc7d31e1037d  src/Board.cpp
+0a8996e20b5d7380  src/Board.hpp
 ab30bccd6b60ba0b  src/BoardSensors.hpp
 4777e5059c2b42b5  src/BusyHook.cpp
 76bf40aaaac4da80  src/BusyHook.hpp
@@ -20,27 +20,27 @@ a8fe7362fcbb86ed  src/Capabilities.hpp
 f15c2b4301d6104b  src/CellCheck.hpp
 2ced3c5749641394  src/CellTemps.cpp
 5e12e32dfc2d0b4c  src/CellTemps.hpp
-25db5d2b5b2d2c77  src/Config.hpp
+03a4d6a4db6d9778  src/Config.hpp
 6a5f45a099b947d7  src/DarkProfile.hpp
 290c3971502681e9  src/Dither.hpp
 b4baf1bc76555548  src/DividerMath.hpp
 6fb24a6ecd356d2a  src/DriverChannels.cpp
 cb1bef29bbdc790f  src/DriverChannels.hpp
-277bb791fc8774df  src/DualCalibration.cpp
-70072102ba3c6ed3  src/DualCalibration.hpp
-845eef3e04f1722c  src/LDRVolume.cpp
+8c760d6d8c3e61df  src/DualCalibration.cpp
+6d74cf603532f537  src/DualCalibration.hpp
+64e8138f3bf5c49f  src/LDRVolume.cpp
 9ad400173c8c7c3d  src/LDRVolume.hpp
 66767703db573871  src/LdrSensor.cpp
 c07877e97b036893  src/LdrSensor.hpp
-8a12f2c6d66947ee  src/MasterLink.cpp
-c604c0e26adde193  src/MasterLink.hpp
+3aeb588bc2882e46  src/MasterLink.cpp
+f1435dc505cbacbe  src/MasterLink.hpp
 320f58afc192a81d  src/OneWireMath.hpp
 528721877fed876c  src/Pins.hpp
 645738de11d68fe2  src/RailComp.cpp
 b98d4370ae1f66c9  src/RailComp.hpp
 902053dc399a01b6  src/Relay.cpp
 1518a7d671993e89  src/Relay.hpp
-7defde746308f851  src/SerialConsole.cpp
+cbf4d7e391cb3215  src/SerialConsole.cpp
 092b5cf02d8a0c19  src/SerialConsole.hpp
 f908c7e9f7a97b11  src/SweepLadder.hpp
 0c44cd9f7e42110c  src/ThermalComp.cpp
@@ -51,7 +51,7 @@ d23bbfd37dcd6552  src/ThermalComp.hpp
 6e71fac86e21cfac  src/TrimSearch.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
 cac5e982d3f1974f  src/VolumeRamp.hpp
-089f726d00223b92  src/main.cpp
+b0dd7cc2b1b84d49  src/main.cpp
 95049793a06fd5d6  tools/check_float_printf.sh
 1bba7cee96dcc5e8  platformio.ini
-da271a4b267e751f  firmware.uf2
+07d65fab61074463  firmware.uf2

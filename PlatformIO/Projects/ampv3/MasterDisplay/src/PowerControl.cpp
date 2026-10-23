@@ -11,15 +11,18 @@ void PowerControl::init() {
     // Drive the pins to the boot state BEFORE enabling them as outputs, so
     // they never glitch the other way for an instant. (Runs before Serial is
     // up -- main.cpp logs the state later.)
-    digitalWrite(RELAY_CTRL_PIN, POWER_ON_AT_BOOT ? HIGH : LOW);
+    // Always starts in standby, relay off. With POWER_ON_AT_BOOT, update()
+    // then runs the normal power-on sequence: since protocol revision 10 the
+    // daughter keeps the amp muted from power-up until the master releases
+    // it, so jumping straight to ON would leave the amp muted for good.
+    digitalWrite(RELAY_CTRL_PIN, LOW);
     pinMode(RELAY_CTRL_PIN, OUTPUT);
-    digitalWrite(PWR_BTN_LED_PIN, POWER_ON_AT_BOOT ? HIGH : LOW);
+    digitalWrite(PWR_BTN_LED_PIN, LOW);
     pinMode(PWR_BTN_LED_PIN, OUTPUT);
-    m_relayOn = POWER_ON_AT_BOOT;
-    // Straight to ON at boot: the daughter holds the amp muted through its
-    // own boot hold anyway, which covers the amp's power-up.
-    m_state   = POWER_ON_AT_BOOT ? State::ON : State::STANDBY;
-    m_stateMs = millis();
+    m_relayOn     = false;
+    m_state       = State::STANDBY;
+    m_stateMs     = millis();
+    m_bootPowerOn = POWER_ON_AT_BOOT;
 }
 
 void PowerControl::setRelay(bool on) {
@@ -51,6 +54,10 @@ void PowerControl::toggle() {
 }
 
 void PowerControl::update() {
+    if (m_bootPowerOn) {
+        m_bootPowerOn = false;
+        toggle(); // standby -> the power-on sequence
+    }
     uint32_t elapsed = millis() - m_stateMs;
     bool     muted   = VolumeControl::instance().ampMuteConfirmed() || elapsed >= POWER_MUTE_WAIT_MS;
 

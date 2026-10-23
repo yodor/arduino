@@ -39,7 +39,7 @@ constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter 
 // Protocol revision this master is written for. A daughter reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 9;
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 10;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held -- each
 // command is a single discrete step on the daughter board.

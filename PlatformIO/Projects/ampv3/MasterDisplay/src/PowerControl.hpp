@@ -14,9 +14,16 @@
 //   switching off: mute the amp (confirmed or POWER_MUTE_WAIT_MS)
 //                  -> relay off -> STANDBY (amp left muted)
 //
-// Toggled by the remote's power key (IR 0x40 -> UIEvent::POWER_TOGGLE); a
-// press while a sequence runs is ignored. The state isn't saved: after a
-// power cut the unit comes up in POWER_ON_AT_BOOT's state (Config.hpp).
+// Toggled by the remote's power key (IR 0x40 -> UIEvent::POWER_TOGGLE) or a
+// 3 s hold of RIGHT; a press while a sequence runs is ignored. The state
+// isn't saved: the unit boots into standby, or -- with POWER_ON_AT_BOOT
+// (Config.hpp) -- runs the power-on sequence right away.
+//
+// Fits the daughter's revision-10 power-up: it boots with both mutes on and
+// never releases them itself. AMP_MUTE is released here (end of the on
+// sequence); the LDR mute is released by VolumeControl once CAL=OK, and is
+// deliberately left alone in standby, so leaving standby is instant and
+// exactly on level.
 class PowerControl {
 public:
     enum class State : uint8_t { STANDBY, MUTING_FOR_ON, SETTLING, ON, MUTING_FOR_OFF };
@@ -47,4 +54,5 @@ private:
     State    m_state     = State::STANDBY;
     bool     m_relayOn   = false;
     uint32_t m_stateMs   = 0; // when the current state began
+    bool     m_bootPowerOn = false; // POWER_ON_AT_BOOT: start the on-sequence on the first update()
 };

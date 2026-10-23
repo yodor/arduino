@@ -36,6 +36,21 @@ public:
     // rev 9 FORGET (CAL / COMP / ALL), retried until the link takes it.
     void forget(DaughterBoardLink::Forget what);
 
+    // Revision 10: the daughter powers up with its LDR mute ON and refuses
+    // VOL / MUTE OFF until CAL=OK; a finished calibration doesn't unmute
+    // either. So whenever CAL becomes OK (at power-up, or after any
+    // calibration) the master restores the saved volume step (VOL <n>,
+    // silent while muted) and then sends MUTE OFF -- unless the user had
+    // muted. ready() = that has happened and the volume is usable; while
+    // not ready, the daughter's forced mute is NOT taken as the user's mute.
+    bool ready() const { return m_ready; }
+
+    // The step restored at power-up -- the last step the volume settled on.
+    // Saved with the settings (PersistentSettings), a few seconds after it
+    // stops changing; -1 = none saved yet.
+    int16_t savedVolumeStep() const        { return m_savedStep; }
+    void    setSavedVolumeStep(int16_t s)  { m_savedStep = s; }
+
     // Asks the daughter to calibrate. KEEP_R sends plain "CAL" (the daughter
     // decides how much work it needs, Rtotal unchanged); AUTO_R "CAL R=AUTO";
     // SET_R "CAL R=<ohms>" (must lie within the daughter's RMIN..RMAX).
@@ -66,4 +81,8 @@ private:
     uint32_t m_lastVolCommandMs  = 0;     // throttles VOL UP/DOWN repeats
     uint32_t m_lastSeenStatusCount = 0;
     bool     m_wasCalibrating    = false; // edge-detects the daughter's calibration start/end for logging
+    bool     m_ready             = false; // CAL=OK seen and the restore/unmute done (see ready())
+    int16_t  m_savedStep         = -1;
+    bool     m_volRestorePending = false; // VOL <m_savedStep> waiting for the link
+    uint32_t m_volRestoreSentMs  = 0;     // statuses older than this still show the pre-restore step
 };

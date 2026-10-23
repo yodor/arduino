@@ -65,10 +65,10 @@ static_assert(kNumScreens == kScreenCount,
 
 static size_t g_currentScreenIdx = 0;
 
-// Screen changes are remembered (the unit boots into the last screen), but
-// only written to flash after the screen has stayed put this long.
-static uint32_t           g_lastScreenChangeMs = 0;
-static constexpr uint32_t kScreenSaveDelayMs   = 10000;
+// Screen and volume changes are remembered (the unit boots into the last
+// screen and volume step), but only written to flash once nothing has
+// changed for this long.
+static constexpr uint32_t kScreenSaveDelayMs = 10000;
 
 static MenuScreen g_menuScreen;
 
@@ -257,11 +257,12 @@ void loop() {
         event = UIEvent::NONE;
     }
 
-    // Save a remembered screen once it has stayed put for a while: each
-    // flash write briefly pauses the audio core, so stepping through the
-    // screens shouldn't write once per step. (Menu changes save on menu close.)
+    // Deferred save for changes made outside the menu (the remembered screen,
+    // the volume step): only once nothing has changed for a while -- each
+    // flash write briefly pauses the audio core, so stepping through screens
+    // or volume shouldn't write once per step. (Menu changes save on close.)
     if (PersistentSettings::instance().isDirty() && !g_menuOpen &&
-        millis() - g_lastScreenChangeMs >= kScreenSaveDelayMs) {
+        PersistentSettings::instance().msSinceDirty() >= kScreenSaveDelayMs) {
         PersistentSettings::instance().saveIfDirty();
     }
 
@@ -360,7 +361,6 @@ void loop() {
             // choice has settled (see kScreenSaveDelayMs).
             DisplaySettings::instance().setStartingScreenIndex(static_cast<uint8_t>(g_currentScreenIdx));
             PersistentSettings::instance().markDirty();
-            g_lastScreenChangeMs = millis();
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
             g_volumeOverlay.poke();

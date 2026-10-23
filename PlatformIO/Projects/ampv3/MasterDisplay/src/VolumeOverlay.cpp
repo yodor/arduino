@@ -72,8 +72,14 @@ VolumeOverlay::View VolumeOverlay::currentView() const {
     const DaughterBoardLink& link = DaughterBoardLink::instance();
     if (!link.isStatusFresh()) return View::NO_LINK;
     const DaughterStatus& s = link.status();
-    if (s.bootHold) return View::STARTING;
-    if (s.busy)     return View::CALIBRATING;
+    if (s.busy) {
+        // The power-up cell check is a (short) calibration run too.
+        const DaughterProgress& pr = link.progress();
+        return (pr.valid && !strcmp(pr.phase, "CHECK")) ? View::CHECKING : View::CALIBRATING;
+    }
+    // Revision 10: until CAL=OK the daughter keeps the volume muted and
+    // refuses VOL, whatever VOL= says.
+    if (s.cal != DaughterCalState::OK) return View::NOT_CALIBRATED;
     if (s.vol < 0 || s.volMin < 0 || s.volMax < s.volMin) return View::NOT_CALIBRATED;
     return View::VOLUME;
 }
@@ -108,37 +114,46 @@ void VolumeOverlay::drawStaticForView(View v) {
             drawCentered("NO LINK", 4, kMsgY, COLOR_RED);
             drawCentered("volume board not answering", 2, kMsgY + 44, kColorSubtle);
             break;
-        case View::STARTING:
-            drawCentered("STARTING", 4, kMsgY, COLOR_YELLOW);
-            drawCentered("volume board boot hold", 2, kMsgY + 44, kColorSubtle);
+        case View::CHECKING:
+            drawCentered("CHECKING CELLS", 4, kMsgY, COLOR_YELLOW);
+            drawCentered("volume board starting up", 2, kMsgY + 44, kColorSubtle);
             break;
         case View::CALIBRATING:
             drawCentered("CALIBRATING", 4, kMsgY, COLOR_YELLOW);
             drawCentered("volume locked until it finishes", 2, kMsgY + 44, kColorSubtle);
             break;
-        case View::NOT_CALIBRATED:
-            drawCentered("NOT CALIBRATED", 4, kMsgY, COLOR_RED);
-            if (s.hasErr) {
+        case View::NOT_CALIBRATED: {
+            // Revision 10 says why: nothing stored, other cells, or a
+            // re-solve after a settings change (quick).
+            const char* title = (s.cal == DaughterCalState::NONE)    ? "NO CALIBRATION"
+                              : (s.cal == DaughterCalState::CHANGED) ? "CELLS CHANGED"
+                              : (s.cal == DaughterCalState::STALE)   ? "RE-SOLVE NEEDED"
+                              : (s.cal == DaughterCalState::ERR)     ? "CALIBRATION ERROR"
+                                                                     : "NOT CALIBRATED";
+            drawCentered(title, 4, kMsgY, COLOR_RED);
+            if (s.cal == DaughterCalState::ERR && s.hasErr) {
                 // Free text from the daughter -- size 1, wraps if long.
                 gfx->setTextSize(1);
                 gfx->setTextColor(kColorSubtle, COLOR_BLACK);
                 gfx->setCursor(kMargin, kMsgY + 44);
                 gfx->print(s.err);
             } else {
-                drawCentered("run Calibration from the menu", 2, kMsgY + 44, kColorSubtle);
+                drawCentered("Settings > Calibration > Start", 2, kMsgY + 44, kColorSubtle);
             }
             break;
+        }
         case View::VOLUME:
         case View::NONE:
             break; // value + bar drawn by render()
     }
 }
 
+// "MUTED" right after the "VOLUME" title (the top-right corner shows Rtotal).
 void VolumeOverlay::drawMuteTag(bool muted) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     const char* tag = "MUTED";
     int16_t w = textWidth(tag, kHeaderSize);
-    int16_t x = SCREEN_WIDTH - kMargin - w;
+    int16_t x = kMargin + textWidth("VOLUME", kHeaderSize) + 16;
     gfx->fillRect(x, kHeaderY, w, kCharH * kHeaderSize, COLOR_BLACK);
     if (muted) {
         gfx->setTextSize(kHeaderSize);
@@ -146,6 +161,32 @@ void VolumeOverlay::drawMuteTag(bool muted) {
         gfx->setCursor(x, kHeaderY);
         gfx->print(tag);
     }
+}
+
+// Top-right: the Rtotal the volume steps are solved for, and whether the
+// daughter picked it (auto) or it was set (manual) -- e.g. "R=650K (auto)".
+// Kept as last shown while a calibration runs (the field is transient then).
+void VolumeOverlay::drawRTag() {
+    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const DaughterStatus&    s    = link.status();
+    if (s.busy) return;
+    uint32_t ohms = link.isStatusFresh() ? s.rOhms : 0;
+    if (ohms == m_drawnROhms && static_cast<int8_t>(s.rAuto) == m_drawnRAuto) return;
+
+    char text[24];
+    if (ohms == 0) snprintf(text, sizeof(text), "R=--");
+    else snprintf(text, sizeof(text), "R=%luK (%s)", static_cast<unsigned long>((ohms + 500) / 1000), s.rAuto ? "auto" : "manual");
+
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    constexpr int16_t kSlotChars = 16;
+    int16_t slotW = kSlotChars * kCharW * kHeaderSize;
+    gfx->fillRect(SCREEN_WIDTH - kMargin - slotW, kHeaderY, slotW, kCharH * kHeaderSize, COLOR_BLACK);
+    gfx->setTextSize(kHeaderSize);
+    gfx->setTextColor(kColorSubtle, COLOR_BLACK);
+    gfx->setCursor(SCREEN_WIDTH - kMargin - textWidth(text, kHeaderSize), kHeaderY);
+    gfx->print(text);
+    m_drawnROhms = ohms;
+    m_drawnRAuto = static_cast<int8_t>(s.rAuto);
 }
 
 void VolumeOverlay::drawValue(int16_t vol, int16_t volMax, int32_t dbTenths) {
@@ -235,12 +276,15 @@ void VolumeOverlay::render() {
         m_drawnVolMin   = -2;
         m_drawnVolMax   = -2;
         m_drawnLit      = -1;
+        m_drawnROhms    = 0xFFFFFFFF;
+        m_drawnRAuto    = -1;
     }
 
     if (static_cast<int8_t>(muted) != m_drawnMuted) {
         drawMuteTag(muted);
         m_drawnMuted = static_cast<int8_t>(muted);
     }
+    drawRTag();
 
     if (v != View::VOLUME) return;
 

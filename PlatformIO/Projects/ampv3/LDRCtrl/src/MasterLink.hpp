@@ -77,20 +77,15 @@ private:
   // Why a status line is being sent, which decides STATUS=, CAL= and ERR=:
   //   IDLE          normal: STATUS=IDLE, CAL from the real state
   //   CALIBRATING   a calibration is running: STATUS=BUSY, CAL=PROCESSING
-  //   BOOT_HOLD     inside the boot mute hold: STATUS=BUSY, CAL from the real state,
-  //                 ERR=<text> ("boot mute hold active, <n>ms remaining") -- the reply
-  //                 to EVERY strict command during the hold
   //   CAL_REJECTED  a CAL request that could not start: STATUS=IDLE, CAL=ERR,
   //                 ERR=<text>; the real calibration is untouched and the next
   //                 STATUS shows the true state again
-  enum class StatusKind : uint8_t { IDLE, CALIBRATING, BOOT_HOLD, CAL_REJECTED };
+  enum class StatusKind : uint8_t { IDLE, CALIBRATING, CAL_REJECTED };
   void reportStatus(StatusKind kind = StatusKind::IDLE, const char *text = nullptr);
   void reportEnv();       // protocol 8: ENV -- temperatures, rail, compensation (cached, instant)
   void reportProgress();  // protocol 8: PROGRESS -- what a running calibration is doing
   void reportLearn();     // protocol 9: LEARN -- the thermal learning's progress and fit quality
 
-  // The reply to any strict command while the boot mute hold is active.
-  void replyBootHold();
 
   // BusyHook listener: runs inside calibration's blocking waits.
   static void busyThunk(void *self);

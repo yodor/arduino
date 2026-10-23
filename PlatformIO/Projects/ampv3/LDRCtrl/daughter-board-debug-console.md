@@ -15,7 +15,7 @@ purpose: the calibration decides for itself, and everything worth looking at is 
 | `COMP` / `COMP ON` / `COMP OFF` | Thermal compensation from the learned fit: each side's duties get k x (driver-block temperature now - at the last calibration), from the block's 1-minute average; k comes from `LEARN`'s fit vs the block, used once trusted (3+ resyncs, 0.5 C spread, R2 >= 0.6). Off during every calibration (resyncs keep measuring the raw shift, so the learning refines itself). `COMP OFF` for an A/B listen; not stored, boots ON. `TEMP` and `DIAG` show it. |
 | `VOL INFO` | Every step in one table, L and R side by side: target dB, series duty and target Rs, shunt duty and target Rsh per channel (no live check), then — from the last `DIAG ALL` verify since boot — each channel's measured dB, L−R and the **match %** (the quieter channel's amplitude as a share of the louder's: 0.8 dB → 91%, 0.1 dB → 99%), with a mean/worst summary. Without a `DIAG ALL` since boot those columns show `--`. `>` marks the current step. It ends with the **health findings** (below). |
 | `MUTE ON\|OFF` | The LDR mute (both channels). |
-| `AMP_MUTE ON\|OFF` | The amplifier mute (refused during the boot hold). |
+| `AMP_MUTE ON\|OFF` | The amplifier mute. ON from power-up until changed (no boot hold any more). |
 | `SET <channel> <duty>` | Raw duty 0–4095 on `SER_L`, `SER_R`, `SHUNT_L` or `SHUNT_R` — for meter work (driver currents, β). |
 | `RELAY ON\|OFF` | Both relays. `ON` disconnects the audio (the sensors are only connected then); `OFF` restores the volume first, then reconnects. |
 | `READ` | One sensor reading per side: Vref, Rs, Rsh (after `RELAY ON`). |

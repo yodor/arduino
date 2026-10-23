@@ -303,7 +303,31 @@ void MenuScreen::drawFull() {
                 break;
             case MenuItemType::SUBMENU: hint = "open >"; break;
             case MenuItemType::INFO:    hint = "view >"; break;
-            case MenuItemType::EDITOR:  hint = "edit >"; break;
+            case MenuItemType::EDITOR: {
+                // The current value, as the editor would show it (e.g. the
+                // time, or "AUTO" / "650K"); "edit >" if there's none.
+                static char valueHint[32];
+                hint = "edit >";
+                int16_t vals[kEditorMaxFields] = {};
+                const MenuEditor* ed = item.editor;
+                if (ed && ed->load(vals)) {
+                    size_t len = 0;
+                    for (uint8_t i = 0; i < ed->fieldCount && len + 12 < sizeof(valueHint); ++i) {
+                        char part[12];
+                        if (ed->format) ed->format(vals, i, part, sizeof(part));
+                        else            snprintf(part, sizeof(part), "%0*d", ed->digits[i], static_cast<int>(vals[i]));
+                        char sep[2] = {i ? ed->separator : '\0', '\0'};
+                        len += snprintf(valueHint + len, sizeof(valueHint) - len, "%s%s", sep, part);
+                    }
+                    // Trim the padding a fixed-width field may carry.
+                    char* p = valueHint;
+                    while (*p == ' ') ++p;
+                    memmove(valueHint, p, strlen(p) + 1);
+                    hint      = valueHint;
+                    hintColor = COLOR_YELLOW;
+                }
+                break;
+            }
             case MenuItemType::ACTION:  hint = item.onAction ? "run >" : ""; break;
         }
     }
@@ -389,8 +413,9 @@ void MenuScreen::drawEditorFields() {
 
     gfx->setTextSize(kEditorSize);
     for (uint8_t i = 0; i < ed->fieldCount; ++i) {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%0*d", ed->digits[i], static_cast<int>(m_editorValues[i]));
+        char buf[12];
+        if (ed->format) ed->format(m_editorValues, i, buf, sizeof(buf));
+        else            snprintf(buf, sizeof(buf), "%0*d", ed->digits[i], static_cast<int>(m_editorValues[i]));
         bool focused = (i == m_editorField);
         gfx->setTextColor(focused ? COLOR_BLACK : COLOR_WHITE, focused ? kEditorFocusBg : COLOR_BLACK);
         gfx->setCursor(x, kEditorY);

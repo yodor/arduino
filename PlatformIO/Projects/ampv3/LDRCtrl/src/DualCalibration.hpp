@@ -85,4 +85,12 @@ float lastQuietMatchDb();
 void forgetCalibration(LDRVolume &left, LDRVolume &right);
 // FORGET COMP: the thermal learning log; compensation off until relearned.
 void forgetCompensation();
+// What the stored calibration needs before the attenuator may play (protocol 10, CAL=):
+//   NONE    nothing needed (CAL=OK)
+//   NO_CAL  nothing stored (first boot, FORGET CAL)          -> CAL runs a full characterization
+//   CHANGED the stored calibration belongs to other cells   -> CAL runs a full characterization
+//   STALE   same cells; Rtotal policy or source/load model changed -> CAL re-solves (quick)
+enum class CalNeed : uint8_t { NONE, NO_CAL, CHANGED, STALE };
+CalNeed calNeed();
+const char *calNeedName();               // "OK", "NONE", "CHANGED", "STALE"
 } // namespace DualCalibration

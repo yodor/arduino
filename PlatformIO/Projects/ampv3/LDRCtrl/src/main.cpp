@@ -69,6 +69,10 @@ void setup() {
   rightChannel.setSensorWiring(LDR_R_TOP_ON_A3, 'R');
   leftChannel.begin();  // relay de-energized (audio mode), i2c bus left inactive
   rightChannel.begin();
+  // Power-up state: amp mute ON (latched in board.begin) and LDR mute ON, until the master
+  // changes them. The master restores the volume (VOL n is silent while muted) and unmutes.
+  leftChannel.mute();
+  rightChannel.mute();
   CellTemps::begin();   // the DS18B20s next to the cells (bounded search; a bad bus just reports)
   RailComp::begin(driver); // 3.3 V rail compensation (TL431) against the stored reference
   ThermalComp::begin(driver); // driver-block temperature compensation, from the learned fit

@@ -28,27 +28,18 @@ public:
   // -- entirely independent of any LDRVolume's own mute() -- either can
   // be engaged regardless of the other's state.
   //
-  // Enforces Config.hpp's documented MUTE_BOOT_HOLD_MS as a true gate:
-  // during that window, BOTH directions (mute and unmute) are ignored --
-  // the pin never moves no matter what's requested, returning false so
-  // the caller can reply accordingly (the daughter should still reply
-  // to the master -- just reporting "ignored," not silently dropping
-  // the reply itself, which would just trade a stuck pin for a stuck
-  // protocol timeout). Once the hold expires, the pin auto-releases to
-  // unmuted on its own (see update()) -- no command required -- and
-  // every explicit call works normally from then on.
+  // Power-up: the amp mute is latched ON in begin() and changes only on command -- the
+  // master decides the power state (protocol 10; there is no timed boot hold any more).
+  // Returns false only for an unmute asked while a calibration holds the amp muted.
   bool setAmpMute(bool muted);
   bool ampMuted() const { return ampMuted_; }
 
-  // Calibration mute hold: while at least one CalHold is alive the amp is held
-  // MUTED, whatever its state was and whatever the boot hold is doing. During a
-  // calibration the audio path is disconnected anyway, so muting costs nothing
-  // and keeps the floating amp input, relay clicks and PWM activity out of the
-  // speakers. When the last hold ends the amp goes back to what it was (see
-  // AmpHold.hpp); a boot-time calibration leaves it muted and Board::update()'s
-  // one-shot auto-release opens it once the hold has expired and nothing is
-  // running. While a hold is active setAmpMute(true) is a no-op that succeeds
-  // and setAmpMute(false) is refused.
+  // Calibration mute hold: while at least one CalHold is alive the amp is held MUTED,
+  // whatever its state was. During a calibration the audio path is disconnected anyway, so
+  // muting costs nothing and keeps the floating amp input, relay clicks and PWM activity out
+  // of the speakers. When the last hold ends the amp goes back to what it was before (see
+  // AmpHold.hpp): a calibration started from power-up (amp muted) leaves it muted. While a
+  // hold is active setAmpMute(true) is a no-op that succeeds and setAmpMute(false) is refused.
   class CalHold {
   public:
     explicit CalHold(Board &b) : b_(b) { b_.calHoldBegin(); }
@@ -59,9 +50,6 @@ public:
     Board &b_;
   };
 
-  // Milliseconds remaining in the boot hold, 0 once it's expired. Useful
-  // for an ERR message's "<n>ms remaining" detail.
-  unsigned long bootHoldRemainingMs() const;
 
 
   // Called by LDRVolume::relayEnergize() on every transition (true =
@@ -121,5 +109,4 @@ private:
   unsigned long bootMillis_ = 0;
   bool ampMuted_ = true;        // matches the boot pre-latch -- starts muted
   uint8_t relayActiveCount_ = 0; // how many channels currently have their relay energized
-  bool bootHoldReleased_ = false; // one-shot: has the auto-unmute already fired?
 };

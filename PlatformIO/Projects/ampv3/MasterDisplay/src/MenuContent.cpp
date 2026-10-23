@@ -75,14 +75,7 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
         addLine(lines, n, maxLines, "State:   %s", s.busy ? "busy" : "idle");
     }
 
-    const char* cal = "unknown";
-    switch (s.cal) {
-        case DaughterCalState::OK:         cal = "OK";      break;
-        case DaughterCalState::NONE:       cal = "none";    break;
-        case DaughterCalState::ERR:        cal = "FAILED";  break;
-        case DaughterCalState::PROCESSING: cal = "running"; break;
-        default: break;
-    }
+    const char* cal = calStateText(s.cal);
     if (s.lastCal[0] && strcmp(s.lastCal, "NONE") != 0) {
         addLine(lines, n, maxLines, "Cal:     %s (last: %s)", cal, s.lastCal);
     } else {
@@ -442,51 +435,86 @@ constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kC
 // was changed (the daughter re-solves from its stored measurements).
 
 enum class RChoice : uint8_t { UNSET, AUTO, MANUAL };
-RChoice  g_rChoice  = RChoice::UNSET;
+RChoice  g_rChoice     = RChoice::UNSET;
 uint32_t g_rManualOhms = 0;
+
+// The Start item's label names what it will do: "Start R=AUTO" or
+// "Start R=650K" (MenuScreen reads the label each time it draws).
+char g_startLabel[24] = "Start";
+
+void updateStartLabel() {
+    if (g_rChoice == RChoice::AUTO) {
+        snprintf(g_startLabel, sizeof(g_startLabel), "Start R=AUTO");
+    } else if (g_rChoice == RChoice::MANUAL) {
+        snprintf(g_startLabel, sizeof(g_startLabel), "Start R=%luK", static_cast<unsigned long>((g_rManualOhms + 500) / 1000));
+    } else {
+        snprintf(g_startLabel, sizeof(g_startLabel), "Start");
+    }
+}
 
 // Lazily adopts the daughter's current setting the first time it's needed.
 void syncRChoice() {
     if (g_rChoice != RChoice::UNSET) return;
     const DaughterStatus& s = DaughterBoardLink::instance().status();
     if (!s.valid || s.busy) return;
-    g_rChoice      = s.rAuto ? RChoice::AUTO : RChoice::MANUAL;
-    g_rManualOhms  = s.rOhms;
+    g_rChoice     = s.rAuto ? RChoice::AUTO : RChoice::MANUAL;
+    g_rManualOhms = s.rOhms;
+    updateStartLabel();
 }
 
-void menuSet_RAuto()   { syncRChoice(); g_rChoice = RChoice::AUTO; }
-void menuSet_RManual() {
-    syncRChoice();
-    g_rChoice = RChoice::MANUAL;
-    if (g_rManualOhms == 0) g_rManualOhms = DaughterBoardLink::instance().status().rOhms;
-}
-bool menuIsActive_RAuto()   { syncRChoice(); return g_rChoice == RChoice::AUTO; }
-bool menuIsActive_RManual() { syncRChoice(); return g_rChoice == RChoice::MANUAL; }
+// "Rtotal" selector: ONE field covering both modes -- index 0 is AUTO,
+// then RMIN..RMAX (the daughter's measured range) in kRStepOhms steps,
+// rounded inward. Up/Down step through them (wrapping); Right saves.
+constexpr uint32_t kRStepOhms = 5000;
+int16_t g_rLoadedIndex = -1; // what the selector opened on (unchanged = keep the exact value)
 
-// "Manual R" editor: kilo-ohms, limited to the daughter's measured RMIN..RMAX
-// (rounded inward to whole kOhm). Doesn't open until a calibration has
-// measured that range.
-bool loadRManual(int16_t* v) {
+uint32_t rFirstOhms() {
+    uint32_t rmin = DaughterBoardLink::instance().status().rMinOhms;
+    return ((rmin + kRStepOhms - 1) / kRStepOhms) * kRStepOhms;
+}
+int16_t rStepCount() {
+    uint32_t first = rFirstOhms(), last = (DaughterBoardLink::instance().status().rMaxOhms / kRStepOhms) * kRStepOhms;
+    return (last < first) ? 0 : static_cast<int16_t>((last - first) / kRStepOhms + 1);
+}
+uint32_t rIndexOhms(int16_t i) { return rFirstOhms() + static_cast<uint32_t>(i - 1) * kRStepOhms; }
+
+bool loadRTotal(int16_t* v) {
     const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (!s.valid || s.rMinOhms == 0 || s.rMaxOhms == 0) return false;
+    if (!s.valid || s.busy || s.rMinOhms == 0 || s.rMaxOhms == 0 || rStepCount() == 0) return false;
     syncRChoice();
-    uint32_t ohms = g_rManualOhms ? g_rManualOhms : s.rOhms;
-    v[0] = static_cast<int16_t>((ohms + 500) / 1000);
+    if (g_rChoice != RChoice::MANUAL) {
+        v[0] = 0;
+    } else {
+        int32_t i = 1 + (static_cast<int32_t>(g_rManualOhms) - static_cast<int32_t>(rFirstOhms()) + static_cast<int32_t>(kRStepOhms / 2)) / static_cast<int32_t>(kRStepOhms);
+        if (i < 1) i = 1;
+        if (i > rStepCount()) i = rStepCount();
+        v[0] = static_cast<int16_t>(i);
+    }
+    g_rLoadedIndex = v[0];
     return true;
 }
-void limitsRManual(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    *lo = static_cast<int16_t>((s.rMinOhms + 999) / 1000);
-    *hi = static_cast<int16_t>(s.rMaxOhms / 1000);
-    if (*hi < *lo) *hi = *lo;
+void limitsRTotal(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) {
+    *lo = 0;
+    *hi = rStepCount();
 }
-bool saveRManual(const int16_t* v) {
-    g_rManualOhms = static_cast<uint32_t>(v[0]) * 1000u;
-    g_rChoice     = RChoice::MANUAL;
-    Serial.printf("[Menu] Rtotal for the next calibration: %lu ohm\n", static_cast<unsigned long>(g_rManualOhms));
+void formatRTotal(const int16_t* v, uint8_t, char* out, size_t outSize) {
+    if (v[0] == 0) snprintf(out, outSize, "AUTO");
+    else           snprintf(out, outSize, "%3luK", static_cast<unsigned long>(rIndexOhms(v[0]) / 1000));
+}
+bool saveRTotal(const int16_t* v) {
+    if (v[0] == g_rLoadedIndex) return true; // unchanged: keep the exact current choice
+    if (v[0] == 0) {
+        g_rChoice = RChoice::AUTO;
+        Serial.println("[Menu] Rtotal for the next calibration: AUTO");
+    } else {
+        g_rChoice     = RChoice::MANUAL;
+        g_rManualOhms = rIndexOhms(v[0]);
+        Serial.printf("[Menu] Rtotal for the next calibration: %lu ohm\n", static_cast<unsigned long>(g_rManualOhms));
+    }
+    updateStartLabel();
     return true;
 }
-const MenuEditor kRManualEditor = { 1, {3}, ' ', loadRManual, limitsRManual, saveRManual };
+const MenuEditor kRTotalEditor = { 1, {4}, ' ', loadRTotal, limitsRTotal, saveRTotal, formatRTotal };
 
 // Start: plain CAL if the choice matches the daughter's current setting.
 void menuAction_StartCalibration() {
@@ -578,7 +606,7 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     }
 
     // Idle: the result of the last calibration.
-    const char* result = (s.cal == DaughterCalState::OK) ? "OK" : (s.cal == DaughterCalState::NONE) ? "none" : "FAILED";
+    const char* result = calStateText(s.cal);
     addLine(lines, n, maxLines, "Result:  %s (last: %s)", result, s.lastCal[0] ? s.lastCal : "--");
     if (s.cal == DaughterCalState::ERR && s.hasErr) {
         char chunk[kInfoLineLen];
@@ -634,11 +662,6 @@ const MenuValueOption kForgetOptions[] = {
     { "Everything",  menuAction_ForgetAll,  nullptr },
 };
 
-const MenuValueOption kRModeOptions[] = {
-    { "Auto",   menuSet_RAuto,   menuIsActive_RAuto   },
-    { "Manual", menuSet_RManual, menuIsActive_RManual },
-};
-
 // "Start" is a two-option confirmation (Cancel is focused by default), since
 // a run takes minutes and holds the amp muted; "Start now" then shows the
 // progress page.
@@ -646,10 +669,16 @@ const MenuValueOption kCalStartOptions[] = {
     { "Cancel",    nullptr,                     nullptr },
     { "Start now", menuAction_StartCalibration, nullptr },
 };
+// Settings -> Calibration -> Start: pick Rtotal, then the start item --
+// labelled with the choice -- asks for confirmation and shows the progress.
+const MenuItem kStartSubmenuItems[] = {
+    { "Rtotal",    MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kRTotalEditor },
+    { g_startLabel, MenuItemType::VALUE_CHOICE, nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress },
+};
+constexpr size_t kStartSubmenuItemCount = sizeof(kStartSubmenuItems) / sizeof(kStartSubmenuItems[0]);
+
 const MenuItem kCalibrationSubmenuItems[] = {
-    { "Start",       MenuItemType::VALUE_CHOICE, nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress },
-    { "Rtotal",      MenuItemType::VALUE_CHOICE, nullptr, kRModeOptions,    2 },
-    { "Manual R kOhm", MenuItemType::EDITOR,     nullptr, nullptr, 0, nullptr, 0, nullptr, &kRManualEditor },
+    { "Start",       MenuItemType::SUBMENU,      nullptr, nullptr, 0, kStartSubmenuItems, kStartSubmenuItemCount },
     { "Progress",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
     { "Status",      MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
     { "Learning",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },

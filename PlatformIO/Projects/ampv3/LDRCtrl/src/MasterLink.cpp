@@ -155,12 +155,6 @@ void MasterLink::serviceWhileBusy() {
   }
 }
 
-void MasterLink::replyBootHold() {
-  char text[48];
-  snprintf(text, sizeof(text), "boot mute hold active, %lums remaining",
-           (unsigned long)board_.bootHoldRemainingMs());
-  reportStatus(StatusKind::BOOT_HOLD, text);
-}
 
 // Protocol 8. One short line each (well under 120 characters), fixed key order, so a master
 // with a small receive buffer or a fixed-format parser handles them like STATUS. Values that
@@ -228,9 +222,9 @@ void MasterLink::reportProgress() {
 }
 
 void MasterLink::reportStatus(StatusKind kind, const char *text) {
-  // STATUS=BUSY for a calibration and for the boot hold; CAL=PROCESSING only for
-  // a calibration. A rejected CAL request is IDLE with CAL=ERR.
-  const bool busy = (kind == StatusKind::CALIBRATING || kind == StatusKind::BOOT_HOLD);
+  // STATUS=BUSY with CAL=PROCESSING for a calibration (the power-up cell check included).
+  // A rejected CAL request is IDLE with CAL=ERR.
+  const bool busy = (kind == StatusKind::CALIBRATING);
   const char *calError = (kind == StatusKind::CAL_REJECTED) ? text : nullptr;
   // One line: "OK" then key=value pairs separated by single spaces, always
   // every key in this order, so a master can parse it with a fixed-format
@@ -273,14 +267,13 @@ void MasterLink::reportStatus(StatusKind kind, const char *text) {
   CalFacts facts = {usableL, usableR, left_.hasLut(), right_.hasLut(),
                     left_.adsLastSeen(), right_.adsLastSeen()};
   const char *calStr = deriveCal(kind == StatusKind::CALIBRATING, calOk, facts, calError, desc, sizeof(desc));
-  if (kind == StatusKind::BOOT_HOLD && text) {
-    // The hold's reason (and how long is left) is what the master needs; it wins the
-    // ERR= slot even if the calibration itself has a problem -- that reappears
-    // once the hold ends.
-    strncpy(desc, text, sizeof(desc) - 1);
-    desc[sizeof(desc) - 1] = '\0';
+  // Protocol 10: a pending need (set by the power-up check) is what the master must act on --
+  // NONE / CHANGED / STALE -- even when old tables are loaded. PROCESSING and ERR keep priority.
+  if (strcmp(calStr, "PROCESSING") != 0 && strcmp(calStr, "ERR") != 0 &&
+      DualCalibration::calNeed() != DualCalibration::CalNeed::NONE) {
+    calStr = DualCalibration::calNeedName();
+    desc[0] = '\0';
   }
-
   float db = 0.0f;
   if (calOk && left_.currentStep() < left_.numSteps()) {
     db = left_.lut().step(left_.currentStep()).targetDb;
@@ -359,32 +352,26 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     return; // no banner: HELP is there if a human wants it
   }
 
-  // MUTE_BOOT_HOLD_MS is a blanket window, not just an AMP_MUTE-specific
-  // gate: refuse EVERY strict-protocol command (VOL, MUTE, CAL, STATUS,
-  // AMP_MUTE included) until it expires, so nothing can disturb the
-  // controlled startup sequence while it's still settling. The refusal is not
-  // an "ERR ..." line: it is the regular status reply with STATUS=BUSY and
-  // ERR=boot mute hold active, <n>ms remaining, so a master handles it the same
-  // way as any other "busy". DEBUG is deliberately exempt (checked above,
-  // already returned) -- a technician needs to be able to reach the bench
-  // console at any time, hold or no hold.
-  // Read-only queries (ENV, PROGRESS) are answered even during the hold: they change nothing.
+  // Read-only queries.
   if (upper == "ENV") { reportEnv(); return; }
   if (upper == "PROGRESS") { reportProgress(); return; }
   if (upper == "LEARN") { reportLearn(); return; }
-  if (board_.bootHoldRemainingMs() > 0) {
-    replyBootHold();
-    return;
-  }
+  // Protocol 10: no boot hold. Volume is refused until the attenuator is calibrated for
+  // these cells (CAL=OK): the LDR mute stays on, so nothing plays uncalibrated.
+  auto needCal = [&]() -> bool {
+    if (DualCalibration::calNeed() == DualCalibration::CalNeed::NONE &&
+        left_.hasUsableLut() && right_.hasUsableLut()) return false;
+    stream_.print(F("ERR calibration needed (CAL="));
+    stream_.print(DualCalibration::calNeed() == DualCalibration::CalNeed::NONE ? "ERR" : DualCalibration::calNeedName());
+    stream_.println(')');
+    return true;
+  };
 
   if (upper == "AMP_MUTE ON" || upper == "AMP_MUTE 1" ||
       upper == "AMP_MUTE OFF" || upper == "AMP_MUTE 0") {
     bool wantMuted = (upper == "AMP_MUTE ON" || upper == "AMP_MUTE 1");
-    if (board_.setAmpMute(wantMuted)) {
-      stream_.println(F("OK"));
-    } else {
-      replyBootHold(); // only possible inside the hold, which the gate above already catches
-    }
+    board_.setAmpMute(wantMuted);   // during a calibration's hold an unmute waits for its end
+    stream_.println(F("OK"));
 
   } else if (upper == "MUTE ON") {
     left_.mute();
@@ -392,21 +379,25 @@ void MasterLink::handleStrictLine(const String &lineIn) {
     stream_.println(F("OK"));
 
   } else if (upper == "MUTE OFF") {
+    if (needCal()) return;
     left_.unmute();
     right_.unmute();
     stream_.println(F("OK"));
 
   } else if (upper == "VOL UP") {
+    if (needCal()) return;
     bool okL = left_.stepUp();
     bool okR = right_.stepUp();
     stream_.println((okL && okR) ? F("OK") : F("ERR step limit or no calibration loaded"));
 
   } else if (upper == "VOL DOWN") {
+    if (needCal()) return;
     bool okL = left_.stepDown();
     bool okR = right_.stepDown();
     stream_.println((okL && okR) ? F("OK") : F("ERR step limit or no calibration loaded"));
 
   } else if (upper.startsWith("VOL ")) {
+    if (needCal()) return;
     // 0-based, identical to the bench console's step numbers: VOL 0 is the
     // quietest step. toInt() turns garbage into 0, which is now a VALID
     // volume, so insist the argument is all digits before trusting it.

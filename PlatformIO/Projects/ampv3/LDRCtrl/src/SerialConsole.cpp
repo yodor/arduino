@@ -812,13 +812,8 @@ void SerialConsole::handleLine(String line) {
       for (uint8_t c = 0; c < 2; c++) { if (on) both[c]->mute(); else both[c]->unmute(); }
       stream_.println(F("OK"));
     } else if (cmd == "AMP_MUTE") {
-      if (board_.setAmpMute(on)) {
-        stream_.println(F("OK"));
-      } else {
-        stream_.print(F("ERR boot mute hold active, "));
-        stream_.print(board_.bootHoldRemainingMs());
-        stream_.println(F("ms remaining"));
-      }
+      board_.setAmpMute(on);   // during a calibration's hold an unmute waits for its end
+      stream_.println(F("OK"));
     } else {
       if (on) { for (uint8_t c = 0; c < 2; c++) both[c]->relayEnergize(true); }
       else LDRVolume::releaseToAudio(both, 2);

@@ -1,4 +1,5 @@
 #include "PersistentSettings.hpp"
+#include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "AudioEngine.hpp"
@@ -13,7 +14,7 @@
 namespace {
 
 constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 6;          // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display (4 and 5 are still read, see loadAndApply())
+constexpr uint8_t  kVersion = 7;          // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display, 7: volume step (4-6 are still read, see loadAndApply())
 
 // Last flash sector -- same convention the Arduino-Pico EEPROM library
 // itself uses, chosen so this doesn't collide with program flash or a
@@ -62,6 +63,28 @@ struct PersistentDataV5 {
     uint8_t  checksum;
 };
 
+// Version 6 layout (v5 + standby display), likewise kept for migration.
+struct PersistentDataV6 {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  channelMode;
+    uint8_t  startingScreenIndex;
+    uint8_t  stereoLayout;
+    uint8_t  mirrorLeftBars;
+    uint8_t  colorPreset;
+    uint8_t  bandLayoutMode;
+    uint8_t  energyMode;
+    uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
+    uint8_t  peaksEnabled;
+    uint8_t  peakDecaySpeed;
+    uint8_t  clockShowDate;
+    uint8_t  clockShowSeconds;
+    uint8_t  clock24h;
+    uint8_t  standbyDisplay;
+    uint8_t  checksum;
+};
+
 struct PersistentData {
     uint32_t magic;
     uint8_t  version;
@@ -80,6 +103,7 @@ struct PersistentData {
     uint8_t  clockShowSeconds;
     uint8_t  clock24h;
     uint8_t  standbyDisplay;
+    uint8_t  volumeStep;     // 0xFF = none saved
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
@@ -153,7 +177,22 @@ void PersistentSettings::loadAndApply() {
         applyCommon(stored);
         applyClock(stored);
         DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(stored->standbyDisplay));
+        VolumeControl::instance().setSavedVolumeStep(stored->volumeStep == 0xFF ? -1 : stored->volumeStep);
         Serial.println("[Settings] Loaded saved settings from flash");
+        return;
+    }
+
+    if (stored->version == 6) {
+        // Previous layout: everything but the volume step (none saved yet).
+        const PersistentDataV6* old = storedAs<PersistentDataV6>();
+        if (computeChecksum(*old) != old->checksum) {
+            Serial.println("[Settings] Saved settings (v6) failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(old);
+        applyClock(old);
+        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
+        Serial.println("[Settings] Loaded v6 settings from flash (no volume step saved yet)");
         return;
     }
 
@@ -212,6 +251,8 @@ void PersistentSettings::commitToFlash() {
     data.clockShowSeconds    = DisplaySettings::instance().getClockShowSeconds() ? 1 : 0;
     data.clock24h            = DisplaySettings::instance().getClock24h() ? 1 : 0;
     data.standbyDisplay      = static_cast<uint8_t>(DisplaySettings::instance().getStandbyDisplay());
+    int16_t step             = VolumeControl::instance().savedVolumeStep();
+    data.volumeStep          = (step < 0 || step > 254) ? 0xFF : static_cast<uint8_t>(step);
     data.checksum            = computeChecksum(data);
 
     // flash_range_program() requires a page-aligned, page-sized source --

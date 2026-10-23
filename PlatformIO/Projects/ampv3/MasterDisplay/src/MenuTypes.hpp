@@ -48,6 +48,10 @@ struct MenuEditor {
     void (*limits)(const int16_t* values, uint8_t field, int16_t* minOut, int16_t* maxOut);
     // Applies the result; false = it failed (logged by the callback).
     bool (*save)(const int16_t* values);
+    // Optional: shows a field as text instead of a zero-padded number (e.g.
+    // "AUTO" / "650K"). Must always produce exactly digits[field] characters
+    // so the row keeps its layout; nullptr = plain number.
+    void (*format)(const int16_t* values, uint8_t field, char* out, size_t outSize) = nullptr;
 };
 
 struct MenuValueOption {

@@ -47,8 +47,10 @@ public:
     void loadAndApply();
 
     // Called by every menu setter that changes a persisted setting.
-    void markDirty() { m_dirty = true; }
+    void markDirty() { m_dirty = true; m_lastDirtyMs = millis(); }
     bool isDirty() const { return m_dirty; }
+    // For deferred saves (screen, volume): how long since the last change.
+    uint32_t msSinceDirty() const { return millis() - m_lastDirtyMs; }
 
     // Called when the menu closes (main.cpp's closeMenu()) -- commits to
     // flash via the interlocked raw-flash-write path if anything changed
@@ -65,5 +67,6 @@ private:
     PersistentSettings() = default;
     void commitToFlash();
 
+    uint32_t m_lastDirtyMs = 0;
     bool m_dirty = false;
 };

@@ -254,7 +254,7 @@ void LDRVolume::applyDefinedStartupState() {
 
 void LDRVolume::relayEnergize(bool on) {
   bool wasMuted = board_.ampMuted();
-  board_.setAmpMute(true); // force mute across the transition (no-op if boot hold already has it muted)
+  board_.setAmpMute(true); // force mute across the transition (no-op if it is already muted)
   // Tell Board a relay op is (or isn't) in flight on this channel -- on a real state change
   // only, so re-energizing an energized relay cannot leave the count stuck above zero.
   if (on != relay_.isEnergized()) board_.setRelayActive(on);
@@ -301,7 +301,7 @@ void LDRVolume::releaseToAudio(LDRVolume *const *ch, uint8_t n) {
   if (n == 0) return;
   Board &board = ch[0]->board_;
   const bool wasMuted = board.ampMuted();
-  board.setAmpMute(true); // held across the whole hand-back (no-op during the boot hold)
+  board.setAmpMute(true); // held across the whole hand-back (no-op if it is already muted)
   for (uint8_t c = 0; c < n; c++) ch[c]->reapplyCurrentStepOrDefault();
   BusyHook::wait(CAL_RELAX_BEFORE_RECONNECT_MS);
   for (uint8_t c = 0; c < n; c++) {

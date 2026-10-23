@@ -169,10 +169,6 @@ void Board::begin() {
 
 }
 
-unsigned long Board::bootHoldRemainingMs() const {
-  unsigned long elapsed = millis() - bootMillis_;
-  return (elapsed < MUTE_BOOT_HOLD_MS) ? (MUTE_BOOT_HOLD_MS - elapsed) : 0;
-}
 
 void Board::writeAmpMute(bool muted) {
   bool driveHigh = muted ? MUTE_ACTIVE_HIGH : !MUTE_ACTIVE_HIGH;
@@ -181,9 +177,8 @@ void Board::writeAmpMute(bool muted) {
 }
 
 bool Board::setAmpMute(bool muted) {
-  if (bootHoldRemainingMs() > 0) {
-    return false; // boot hold active -- BOTH directions ignored, pin untouched
-  }
+  // The amp mute is latched ON at power-up and changes only on command (the master decides
+  // the power state). No timed boot hold any more.
   if (hold_.active()) {
     // A calibration is holding the amp muted. Asking for mute is already true;
     // asking to open it must wait for the hold to end. The remembered
@@ -202,7 +197,7 @@ void Board::calHoldBegin() {
 }
 
 void Board::calHoldEnd() {
-  if (hold_.end(bootHoldRemainingMs() > 0)) writeAmpMute(false);
+  if (hold_.end(false)) writeAmpMute(false);
 }
 
 void Board::setRelayActive(bool active) {
@@ -214,18 +209,7 @@ void Board::setRelayActive(bool active) {
 }
 
 void Board::update() {
-  // One-shot: the instant the boot hold expires, auto-release the amp
-  // mute with no command required. Written directly (not via
-  // setAmpMute()) since that method's own gate would otherwise still
-  // see 0ms remaining and work fine -- but being explicit here makes
-  // the one-shot intent unambiguous rather than relying on that
-  // coincidence.
-  if (!bootHoldReleased_ && bootHoldRemainingMs() == 0 && !anyRelayActive() && !hold_.active()) {
-    bootHoldReleased_ = true;
-    bool driveHigh = !MUTE_ACTIVE_HIGH; // the "unmuted" drive level
-    digitalWrite(AMP_MUTE_PIN, driveHigh ? HIGH : LOW);
-    ampMuted_ = false;
-  }
+  // (The timed boot-hold auto-unmute is gone: the amp stays muted until the master says so.)
 }
 
 float Board::dieTempC() {

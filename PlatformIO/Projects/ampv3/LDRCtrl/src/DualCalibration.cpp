@@ -754,6 +754,14 @@ void saveModel() {
 }
 } // namespace
 
+// What the stored calibration needs before the attenuator may play (set at power-up by the
+// check, cleared by a completed CAL, set to NO_CAL by FORGET CAL).
+CalNeed gNeed = CalNeed::NO_CAL;
+CalNeed calNeed() { return gNeed; }
+const char *calNeedName() {
+  return gNeed == CalNeed::NONE ? "OK" : gNeed == CalNeed::NO_CAL ? "NONE" : gNeed == CalNeed::CHANGED ? "CHANGED" : "STALE";
+}
+
 CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, Stream &out, bool boot) {
   CalProgress::begin();                 // PROGRESS: CHECK until the kind is decided
   struct ProgGuard { ~ProgGuard() { CalProgress::end(); } } progGuard;
@@ -804,8 +812,19 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     out.print(AUDIO_SOURCE_OHMS, 0); out.print(F(" ohm, Rload ")); out.print(AMP_INPUT_LOAD_OHMS, 0);
     out.println(F(" ohm) -- re-solving"));
   }
-  if (boot && cs == CellState::MATCH && policyR <= 0.0f && !modelChanged) {
-    out.println(F("Boot: the cells match the stored calibration -- using it as saved."));
+  if (boot) {
+    // Power-up only CHECKS: nothing is calibrated without the master asking (CAL). STATUS
+    // reports what is needed (CAL=OK|NONE|CHANGED|STALE); until it is OK the LDR mute stays
+    // on and volume commands are refused.
+    if (cs == CellState::MATCH && policyR <= 0.0f && !modelChanged) {
+      gNeed = CalNeed::NONE;
+      out.println(F("Boot: the cells match the stored calibration -- using it as saved."));
+    } else {
+      gNeed = cs == CellState::NO_DATA ? CalNeed::NO_CAL : cs == CellState::MATCH ? CalNeed::STALE : CalNeed::CHANGED;
+      out.print(F("Boot: calibration needed ("));
+      out.print(calNeedName());
+      out.println(F(") -- waiting for CAL; the LDR mute stays on until then."));
+    }
     LDRVolume::releaseToAudio(ch, 2);
     return cs;
   }
@@ -859,6 +878,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
       break;
     }
   }
+  gNeed = (left.hasUsableLut() && right.hasUsableLut()) ? CalNeed::NONE : CalNeed::NO_CAL;
   return cs;
 }
 
@@ -1076,6 +1096,10 @@ void characterizeBoth(LDRVolume &left, LDRVolume &right, Stream &out) {
 // FORGET (console and master protocol share these).
 // ---------------------------------------------------------------------------
 void forgetCalibration(LDRVolume &left, LDRVolume &right) {
+  // Nothing may play until a new calibration AND the master's MUTE OFF (protocol 10), even if
+  // the attenuator was playing when this came in.
+  left.mute();
+  right.mute();
   left.calForget();
   right.calForget();
   // Everything that described THAT calibration goes with it.
@@ -1085,6 +1109,7 @@ void forgetCalibration(LDRVolume &left, LDRVolume &right) {
   LittleFS.remove("/lastmatch.txt");
   gLastMatchDb = NAN; gLastMatchLoaded = true;
   ThermalComp::refresh();               // no reference temperature: no offsets
+  gNeed = CalNeed::NO_CAL;
 }
 
 void forgetCompensation() {

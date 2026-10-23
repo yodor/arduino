@@ -15,7 +15,6 @@ constexpr bool MUTE_ACTIVE_HIGH = false;
 // floor: ALL mute commands, including user-issued ones (button/IR), are
 // refused outright for this entire duration -- not deferred, not
 // cancelable by any explicit call. Only expires by elapsed time.
-constexpr uint32_t MUTE_BOOT_HOLD_MS = 5000;
 
 // UART board link (pins in Pins.hpp).
 constexpr uint32_t UART_BAUD = 115200;
@@ -70,7 +69,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-23b (NaN checked before arithmetic: no +inf from missing sensors)"
+#define FW_VERSION "2026-10-24a (master-controlled power-up: muted until told; boot only checks)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -281,4 +280,4 @@ constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 // keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 9;  // 8: ENV, PROGRESS; 9: LEARN, FORGET CAL|COMP|ALL
+constexpr uint8_t PROTO_VERSION = 10; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: no boot hold/boot calibration, CAL=CHANGED|STALE, volume refused until calibrated

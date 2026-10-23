@@ -182,6 +182,8 @@ bool DaughterBoardLink::parseStatusLine(const char* line) {
             if      (!strcmp(val, "PROCESSING")) s.cal = DaughterCalState::PROCESSING;
             else if (!strcmp(val, "OK"))         s.cal = DaughterCalState::OK;
             else if (!strcmp(val, "NONE"))       s.cal = DaughterCalState::NONE;
+            else if (!strcmp(val, "CHANGED"))    s.cal = DaughterCalState::CHANGED;
+            else if (!strcmp(val, "STALE"))      s.cal = DaughterCalState::STALE;
             else if (!strcmp(val, "ERR"))        s.cal = DaughterCalState::ERR;
         }
         else if (!strcmp(key, "VOLMIN"))   s.volMin    = static_cast<int16_t>(atoi(val));

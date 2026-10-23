@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 9
+# Master Board <-> Daughter Board UART Protocol — revision 10
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=9`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`; `STATUS` itself is unchanged) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=10`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby") so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -56,11 +56,11 @@ volume without upsetting the stereo balance for a minute. So the usable range is
 | Command | Reply | Notes |
 |---|---|---|
 | `MUTE ON` | `OK` / `ERR ...` | Both channels. Instant (series→0, shunt→max); works even with no calibration loaded. |
-| `MUTE OFF` | `OK` / `ERR ...` | Restores whatever was active (or last requested, if a `VOL` came in while muted) on both channels. |
-| `VOL UP` | `OK` / `ERR step limit or no calibration loaded` | One LUT step louder, both channels. Stops at `VOLMAX`. |
-| `VOL DOWN` | `OK` / `ERR step limit or no calibration loaded` | One LUT step quieter, both channels. Stops at `VOLMIN`. |
-| `VOL <n>` | `OK` / `ERR ...` | `<n>` is the step number, **0-based**. Must be all digits: anything else, or a value outside 0–31, gets `ERR VOL out of range (0-31)`. `ERR step invalid or no calibration loaded` if that step has no valid solution on both channels (normally only 31) or a channel has no calibration. **A jump of more than one step auto-ramps through every intermediate step** (confirmed on real hardware: one big jump in one shot is an audible pop) — a couple of ms per step, worst case ~60–250 ms for a full-range jump. Inside the 500 ms timeout, but don't assume `VOL <n>` replies as instantly as `VOL UP`/`DOWN`. |
-| `AMP_MUTE ON` / `AMP_MUTE OFF` (also `1` / `0`) | `OK` (during the boot hold: the `BUSY` status line, see "Boot hold") | Engages/disengages the amp's own mute (4N25 opto, independent of the LDR network) — **regardless of either channel's `MUTE` state**. Once the boot hold expires **the amp auto-unmutes on its own, with no command needed**; a master only needs `AMP_MUTE OFF` if it deliberately re-muted after boot. |
+| `MUTE OFF` | `OK` / `ERR calibration needed (CAL=…)` | Restores whatever was active (or last requested, if a `VOL` came in while muted) on both channels. **Revision 10: refused until `CAL=OK`** (the LDR mute stays on). |
+| `VOL UP` | `OK` / `ERR step limit or no calibration loaded` / `ERR calibration needed (CAL=…)` | One LUT step louder, both channels. Stops at `VOLMAX`. |
+| `VOL DOWN` | `OK` / `ERR step limit or no calibration loaded` / `ERR calibration needed (CAL=…)` | One LUT step quieter, both channels. Stops at `VOLMIN`. |
+| `VOL <n>` | `OK` / `ERR ...` | `<n>` is the step number, **0-based**. Must be all digits: anything else, or a value outside 0–31, gets `ERR VOL out of range (0-31)`. `ERR step invalid or no calibration loaded` if that step has no valid solution on both channels (normally only 31) or a channel has no calibration. **A jump of more than one step auto-ramps through every intermediate step** (confirmed on real hardware: one big jump in one shot is an audible pop) — a couple of ms per step, worst case ~60–250 ms for a full-range jump. Inside the 500 ms timeout, but don't assume `VOL <n>` replies as instantly as `VOL UP`/`DOWN`. **Revision 10: all `VOL` forms are refused with `ERR calibration needed (CAL=…)` until `CAL=OK`.** While the LDR mute is on, `VOL <n>` is silent: it sets the step that `MUTE OFF` brings in. |
+| `AMP_MUTE ON` / `AMP_MUTE OFF` (also `1` / `0`) | `OK` | Engages/disengages the amp's own mute (4N25 opto, independent of the LDR network) — **regardless of either channel's `MUTE` state**. **Revision 10: ON from power-up until the master sends `AMP_MUTE OFF`** — there is no automatic release. Works whether or not a calibration is present. |
 | `STATUS` | the status line | The only way to read anything. See below. Read-only. |
 | `CAL` | the status line: `STATUS=BUSY` if started | **The** calibration. The daughter decides how much work it needs: a cell check against the stored calibration, then a full characterization (nothing stored, or the cells changed), a resync (same cells) or nothing more. See "Calibration". |
 | `CAL R=<ohms>` | the status line: `STATUS=BUSY` if started, or `CAL=ERR` with the reason | The same, with a manual Rtotal. Accepted **only if** `RMIN <= R <= RMAX` as reported in `STATUS`; otherwise refused and nothing changes. With the same cells it re-solves from the stored measurements (no full scan). |
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10
 ```
 
 | Key | Meaning |
@@ -108,9 +108,9 @@ OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING V
 | `UP` | Whole seconds since the daughter powered up or reset (there is no wall clock on the daughter; for warm-up analysis time-since-power-on is what matters). Wraps after ~49.7 days. Log it next to `TEMP`. |
 | `VOL` | Current volume, **0-based**: the number `VOL <n>` takes and the bench console's step number. Valid regardless of `MUTE` (mute doesn't change it). `-1` if there is no usable calibration. |
 | `DB` | Gain at the current `VOL`, in dB (negative; 1 decimal). Handy for an on-screen readout. `0` if there is no usable calibration. Since calibration revision 2 this is the **real, loaded** gain: the LUT is solved against the divider as it is actually loaded (the amp board's 10 kΩ input and the ~400 Ω JFET buffer output — `AMP_INPUT_LOAD_OHMS` / `AUDIO_SOURCE_OHMS` in `Config.hpp`), not the bare Rsh/(Rs+Rsh) ratio. Before that, steps 24–29 were up to ~7 dB quieter than their `DB` said. Residual error is the PWM step size at the quiet end (about ±0.4 dB with the 100k bleeds), not the model. |
-| `MUTE` | `1` if the LDR mute is engaged (what `MUTE ON` sets). |
-| `AMP_MUTE` | `1` if the amplifier mute is engaged (what `AMP_MUTE ON` sets, and what the boot hold and relay clicks assert). **While any calibration runs (`CAL`, or the boot cell check / calibration) the daughter holds the amp muted for the whole run, so `AMP_MUTE=1` throughout — including in the reply that announces `CAL=PROCESSING` — and puts it back the way it was when the run ends** (an amp you had muted stays muted; one that was open opens again only after the cells are back at their step duties and the relay has returned). A first-boot calibration leaves it muted and the normal boot auto-release opens it afterwards. |
-| `CAL` | `PROCESSING` — a calibration is running (only then; `STATUS=BUSY`). `OK` — both channels have a usable calibration. `NONE` — nothing is calibrated and nothing is wrong (a fresh unit). `ERR` — something is wrong, and `ERR=` says what: a rejected CAL request, or a channel that cannot run (`no ADS1115`, `no valid steps`, `not calibrated`). There is no separate "partial" value: one working channel out of two cannot do stereo, so it is an error that names the channel. After a calibration this is how the master learns whether it worked. |
+| `MUTE` | `1` if the LDR mute is engaged (what `MUTE ON` sets; **ON from power-up**, revision 10, and held on while `CAL` is not `OK`). |
+| `AMP_MUTE` | `1` if the amplifier mute is engaged (what `AMP_MUTE ON` sets; **ON from power-up**, revision 10). **While any calibration runs (`CAL`, or the power-up cell check) the daughter holds the amp muted for the whole run, so `AMP_MUTE=1` throughout, and puts it back the way it was when the run ends** — an amp that was muted stays muted; one that was open opens again only after the cells are back at their step duties and the relay has returned. |
+| `CAL` | `PROCESSING` — a calibration is running (the power-up cell check included; `STATUS=BUSY`). `OK` — calibrated for these cells; volume commands work. **Revision 10, a calibration is needed before anything plays (the LDR mute stays on, `VOL`/`MUTE OFF` are refused):** `NONE` — nothing stored (first boot, or after `FORGET CAL`): `CAL` runs a full characterization. `CHANGED` — the stored calibration belongs to other cells: `CAL` runs a full characterization. `STALE` — same cells, but the Rtotal policy or the source/load model changed: `CAL` re-solves from the stored measurements (quick). `ERR` — something is wrong; `ERR=` says what (a rejected `CAL` request, a missing ADS1115, a channel without valid steps). |
 | `VOLMIN`, `VOLMAX` | Lowest and highest `VOL` valid on **both** channels (0-based). Normally 0 and 31; step 31 is the transparent state (series 150 Ω on both channels, shunt off, about −0.47 dB). Use these to clamp the master's own volume UI. `-1` if there is no usable calibration. |
 | `RANGE` | Total attenuation depth the LUT spans (dB from `VOLMIN` to the notional 0 dB the solved steps are spaced against; step 31, the transparent state, sits just below that at about −0.47 dB). Always computed from the measured floors; identical on both channels. `0` if there is no usable calibration. |
 | `R` | The Rs+Rsh total, in ohms, that the LUT is solved for — chosen by the last full characterization (AUTO) or given by the master (`CAL R=`), the same on both channels. |
@@ -129,7 +129,7 @@ revisions without breaking an older master.
 Two short read-only queries, so `STATUS` keeps its fixed field order and length. Each reply
 is one line, fixed key order, well under 140 characters. **Both are answered at any time:**
 while idle, **during a calibration** (alongside `STATUS`; every other command still gets
-`ERR busy`), and **during the boot hold**. They change nothing. Unknown or not-applicable
+`ERR busy`). They change nothing. Unknown or not-applicable
 values read `--`.
 
 ### `ENV` -- temperatures, rail, compensation
@@ -205,7 +205,7 @@ OK LEARN N=7 SPREAD=1.24 COMP=ON KL=-5.84 R2L=0.99 KR=-5.28 R2R=0.99 MINN=3 MINS
 | `MINN`, `MINSPREAD`, `MINR2` | the bar a side's fit must clear before the compensation uses it |
 
 A display can show e.g. "Learning: 2/3 resyncs, 0.3/0.5 C" until `COMP=ON`. Like `ENV` and
-`PROGRESS` it is answered while idle, during a calibration and during the boot hold.
+`PROGRESS` it is answered while idle and during a calibration.
 
 ### `FORGET CAL` / `FORGET COMP` / `FORGET ALL`
 
@@ -217,7 +217,7 @@ A display can show e.g. "Learning: 2/3 resyncs, 0.3/0.5 C" until `COMP=ON`. Like
 
 Reply: `OK` **immediately**; the work (releasing to the LDR mute) then takes about 3 s, during
 which `STATUS` reads `BUSY` and `ENV`/`PROGRESS`/`LEARN` still answer. Any other `FORGET ...`
-gets `ERR usage: FORGET CAL|COMP|ALL`. Refused during the boot hold and during a calibration
+gets `ERR usage: FORGET CAL|COMP|ALL`. Refused during a calibration
 (`ERR busy`), like every setter. A master should ask for confirmation before sending
 `FORGET CAL`: the volume is muted until a new calibration completes (about 6.5 minutes).
 
@@ -332,26 +332,50 @@ driver (100k base bleeds), 2 = 1M base bleeds. Bump `CAL_HW_REV` in `Config.hpp`
 change as any hardware modification that alters the duty→resistance relationship, and flash
 it with BOOTSEL after the board is modified (see the comment in `Config.hpp`).
 
-## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks every command except `ENV`, `PROGRESS` and `LEARN`
+## Power-up and standby (revision 10)
 
-(Revisions 8-9: the read-only `ENV`, `PROGRESS` and `LEARN` are answered during the hold; everything else, `FORGET` included, is refused as described below.)
+The master owns the power state. The daughter never unmutes or calibrates on its own.
 
-During the boot-mute hold window the daughter refuses **every** strict-protocol
-command — `VOL`, `MUTE`, `AMP_MUTE`, `CAL …`, `STATUS` — so nothing can disturb the
-controlled startup sequence while it settles. The refusal is **not** an `ERR` line: it
-is the regular status line, with **`STATUS=BUSY`** and
-**`ERR=boot mute hold active, <n>ms remaining`**, for whichever command was sent:
+**At power-up the daughter:**
+1. starts with **both mutes ON**: the amp mute (`AMP_MUTE=1`) and the LDR mute (`MUTE=1`);
+2. loads the stored calibration and, if there is one, runs the **cell check** (about 10 s,
+   relays energized, audio disconnected): `STATUS=BUSY CAL=PROCESSING`, `PROGRESS PHASE=CHECK`;
+3. then reports what it found, in `CAL=`, and waits. **Nothing is calibrated automatically.**
 
+| `CAL=` after power-up | The master shows | What `CAL` will do |
+|---|---|---|
+| `OK` | normal operation | (a resync, if the user asks) |
+| `NONE` | "No calibration" | full characterization (~6.5 min) |
+| `CHANGED` | "Cells changed" | full characterization (~6.5 min) |
+| `STALE` | "Settings changed: re-solve needed" | re-solve from the stored measurements (~2-3 min) |
+
+While `CAL` is not `OK`: the LDR mute stays on, `VOL ...` and `MUTE OFF` reply
+`ERR calibration needed (CAL=NONE|CHANGED|STALE)`. `AMP_MUTE`, `MUTE ON`, `CAL`, `FORGET`,
+`STATUS`, `ENV`, `PROGRESS`, `LEARN` work as usual. **A completed calibration does not unmute
+anything**: both mutes stay as they were, and the master unmutes when it is ready.
+
+**Recommended master sequence:**
 ```
-OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9 ERR=boot mute hold active, 3200ms remaining
+power-up        poll STATUS until IDLE
+  CAL=OK        VOL <saved step>        (silent: the LDR mute is on)
+                MUTE OFF                (cells move to the step while the amp is still off)
+                stay in standby
+  CAL=other     show the reason; offer the calibration menu -> CAL
+                when STATUS returns to IDLE with CAL=OK: as above
+
+leave standby   SSR on (amp + splitter), wait for the amp to settle
+                AMP_MUTE OFF
+
+enter standby   AMP_MUTE ON
+                SSR off
+                (leave the LDR at its step: do NOT send MUTE ON)
 ```
 
-So a master treats it as any other "busy": wait `n` ms (or just poll `STATUS`) and
-retry the command. The other fields are the real values — only the commands are held.
-`CAL` is the true calibration state, not `PROCESSING` (nothing is being processed);
-`PROCESSING` means a calibration is running. `DEBUG` is the one exception to the hold
-(a technician must be able to reach the bench console at any time). A calibration
-that is already running answers `STATUS=BUSY … CAL=PROCESSING` / `ERR busy` as above.
+**Why the LDR stays at its step in standby:** the cells keep their operating point and the
+driver block keeps its temperature, so leaving standby is instant and exactly on level, with
+no slide from the LDR mute. There is **no standby command and no low-power mode**: the
+daughter draws a fraction of a watt, and staying powered is what keeps the thermal
+compensation's reference stable. `MUTE ON` remains available for a user-facing mute.
 
 ## `DEBUG` / `EXIT` — a human-technician escape hatch, not part of the protocol
 
@@ -401,8 +425,8 @@ bool parseStatus(const String &line, Status &out) {
   return true;
 }
 
-// busy == true with out.error starting "boot mute hold active": the boot hold -- wait and
-// retry. busy == true with out.cal == "PROCESSING": a calibration is running.
+// busy == true with out.cal == "PROCESSING": a calibration (or the power-up cell check) is
+// running. Revision 10: out.cal NONE / CHANGED / STALE = a calibration is needed before VOL.
 //
 // start: send "CAL" (the daughter decides), "CAL R=<ohms>" within RMIN..RMAX, or "CAL R=AUTO"; the reply is a status
 // line. busy == true: started. busy == false with cal == "ERR": it did NOT start, and
@@ -440,7 +464,7 @@ stored measurements at the next `CAL` or boot (`LASTCAL=RESOLVE`), without a ful
 
 - One calibration command: `CAL`, `CAL R=<ohms>` or `CAL R=AUTO`. `CAL FAST` and `CAL FULL`
   no longer exist; they get the ordinary `CAL args` error.
-- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=9`.
+- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=7`.
 - A full characterization takes about 4–5 minutes, a resync about 2 — poll `STATUS` until
   `IDLE`, as before.
 

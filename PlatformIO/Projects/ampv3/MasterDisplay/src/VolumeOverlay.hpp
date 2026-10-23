@@ -30,11 +30,12 @@ public:
     void dismiss() { m_active = false; }
 
 private:
-    enum class View : uint8_t { NONE, NO_LINK, STARTING, CALIBRATING, NOT_CALIBRATED, VOLUME };
+    enum class View : uint8_t { NONE, NO_LINK, CHECKING, CALIBRATING, NOT_CALIBRATED, VOLUME };
     View currentView() const;
 
     void drawStaticForView(View v);
     void drawMuteTag(bool muted);
+    void drawRTag();   // "R=650K (auto)" in the top-right corner
     void drawValue(int16_t vol, int16_t volMax, int32_t dbTenths);
     void drawBar(int16_t vol, int16_t volMin, int16_t volMax, bool muted);
     void drawCentered(const char* text, uint8_t size, int16_t y, uint16_t color);
@@ -58,4 +59,6 @@ private:
     int16_t  m_drawnVolMax   = -2;
     int16_t  m_drawnLit      = -1;
     bool     m_drawnBarMuted = false;
+    uint32_t m_drawnROhms    = 0xFFFFFFFF;
+    int8_t   m_drawnRAuto    = -1;
 };

@@ -1,10 +1,22 @@
-LDR daughter board firmware -- 2026-10-23b (NaN checked before arithmetic: no +inf from missing sensors)  (driver v1b, 2nd-edition LDR boards)
+LDR daughter board firmware -- 2026-10-24a (master-controlled power-up: muted until told; boot only checks)  (driver v1b, 2nd-edition LDR boards)
 
-Fix: with the DS18B20s removed, "since the last calibration" and the learning log showed the
-cell changes as +inf. The RP2040's ROM float routines turn NaN - NaN into infinity, so unknown
-values are now checked BEFORE any arithmetic, the fit ignores non-finite entries (the inf
-entries already in your learning log are simply skipped), and every printed value shows "--"
-for anything non-finite. The compensation (block fit) was never affected.
+Protocol revision 10 -- the master owns the power state:
+* Power-up: amp mute ON and LDR mute ON, until the master changes them. No timed boot hold,
+  no automatic unmute (MUTE_BOOT_HOLD_MS is gone).
+* Power-up only CHECKS (cell check ~10 s, STATUS=BUSY, PROGRESS PHASE=CHECK). Nothing is
+  calibrated automatically. STATUS then says what is needed:
+    CAL=OK       ready
+    CAL=NONE     nothing stored               -> CAL runs a full characterization
+    CAL=CHANGED  other cells than calibrated  -> CAL runs a full characterization
+    CAL=STALE    Rtotal policy / model changed -> CAL re-solves (quick)
+* Until CAL=OK: the LDR mute stays on; VOL ... and MUTE OFF reply
+  "ERR calibration needed (CAL=...)". AMP_MUTE, MUTE ON, CAL, FORGET and the queries work.
+* A calibration never unmutes anything; FORGET CAL engages the LDR mute first.
+See daughter-board-uart-protocol-v2.md, "Power-up and standby", for the recommended master
+sequence (standby: AMP_MUTE ON + SSR off, leave the LDR at its step).
+
+The bench console (DEBUG) is unrestricted, as a bench tool: its VOL works even when CAL is
+not OK.
 
 firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
-No recalibration: same file format, calibration, learning log and references are kept.
+No recalibration: same file format; calibration, learning log and references are kept.
