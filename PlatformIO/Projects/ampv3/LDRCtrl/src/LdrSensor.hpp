@@ -20,6 +20,35 @@
 // relay energize/de-energize, so callers don't normally call these
 // directly.
 // ============================================================================
+// Which ADS1115 inputs carry which junction differs between LDR board layouts:
+//   original board: A0 = ADS_VDD, A1 = top junction,    A3 = middle junction
+//   second edition: A0 = ADS_VDD, A1 = middle junction, A3 = top junction
+// Both are measured directly (each quantity in its own optimal range):
+//                      Rref (VDD - top)   series (top - middle)   shunt (middle)
+//   top on A1:         A0 - A1            A1 - A3                 A3 - GND
+//   top on A3:         A0 - A3            -(A1 - A3)              A1 - GND
+// read(mux) is any callable returning the auto-ranged signed voltage of that mux setting.
+namespace SenseWiring {
+struct Volts { float vRef, vRs, vRsh; };
+template <class Read> Volts measure(bool topOnA3, Read read) {
+  Volts v;
+  if (topOnA3) {
+    v.vRef = read(Ads1115::MUX_AIN0_AIN3);
+    v.vRs  = -read(Ads1115::MUX_AIN1_AIN3);
+    v.vRsh = read(Ads1115::MUX_AIN1_GND);
+  } else {
+    v.vRef = read(Ads1115::MUX_AIN0_AIN1);
+    v.vRs  = read(Ads1115::MUX_AIN1_AIN3);
+    v.vRsh = read(Ads1115::MUX_AIN3_GND);
+  }
+  return v;
+}
+// The top junction is never below the middle one (current flows top -> series -> middle).
+// A series drop this far negative means the assumed wiring is the other board's.
+constexpr float WRONG_WIRING_VOLTS = 0.003f;
+inline bool wiringLooksWrong(const Volts &v) { return v.vRs < -WRONG_WIRING_VOLTS; }
+} // namespace SenseWiring
+
 class LdrSensor {
 public:
   LdrSensor(TwoWire &wire, uint8_t sdaPin, uint8_t sclPin,
@@ -27,6 +56,11 @@ public:
       : wire_(wire), sdaPin_(sdaPin), sclPin_(sclPin), rRefOhms_(rRefOhms) {
     ads_.begin(wire_, addr);
   }
+
+  // Which board layout this sensor sits on (see SenseWiring). A reading that shows the
+  // series drop with the wrong sign flips it automatically (reported once).
+  void setWiring(bool topOnA3, char label) { topOnA3_ = topOnA3; label_ = label; }
+  bool topOnA3() const { return topOnA3_; }
 
   // Configures SDA/SCL and starts the bus.
   void activate();
@@ -61,4 +95,6 @@ private:
   uint8_t sdaPin_, sclPin_;
   Ads1115 ads_;
   float rRefOhms_;
+  bool topOnA3_ = true;
+  char label_ = '?';
 };

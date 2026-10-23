@@ -27,12 +27,19 @@ struct DebouncedButton {
     uint32_t pressedSinceMs = 0; // timestamp of the most recent justPressed; only meaningful while isHeld()
     bool     longPressFired = false; // true once checkLongPress() has already fired for the CURRENT press, so it only fires once
 
-    void begin(uint8_t p) {
-        pin = p;
+    const char* name       = "?";
+    uint16_t    rawEdges   = 0;     // raw changes since the last stable change (button monitor)
+    uint32_t    firstEdgeMs = 0;    // when the current burst of raw changes began
+
+    void begin(uint8_t p, const char* label) {
+        pin  = p;
+        name = label;
         if (pin != 255) pinMode(pin, INPUT_PULLUP);
     }
 
-    void update(uint32_t now, uint32_t debounceMs) {
+    // monitor: log raw edges and stable changes to Serial (button monitor,
+    // USB console command BUTTONS).
+    void update(uint32_t now, uint32_t debounceMs, bool monitor) {
         justPressed  = false;
         justReleased = false;
         if (pin == 255) return;
@@ -41,6 +48,12 @@ struct DebouncedButton {
         if (reading != lastRawState) {
             // Raw signal changed (a real press/release or just contact
             // bounce) -- restart the debounce timer either way.
+            if (rawEdges == 0) firstEdgeMs = now;
+            ++rawEdges;
+            if (monitor) {
+                Serial.printf("[Btn] %-5s raw %s  (+%lums)\n", name, reading == LOW ? "LOW " : "HIGH",
+                              static_cast<unsigned long>(now - firstEdgeMs));
+            }
             lastChangeMs = now;
             lastRawState = reading;
         }
@@ -49,6 +62,11 @@ struct DebouncedButton {
             // Signal has held steady long enough to trust it: this is the
             // real, settled state change.
             stableState = reading;
+            if (monitor) {
+                Serial.printf("[Btn] %-5s %s after %u raw edge%s\n", name, stableState == LOW ? "PRESSED " : "released",
+                              rawEdges, rawEdges == 1 ? "" : "s");
+            }
+            rawEdges = 0;
             if (stableState == LOW) {
                 justPressed    = true;
                 pressedSinceMs = now;
@@ -56,6 +74,14 @@ struct DebouncedButton {
             } else {
                 justReleased = true;
             }
+        } else if (rawEdges > 0 && reading == stableState && (now - lastChangeMs) > debounceMs) {
+            // Raw edges that settled back where they started (a contact
+            // that blipped shorter than the debounce time): no press.
+            if (monitor) {
+                Serial.printf("[Btn] %-5s glitch ignored (%u raw edge%s, shorter than %lums)\n", name, rawEdges,
+                              rawEdges == 1 ? "" : "s", static_cast<unsigned long>(debounceMs));
+            }
+            rawEdges = 0;
         }
     }
 
@@ -103,11 +129,21 @@ public:
     // navigation) can check this to ignore the repeat frames specifically.
     bool lastIrWasRepeat() const { return m_lastIrWasRepeat; }
 
+    // Button monitor (USB console BUTTONS): logs every raw edge on the four
+    // button pins and every debounced press/release. A clean press shows one
+    // raw LOW, then PRESSED; a bouncy or intermittent contact shows bursts of
+    // LOW/HIGH, "glitch ignored", or a press that never reaches PRESSED.
+    void setMonitor(bool on) { m_monitor = on; }
+    bool monitor() const     { return m_monitor; }
+    void printRawStates() const; // the four pins' current raw levels
+
 private:
     InputEngine() = default;
 
     static constexpr uint32_t DEBOUNCE_MS         = 50;
-    static constexpr uint32_t MENU_LONG_PRESS_MS  = 1000; // hold LEFT this long (alone, or with RIGHT also held) to open the menu
+    // Hold time for both long presses: LEFT (alone, or with RIGHT also held)
+    // opens the menu; RIGHT alone switches power (on / standby).
+    static constexpr uint32_t LONG_PRESS_MS = 1000;
 
     uint8_t m_irPin = 255;
 
@@ -119,7 +155,18 @@ private:
     // True once a LEFT long-press has fired MENU_TOGGLE for the CURRENT
     // press, so the eventual release doesn't ALSO fire MODE_PREV for the
     // same physical press.
-    bool m_leftConsumedByLongPress = false;
+    bool m_leftConsumedByLongPress  = false;
+    bool m_rightConsumedByLongPress = false;
+    bool m_monitor = false;
+
+    // Events found in one poll are handed out one per pollEvents() call, so
+    // two in the same poll (e.g. RIGHT pressed while LEFT is released)
+    // aren't lost -- button edges only exist for the poll they happen in.
+    static constexpr uint8_t kQueueSize = 4;
+    UIEvent m_queue[kQueueSize] = {};
+    uint8_t m_queueCount = 0;
+    void    push(UIEvent e) { if (m_queueCount < kQueueSize) m_queue[m_queueCount++] = e; }
+    UIEvent pop();
 
     bool m_lastIrWasRepeat = false;
 };

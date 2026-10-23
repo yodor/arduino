@@ -31,6 +31,7 @@ void tick();                          // from the idle main loop
 void suspend();                       // a calibration starts: offsets 0, frozen
 void onCalibrated();                  // refit from the log, new reference, resume
 void resumeIfSuspended();             // however a calibration ended (no-op after onCalibrated)
+void refresh();                       // the log or the reference changed (FORGET): refit, re-apply
 void setEnabled(bool on);             // COMP ON|OFF (not stored: boots ON)
 bool enabled();
 void report(Stream &out);

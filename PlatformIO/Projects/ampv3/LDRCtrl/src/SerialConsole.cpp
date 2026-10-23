@@ -304,7 +304,7 @@ void SerialConsole::printHelp() {
   stream_.println(F("Firmware: " FW_VERSION ", built " __DATE__ " " __TIME__));
   stream_.println(F("  CAL [R=<ohms>|R=AUTO]   the calibration, as the master's CAL: checks the cells,"));
   stream_.println(F("                          then full characterization / resync / re-solve"));
-  stream_.println(F("  FORGET                  delete both stored calibrations (next CAL or boot: full)"));
+  stream_.println(F("  FORGET CAL|COMP|ALL     forget the calibrations / the thermal learning / both"));
   stream_.println(F("  VOL [<n>|UP|DOWN]       set (0-based) or report the volume, with each channel's"));
   stream_.println(F("                          duties and target Rs/Rsh (live too, after RELAY ON)"));
   stream_.println(F("  VOL INFO                every step as a table, L|R, with the L/R match measured by"));
@@ -315,7 +315,7 @@ void SerialConsole::printHelp() {
   stream_.println(F("  RELAY ON|OFF            both relays (OFF restores the volume, then reconnects)"));
   stream_.println(F("  TEMP                    all temperatures: die, driver block (NTC), rail, both cells"));
   stream_.println(F("  TEMP ID L|R             assign the cell sensors: warm that board's sensor by hand"));
-  stream_.println(F("  LEARN [CLEAR]           thermal learning log: knee shift per resync vs temperature changes"));
+  stream_.println(F("  LEARN                   thermal learning log: knee shift per resync vs temperature changes"));
   stream_.println(F("  COMP [ON|OFF]           thermal compensation from the learned fit (A/B; boots ON)"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
@@ -414,6 +414,10 @@ void SerialConsole::diagSnapshot() {
   stream_.println(F(" Hz"));
   Board::reportDieTemp(stream_, F("Die temp"));
   ThermalLog::printSince(stream_);
+  stream_.print(F("  sense wiring: L top junction on "));
+  stream_.print(left_.sensorTopOnA3() ? F("A3 (2nd-edition board)") : F("A1 (original board)"));
+  stream_.print(F(", R on "));
+  stream_.println(right_.sensorTopOnA3() ? F("A3 (2nd-edition board)") : F("A1 (original board)"));
   RailComp::report(stream_);
   ThermalComp::report(stream_);
   stream_.println(F("--- STATE ---"));
@@ -729,9 +733,23 @@ void SerialConsole::handleLine(String line) {
     DualCalibration::calibrate(left_, right_, req, stream_, false);
 
   } else if (cmd == "FORGET") {
-    left_.calForget();
-    right_.calForget();
-    stream_.println(F("OK both stored calibrations deleted -- the next CAL (or boot) runs a full characterization"));
+    String what = n >= 2 ? tok[1] : String("");
+    what.toUpperCase();
+    const bool cal = (what == "CAL" || what == "ALL"), comp = (what == "COMP" || what == "ALL");
+    if (!cal && !comp) {
+      stream_.println(F("ERR usage: FORGET CAL | FORGET COMP | FORGET ALL"));
+      stream_.println(F("    CAL   both calibrations (+ reference rail, model, environment); next CAL is full"));
+      stream_.println(F("    COMP  the thermal learning log; compensation off until relearned"));
+      return;
+    }
+    if (cal) {
+      DualCalibration::forgetCalibration(left_, right_);
+      stream_.println(F("OK calibrations forgotten -- the next CAL (or boot) runs a full characterization"));
+    }
+    if (comp) {
+      DualCalibration::forgetCompensation();
+      stream_.println(F("OK thermal learning forgotten -- compensation off until the next resyncs relearn it"));
+    }
 
   } else if (cmd == "VOL") {
     String a = n >= 2 ? tok[1] : String("");
@@ -764,7 +782,7 @@ void SerialConsole::handleLine(String line) {
     ThermalComp::report(stream_);
 
   } else if (cmd == "LEARN") {
-    if (n >= 2 && tok[1].equalsIgnoreCase("CLEAR")) { ThermalLog::clear(); stream_.println(F("OK thermal learning log cleared")); return; }
+    if (n >= 2 && tok[1].equalsIgnoreCase("CLEAR")) { stream_.println(F("ERR use FORGET COMP (FORGET ALL also clears the calibrations)")); return; }
     ThermalLog::printLog(stream_);
 
   } else if (cmd == "TEMP") {

@@ -1,13 +1,10 @@
-LDR daughter board firmware -- 2026-10-17a (protocol 8: ENV + PROGRESS for the master display)  (driver v1b)
+LDR daughter board firmware -- 2026-10-23b (NaN checked before arithmetic: no +inf from missing sensors)  (driver v1b, 2nd-edition LDR boards)
 
-Protocol revision 8 (STATUS unchanged apart from PROTO=8):
-  ENV       temperatures, rail, thermal compensation state, last L/R match -- instant
-  PROGRESS  what a running calibration is doing: KIND, PHASE, SIDE, STEP i/n, PCT, ETA
-Both are answered at any time, including DURING a calibration and the boot hold.
-The cell sensors are read in the background every 30 s (no 750 ms block in a reply).
-See daughter-board-uart-protocol-v2.md, section "Revision 8", for the master side.
+Fix: with the DS18B20s removed, "since the last calibration" and the learning log showed the
+cell changes as +inf. The RP2040's ROM float routines turn NaN - NaN into infinity, so unknown
+values are now checked BEFORE any arithmetic, the fit ignores non-finite entries (the inf
+entries already in your learning log are simply skipped), and every printed value shows "--"
+for anything non-finite. The compensation (block fit) was never affected.
 
-1. DELETE your project's src/ folder, copy this package's src/ next to platformio.ini,
-   and replace platformio.ini with the one in this package.
-2. pio run -t clean ; pio run ; flash .pio/build/picow/firmware.uf2 (BOOTSEL + copy).
-3. Boot: no format change; calibration, learning log and references are kept.
+firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
+No recalibration: same file format, calibration, learning log and references are kept.

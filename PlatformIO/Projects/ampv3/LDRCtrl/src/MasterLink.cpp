@@ -1,4 +1,7 @@
 #include "MasterLink.hpp"
+#include "ThermalLog.hpp"
+#include "ThermalFit.hpp"
+#include "BusyHook.hpp"
 #include "CellTemps.hpp"
 #include "RailComp.hpp"
 #include "ThermalComp.hpp"
@@ -142,6 +145,8 @@ void MasterLink::serviceWhileBusy() {
       reportProgress();
     } else if (line == "ENV") {
       reportEnv();
+    } else if (line == "LEARN") {
+      reportLearn();
     } else {
       // Everything else must wait until STATUS reads IDLE -- but say so,
       // rather than leaving the master's command timing out.
@@ -163,7 +168,7 @@ void MasterLink::replyBootHold() {
 namespace {
 void kv(Print &o, const __FlashStringHelper *key, float v, uint8_t dec, bool sign = false) {
   o.print(' '); o.print(key); o.print('=');
-  if (isnan(v)) { o.print(F("--")); return; }
+  if (!isfinite(v)) { o.print(F("--")); return; }
   if (sign && v >= 0) o.print('+');
   o.print(v, dec);
 }
@@ -189,6 +194,29 @@ void MasterLink::reportEnv() {
   const float b = ThermalComp::blockAverage(), b0 = ThermalComp::blockAtCalibration();
   kv(stream_, F("DBLOCK"), (isnan(b) || isnan(b0)) ? NAN : b - b0, 2, true);
   kv(stream_, F("MATCH"), DualCalibration::lastQuietMatchDb(), 2, true);
+  stream_.println();
+}
+
+void MasterLink::reportLearn() {
+  // OK LEARN N= SPREAD= COMP= KL= R2L= KR= R2R= MINN= MINSPREAD= MINR2=
+  // N resyncs in the log; SPREAD the RMS change of the block temperature across them (C);
+  // the fit per side; and the bar it must clear before the compensation trusts it.
+  uint8_t n; float spread;
+  ThermalLog::fitCounts(n, spread);
+  float k[2], r2[2]; bool usable[2];
+  ThermalLog::blockSlopes(k, r2, usable);
+  const bool aL = ThermalComp::sideActive(0), aR = ThermalComp::sideActive(1);
+  stream_.print(F("OK LEARN N=")); stream_.print(n);
+  kv(stream_, F("SPREAD"), n ? spread : NAN, 2);
+  stream_.print(F(" COMP="));
+  stream_.print(!ThermalComp::enabled() ? F("OFF") : (aL && aR) ? F("ON") : (aL || aR) ? F("PART") : F("LEARNING"));
+  kv(stream_, F("KL"), k[0], 2, true);
+  kv(stream_, F("R2L"), r2[0], 2);
+  kv(stream_, F("KR"), k[1], 2, true);
+  kv(stream_, F("R2R"), r2[1], 2);
+  stream_.print(F(" MINN=3"));
+  kv(stream_, F("MINSPREAD"), 0.5f, 2);
+  kv(stream_, F("MINR2"), ThermalComp::MIN_R2, 2);
   stream_.println();
 }
 
@@ -343,6 +371,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
   // Read-only queries (ENV, PROGRESS) are answered even during the hold: they change nothing.
   if (upper == "ENV") { reportEnv(); return; }
   if (upper == "PROGRESS") { reportProgress(); return; }
+  if (upper == "LEARN") { reportLearn(); return; }
   if (board_.bootHoldRemainingMs() > 0) {
     replyBootHold();
     return;
@@ -396,6 +425,18 @@ void MasterLink::handleStrictLine(const String &lineIn) {
       VolumeRamp::rampTo(both, 2, (uint8_t)n, ok);
       stream_.println((ok[0] && ok[1]) ? F("OK") : F("ERR step invalid or no calibration loaded"));
     }
+
+  } else if (upper == "FORGET CAL" || upper == "FORGET COMP" || upper == "FORGET ALL") {
+    // Reply at once (the release to the LDR mute takes ~3 s, longer than the master's
+    // timeout), then do it inside a busy scope: STATUS reads BUSY meanwhile.
+    stream_.println(F("OK"));
+    stream_.flush();
+    BusyHook::Scope busy;
+    if (upper != "FORGET COMP") DualCalibration::forgetCalibration(left_, right_);
+    if (upper != "FORGET CAL")  DualCalibration::forgetCompensation();
+
+  } else if (upper.startsWith("FORGET")) {
+    stream_.println(F("ERR usage: FORGET CAL|COMP|ALL"));
 
   } else if (upper == "STATUS") {
     reportStatus();

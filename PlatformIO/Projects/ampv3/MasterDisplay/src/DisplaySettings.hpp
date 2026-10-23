@@ -19,6 +19,13 @@ enum class StereoLayout : uint8_t {
     TOP_BOTTOM    // left grows up from center, right grows down, meeting at a shared centerline (formerly OctaveScreen's only layout)
 };
 
+// What the display shows in standby (Settings -> Power -> Standby Display).
+enum class StandbyDisplay : uint8_t {
+    CLOCK,     // the Clock screen at the normal brightness
+    DIM_CLOCK, // the Clock screen at STANDBY_DIM_PERCENT
+    OFF        // backlight off -- a key press only wakes it for the power popup
+};
+
 // Shared display settings, toggled via UI and consulted by whichever
 // screens care (currently: channel mode, respected by SpectrumScreen and
 // WaveformScreen). A natural home for further global display defaults
@@ -93,6 +100,9 @@ public:
     bool getClock24h() const         { return m_clock24h; }
     void setClock24h(bool on)        { m_clock24h = on; }
 
+    StandbyDisplay getStandbyDisplay() const    { return m_standbyDisplay; }
+    void setStandbyDisplay(StandbyDisplay mode) { m_standbyDisplay = mode; }
+
 private:
     DisplaySettings() = default;
     ChannelMode  m_channelMode         = ChannelMode::STEREO;
@@ -104,4 +114,5 @@ private:
     bool         m_clockShowDate       = true;
     bool         m_clockShowSeconds    = false;
     bool         m_clock24h            = true;
+    StandbyDisplay m_standbyDisplay    = StandbyDisplay::CLOCK;
 };

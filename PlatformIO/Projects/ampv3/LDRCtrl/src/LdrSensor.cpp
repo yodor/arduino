@@ -17,9 +17,17 @@ void LdrSensor::scanBus() {
 }
 
 bool LdrSensor::read(float &vRefOut, float &rsOut, float &rshOut) {
-  float vRef = ads_.readVoltageAutoRange(Ads1115::MUX_AIN0_AIN1); // drop across Rref
-  float vRs  = ads_.readVoltageAutoRange(Ads1115::MUX_AIN1_AIN3); // drop across Rseries
-  float vRsh = ads_.readVoltageAutoRange(Ads1115::MUX_AIN3_GND);  // drop across Rshunt
+  auto rd = [this](Ads1115::Mux m) { return ads_.readVoltageAutoRange(m); };
+  SenseWiring::Volts v = SenseWiring::measure(topOnA3_, rd);
+  if (SenseWiring::wiringLooksWrong(v)) {           // the other board layout: switch and re-read
+    topOnA3_ = !topOnA3_;
+    Serial.print(F("[sensor ")); Serial.print(label_);
+    Serial.print(F("] ADS inputs: top junction is on "));
+    Serial.print(topOnA3_ ? F("A3 (second-edition LDR board)") : F("A1 (original LDR board)"));
+    Serial.println(F(" -- mapping switched"));
+    v = SenseWiring::measure(topOnA3_, rd);
+  }
+  float vRef = v.vRef, vRs = v.vRs, vRsh = v.vRsh;
 
   vRefOut = vRef;
   // Require a real margin above zero, not just >0: at very low current

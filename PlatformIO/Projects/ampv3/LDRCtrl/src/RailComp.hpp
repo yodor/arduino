@@ -40,5 +40,6 @@ void endFullCharacterization();           // however it ended: correction back o
 void report(Stream &out);                 // one line: reference, now, the correction
 float referenceVolts();
 float averageVolts();                     // the 1-minute average the correction uses
+void forgetReference();                   // FORGET CAL: no reference until the next calibration
 
 } // namespace RailComp

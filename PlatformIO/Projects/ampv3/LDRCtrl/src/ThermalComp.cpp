@@ -69,6 +69,7 @@ void onCalibrated() {
 }
 
 void resumeIfSuspended() { if (gFrozen) onCalibrated(); }
+void refresh() { refit(); apply(true); }
 
 float blockAverage() { return gEma; }
 float blockAtCalibration() { return gRef; }

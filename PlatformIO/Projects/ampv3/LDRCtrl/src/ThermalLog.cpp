@@ -12,8 +12,13 @@ constexpr uint8_t MAX_ENTRIES = 48;
 constexpr size_t ROTATE_BYTES = 6000;   // past this, keep the newest 30 lines
 constexpr uint8_t KEEP_LINES = 30;
 
+// The RP2040's ROM float routines do NOT propagate NaN: NaN - NaN comes out as infinity.
+// So "unknown" must be checked BEFORE any arithmetic, never after.
+float diffOrNan(float a, float b) { return (isnan(a) || isnan(b)) ? NAN : a - b; }
+float pctOrNan(float now, float ref) { return (isnan(now) || isnan(ref) || !(ref > 0.0f)) ? NAN : (now / ref - 1.0f) * 100.0f; }
+
 void printSigned(Print &p, float v, uint8_t dec) {
-  if (isnan(v)) { p.print(F("--")); return; }
+  if (!isfinite(v)) { p.print(F("--")); return; }
   if (v >= 0) p.print('+');
   p.print(v, dec);
 }
@@ -118,9 +123,9 @@ void onCalibrated(bool resync, const float *shift, const Env &now, Stream &out) 
   Env prev;
   const bool havePrev = loadState(prev);
   if (resync && havePrev && shift) {
-    const float dB = now.block - prev.block;
-    const float dL = now.cell[0] - prev.cell[0], dR = now.cell[1] - prev.cell[1];
-    const float dRail = (now.rail / prev.rail - 1.0f) * 100.0f;
+    const float dB = diffOrNan(now.block, prev.block);
+    const float dL = diffOrNan(now.cell[0], prev.cell[0]), dR = diffOrNan(now.cell[1], prev.cell[1]);
+    const float dRail = pctOrNan(now.rail, prev.rail);
     File f = LittleFS.open(LOG_PATH, "a");
     if (f) {
       f.print(shift[0], 3); f.print(','); f.print(shift[1], 3); f.print(',');
@@ -148,10 +153,10 @@ void printSince(Stream &out) {
   Env prev;
   if (!loadState(prev)) { out.println(F("  since the last calibration: -- (no environment saved yet; the next CAL saves it)")); return; }
   const Env now = snapshot();
-  out.print(F("  since the last calibration: block ")); printSigned(out, now.block - prev.block, 2);
-  out.print(F(" C, cells L ")); printSigned(out, now.cell[0] - prev.cell[0], 2);
-  out.print(F(" R ")); printSigned(out, now.cell[1] - prev.cell[1], 2);
-  out.print(F(" C, rail ")); printSigned(out, (now.rail / prev.rail - 1.0f) * 100.0f, 2); out.println(F(" %"));
+  out.print(F("  since the last calibration: block ")); printSigned(out, diffOrNan(now.block, prev.block), 2);
+  out.print(F(" C, cells L ")); printSigned(out, diffOrNan(now.cell[0], prev.cell[0]), 2);
+  out.print(F(" R ")); printSigned(out, diffOrNan(now.cell[1], prev.cell[1]), 2);
+  out.print(F(" C, rail ")); printSigned(out, pctOrNan(now.rail, prev.rail), 2); out.println(F(" %"));
 }
 
 void printLog(Stream &out) {
@@ -190,6 +195,15 @@ void printLog(Stream &out) {
 }
 
 void clear() { LittleFS.remove(LOG_PATH); }
+
+void fitCounts(uint8_t &n, float &spread) {
+  static ThermalFit::Entry e[MAX_ENTRIES];
+  n = loadEntries(e, MAX_ENTRIES);
+  const ThermalFit::Slope s = ThermalFit::fit(e, n, 0, 0);
+  spread = s.spread;
+}
+
+void forgetEnvironment() { LittleFS.remove(STATE_PATH); }
 
 bool savedBlock(float &t) {
   Env e;

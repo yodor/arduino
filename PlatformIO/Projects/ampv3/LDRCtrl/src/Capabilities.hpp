@@ -361,8 +361,10 @@ void printReport(OUT &out, const LdrCurve *const *ser, const LdrCurve *const *sh
     for (uint8_t k = 0; k < pr->n; k++) {
       const DarkPoint &d = pr->p[k];
       Line c; c.raw("  "); c.raw(labels[i]); c.raw(" duty "); c.num(d.duty, 0); c.raw(": ");
-      c.num(d.ohms / 1000.0, 1); c.raw("k  settled in "); c.num(d.settleS, 0); c.raw(" s  memory x");
-      c.num(d.memory, 3); if (!d.ok) c.raw("  <-- did not settle / not darker: end of the usable dark range");
+      c.num(d.ohms / 1000.0, 1); c.raw("k  settled in "); c.num(d.settleS, 0);
+      if (d.memory > 0.0f) { c.raw(" s  memory x"); c.num(d.memory, 3); }
+      else c.raw(" s  (shallow: no memory test)");
+      if (!d.ok) c.raw("  <-- did not settle / not darker: end of the usable dark range");
       out.println(c.b);
     }
   }

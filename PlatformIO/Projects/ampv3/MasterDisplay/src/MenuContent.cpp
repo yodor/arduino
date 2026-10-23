@@ -594,6 +594,46 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
+// Settings -> Calibration -> Learning: the daughter's thermal learning
+// (rev 9 LEARN) -- how many resyncs it has, how far the block temperature
+// has varied, and the per-side fit against the bar it must clear.
+size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.requestLearn();
+    const DaughterLearn& l = link.learn();
+    if (!link.isStatusFresh()) {
+        addLine(lines, n, maxLines, "No reply from the daughter board");
+        return n;
+    }
+    if (!l.valid) {
+        addLine(lines, n, maxLines, "Waiting for data...");
+        return n;
+    }
+    addLine(lines, n, maxLines, "Compensation: %s", l.comp);
+    addLine(lines, n, maxLines, "Resyncs:  %s (needs %s)", l.n, l.minN);
+    addLine(lines, n, maxLines, "Spread:   %s C (needs %s)", l.spread, l.minSpread);
+    addLine(lines, n, maxLines, "Left:     k %s, R2 %s", l.kL, l.r2L);
+    addLine(lines, n, maxLines, "Right:    k %s, R2 %s", l.kR, l.r2R);
+    addLine(lines, n, maxLines, "Fit used from R2 %s", l.minR2);
+    addLine(lines, n, maxLines, "(k = PWM counts per C of block)");
+    return n;
+}
+
+// Settings -> Calibration -> Forget (rev 9 FORGET). Cancel is first and
+// focused; picking one of the others shows the Status page, where the ~3 s
+// of BUSY and the resulting state can be watched.
+void menuAction_ForgetCal()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::CAL);  Serial.println("[Menu] FORGET CAL requested"); }
+void menuAction_ForgetComp() { VolumeControl::instance().forget(DaughterBoardLink::Forget::COMP); Serial.println("[Menu] FORGET COMP requested"); }
+void menuAction_ForgetAll()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::ALL);  Serial.println("[Menu] FORGET ALL requested"); }
+
+const MenuValueOption kForgetOptions[] = {
+    { "Cancel",      nullptr,               nullptr },
+    { "Calibration", menuAction_ForgetCal,  nullptr }, // volume muted until a new (full) calibration completes
+    { "Learning",    menuAction_ForgetComp, nullptr }, // thermal learning log; compensation relearns
+    { "Everything",  menuAction_ForgetAll,  nullptr },
+};
+
 const MenuValueOption kRModeOptions[] = {
     { "Auto",   menuSet_RAuto,   menuIsActive_RAuto   },
     { "Manual", menuSet_RManual, menuIsActive_RManual },
@@ -612,6 +652,8 @@ const MenuItem kCalibrationSubmenuItems[] = {
     { "Manual R kOhm", MenuItemType::EDITOR,     nullptr, nullptr, 0, nullptr, 0, nullptr, &kRManualEditor },
     { "Progress",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
     { "Status",      MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
+    { "Learning",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
+    { "Forget",      MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
 };
 constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
 
@@ -626,10 +668,29 @@ const MenuItem kDiagnosticsSubmenuItems[] = {
 };
 constexpr size_t kDiagnosticsSubmenuItemCount = sizeof(kDiagnosticsSubmenuItems) / sizeof(kDiagnosticsSubmenuItems[0]);
 
+// --- Settings -> Power ---
+void menuSet_StandbyClock() { DisplaySettings::instance().setStandbyDisplay(StandbyDisplay::CLOCK);     PersistentSettings::instance().markDirty(); }
+void menuSet_StandbyDim()   { DisplaySettings::instance().setStandbyDisplay(StandbyDisplay::DIM_CLOCK); PersistentSettings::instance().markDirty(); }
+void menuSet_StandbyOff()   { DisplaySettings::instance().setStandbyDisplay(StandbyDisplay::OFF);       PersistentSettings::instance().markDirty(); }
+bool menuIsActive_StandbyClock() { return DisplaySettings::instance().getStandbyDisplay() == StandbyDisplay::CLOCK; }
+bool menuIsActive_StandbyDim()   { return DisplaySettings::instance().getStandbyDisplay() == StandbyDisplay::DIM_CLOCK; }
+bool menuIsActive_StandbyOff()   { return DisplaySettings::instance().getStandbyDisplay() == StandbyDisplay::OFF; }
+
+const MenuValueOption kStandbyDisplayOptions[] = {
+    { "Clock",     menuSet_StandbyClock, menuIsActive_StandbyClock },
+    { "Dim Clock", menuSet_StandbyDim,   menuIsActive_StandbyDim   },
+    { "Off",       menuSet_StandbyOff,   menuIsActive_StandbyOff   },
+};
+const MenuItem kPowerSubmenuItems[] = {
+    { "Standby Display", MenuItemType::VALUE_CHOICE, nullptr, kStandbyDisplayOptions, 3 },
+};
+constexpr size_t kPowerSubmenuItemCount = sizeof(kPowerSubmenuItems) / sizeof(kPowerSubmenuItems[0]);
+
 // --- Settings ---
 const MenuItem kSettingsSubmenuItems[] = {
     { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr, kBrightnessOptions,  4 },
     { "Clock",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kClockSubmenuItems,       kClockSubmenuItemCount },
+    { "Power",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kPowerSubmenuItems,       kPowerSubmenuItemCount },
     { "Calibration",     MenuItemType::SUBMENU, nullptr, nullptr, 0, kCalibrationSubmenuItems, kCalibrationSubmenuItemCount },
     { "Diagnostics",     MenuItemType::SUBMENU, nullptr, nullptr, 0, kDiagnosticsSubmenuItems, kDiagnosticsSubmenuItemCount },
     // Read-only: shows the running firmware version; selecting it does nothing.

@@ -13,7 +13,7 @@
 namespace {
 
 constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 5;          // bump whenever PersistentData's layout changes -- 5: added the clock options (4 is still read, see loadAndApply())
+constexpr uint8_t  kVersion = 6;          // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display (4 and 5 are still read, see loadAndApply())
 
 // Last flash sector -- same convention the Arduino-Pico EEPROM library
 // itself uses, chosen so this doesn't collide with program flash or a
@@ -41,6 +41,27 @@ struct PersistentDataV4 {
     uint8_t  checksum;
 };
 
+// Version 5 layout (v4 + the clock options), likewise kept for migration.
+struct PersistentDataV5 {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  channelMode;
+    uint8_t  startingScreenIndex;
+    uint8_t  stereoLayout;
+    uint8_t  mirrorLeftBars;
+    uint8_t  colorPreset;
+    uint8_t  bandLayoutMode;
+    uint8_t  energyMode;
+    uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
+    uint8_t  peaksEnabled;
+    uint8_t  peakDecaySpeed;
+    uint8_t  clockShowDate;
+    uint8_t  clockShowSeconds;
+    uint8_t  clock24h;
+    uint8_t  checksum;
+};
+
 struct PersistentData {
     uint32_t magic;
     uint8_t  version;
@@ -58,6 +79,7 @@ struct PersistentData {
     uint8_t  clockShowDate;
     uint8_t  clockShowSeconds;
     uint8_t  clock24h;
+    uint8_t  standbyDisplay;
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
@@ -93,6 +115,14 @@ void applyCommon(const T* stored) {
     BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(stored->peakDecaySpeed));
 }
 
+// The clock options (v5 and v6).
+template <typename T>
+void applyClock(const T* stored) {
+    DisplaySettings::instance().setClockShowDate(stored->clockShowDate != 0);
+    DisplaySettings::instance().setClockShowSeconds(stored->clockShowSeconds != 0);
+    DisplaySettings::instance().setClock24h(stored->clock24h != 0);
+}
+
 // The cross-core interlock's two flags. File-local since both sides that
 // touch them (commitToFlash() below and checkAndPauseForFlashWrite())
 // live in this one translation unit -- AudioEngine only ever calls the
@@ -121,10 +151,23 @@ void PersistentSettings::loadAndApply() {
             return;
         }
         applyCommon(stored);
-        DisplaySettings::instance().setClockShowDate(stored->clockShowDate != 0);
-        DisplaySettings::instance().setClockShowSeconds(stored->clockShowSeconds != 0);
-        DisplaySettings::instance().setClock24h(stored->clock24h != 0);
+        applyClock(stored);
+        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(stored->standbyDisplay));
         Serial.println("[Settings] Loaded saved settings from flash");
+        return;
+    }
+
+    if (stored->version == 5) {
+        // Previous layout: everything but the standby display, which starts
+        // at its default; the next save writes v6.
+        const PersistentDataV5* old = storedAs<PersistentDataV5>();
+        if (computeChecksum(*old) != old->checksum) {
+            Serial.println("[Settings] Saved settings (v5) failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(old);
+        applyClock(old);
+        Serial.println("[Settings] Loaded v5 settings from flash (standby display at default)");
         return;
     }
 
@@ -168,6 +211,7 @@ void PersistentSettings::commitToFlash() {
     data.clockShowDate       = DisplaySettings::instance().getClockShowDate() ? 1 : 0;
     data.clockShowSeconds    = DisplaySettings::instance().getClockShowSeconds() ? 1 : 0;
     data.clock24h            = DisplaySettings::instance().getClock24h() ? 1 : 0;
+    data.standbyDisplay      = static_cast<uint8_t>(DisplaySettings::instance().getStandbyDisplay());
     data.checksum            = computeChecksum(data);
 
     // flash_range_program() requires a page-aligned, page-sized source --

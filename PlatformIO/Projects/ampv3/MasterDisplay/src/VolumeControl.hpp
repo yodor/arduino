@@ -1,10 +1,9 @@
 #pragma once
 #include "Config.hpp"
+#include "DaughterBoardLink.hpp"
 
-// Unified mute/volume control.
-//  - Volume is driven through BOTH the DRV8833 motor (continuous while held)
-//    and the daughter board (discrete VOL UP/DOWN steps), unconditionally --
-//    whichever is fitted takes effect.
+// Mute/volume control, all via the daughter board.
+//  - Volume: discrete VOL UP/DOWN steps while a volume key is held.
 //  - Mute is the daughter board's alone (its LDR mute). There is no local
 //    mute pin any more; isMuted() mirrors what the daughter reports in its
 //    STATUS line, updated optimistically the moment the user toggles it.
@@ -14,9 +13,9 @@ public:
 
     void init();
 
-    // Call every loop iteration -- services the motor and the daughter link,
-    // adopts fresh STATUS data, retries any command the busy link couldn't
-    // take yet, and while held, drives both volume paths.
+    // Call every loop iteration -- services the daughter link, adopts fresh
+    // STATUS data, retries any command the busy link couldn't take yet, and
+    // while a volume key is held, steps the volume.
     void update(bool wantVolUpHeld, bool wantVolDownHeld);
 
     void muteOn();
@@ -24,12 +23,18 @@ public:
     void toggleMute();
     bool isMuted() const { return m_muted; }
 
-    // The daughter's separate amp mute (AMP_MUTE). Not bundled into
-    // muteOn()/muteOff() -- the daughter treats them as unrelated. Not wired
-    // to any button/menu yet.
+    // The daughter's separate amp mute (AMP_MUTE), used by the power
+    // sequence. Not bundled into muteOn()/muteOff() -- the daughter treats
+    // them as unrelated. Retried until the link takes it, like mute.
     void ampMuteOn();
     void ampMuteOff();
     bool isAmpMuted() const { return m_ampMuted; }
+    // True once the daughter has confirmed the requested amp-mute state in a
+    // STATUS that arrived after the command went out.
+    bool ampMuteConfirmed() const;
+
+    // rev 9 FORGET (CAL / COMP / ALL), retried until the link takes it.
+    void forget(DaughterBoardLink::Forget what);
 
     // Asks the daughter to calibrate. KEEP_R sends plain "CAL" (the daughter
     // decides how much work it needs, Rtotal unchanged); AUTO_R "CAL R=AUTO";
@@ -52,6 +57,10 @@ private:
     uint32_t m_lastMuteChangeMs  = 0;     // last user mute change -- see DAUGHTER_MUTE_ADOPT_GRACE_MS
     bool     m_mutePending       = false; // a MUTE ON/OFF still waiting for the link to be free
     bool     m_calPending        = false; // a CAL still waiting for the link to be free
+    bool     m_ampMutePending    = false; // an AMP_MUTE ON/OFF still waiting for the link
+    uint32_t m_ampMuteSentMs     = 0;     // when it went out (for ampMuteConfirmed())
+    bool     m_forgetPending     = false;
+    DaughterBoardLink::Forget m_forgetWhat = DaughterBoardLink::Forget::CAL;
     CalR     m_calMode           = CalR::KEEP_R;
     uint32_t m_calOhms           = 0;
     uint32_t m_lastVolCommandMs  = 0;     // throttles VOL UP/DOWN repeats

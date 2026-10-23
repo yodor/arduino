@@ -70,7 +70,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-17a (protocol 8: ENV + PROGRESS for the master display)"
+#define FW_VERSION "2026-10-23b (NaN checked before arithmetic: no +inf from missing sensors)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -106,6 +106,14 @@ constexpr uint16_t CAL_BRIGHT_HOLD_DUTY = (uint16_t)(((uint32_t)LED_PWM_WRAP * 8
 // - Calculate Z_out = 1k × (V_open / V_load − 1).
 // Expect roughly 200–350 Ω. Enter whatever you measure, and the setting is exact for that board.
 constexpr float AMP_INPUT_LOAD_OHMS = 10000.0f;
+// LDR board layout per channel: which ADS1115 input carries the TOP junction.
+//   true  = second-edition LDR board (A1 = middle, A3 = top)
+//   false = original LDR board       (A1 = top,    A3 = middle)
+// Only the starting assumption: a reading that proves the other layout switches the mapping
+// automatically (reported once), so mixed or swapped boards still measure correctly.
+constexpr bool LDR_L_TOP_ON_A3 = true;
+constexpr bool LDR_R_TOP_ON_A3 = true;
+
 constexpr float AUDIO_SOURCE_OHMS   = 300.0f;
 
 
@@ -273,4 +281,4 @@ constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 // keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 8;  // 8: ENV and PROGRESS queries
+constexpr uint8_t PROTO_VERSION = 9;  // 8: ENV, PROGRESS; 9: LEARN, FORGET CAL|COMP|ALL

@@ -94,6 +94,7 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     if (cmd == PendingCmd::STATUS)   m_lastStatusSentMs   = m_commandSentMs;
     if (cmd == PendingCmd::ENV)      m_lastEnvSentMs      = m_commandSentMs;
     if (cmd == PendingCmd::PROGRESS) m_lastProgressSentMs = m_commandSentMs;
+    if (cmd == PendingCmd::LEARN)    m_lastLearnSentMs    = m_commandSentMs;
     if (cmd == PendingCmd::CAL)      m_calStart           = DaughterCalStart::PENDING;
     m_lineLen       = 0;     // fresh reply incoming; discard anything stale
     m_lineOverflow  = false;
@@ -116,6 +117,11 @@ bool DaughterBoardLink::sendCalibrateR(uint32_t ohms) {
 bool DaughterBoardLink::sendStatus()     { return sendLine("STATUS",       PendingCmd::STATUS); }
 bool DaughterBoardLink::sendEnv()        { return sendLine("ENV",          PendingCmd::ENV); }
 bool DaughterBoardLink::sendProgress()   { return sendLine("PROGRESS",     PendingCmd::PROGRESS); }
+bool DaughterBoardLink::sendLearn()      { return sendLine("LEARN",        PendingCmd::LEARN); }
+bool DaughterBoardLink::sendForget(Forget what) {
+    const char* line = (what == Forget::CAL) ? "FORGET CAL" : (what == Forget::COMP) ? "FORGET COMP" : "FORGET ALL";
+    return sendLine(line, PendingCmd::FORGET);
+}
 
 bool DaughterBoardLink::sendVolSet(int16_t step) {
     // The valid range lives on the daughter now (VOLMIN/VOLMAX in STATUS),
@@ -290,6 +296,29 @@ bool DaughterBoardLink::parseProgressLine(const char* line) {
     return true;
 }
 
+// "OK LEARN N=7 SPREAD=1.24 COMP=ON KL=-5.84 R2L=0.99 ..." (rev 9)
+bool DaughterBoardLink::parseLearnLine(const char* line) {
+    static const char kPrefix[] = "OK LEARN ";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterLearn l;
+    forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* v) {
+        if      (!strcmp(k, "N"))         copyField(l.n, v);
+        else if (!strcmp(k, "SPREAD"))    copyField(l.spread, v);
+        else if (!strcmp(k, "COMP"))      copyField(l.comp, v);
+        else if (!strcmp(k, "KL"))        copyField(l.kL, v);
+        else if (!strcmp(k, "R2L"))       copyField(l.r2L, v);
+        else if (!strcmp(k, "KR"))        copyField(l.kR, v);
+        else if (!strcmp(k, "R2R"))       copyField(l.r2R, v);
+        else if (!strcmp(k, "MINN"))      copyField(l.minN, v);
+        else if (!strcmp(k, "MINSPREAD")) copyField(l.minSpread, v);
+        else if (!strcmp(k, "MINR2"))     copyField(l.minR2, v);
+    });
+    l.valid      = true;
+    l.receivedMs = millis();
+    m_learn = l;
+    return true;
+}
+
 void DaughterBoardLink::handleResponseLine(const char* line) {
     if (DAUGHTER_LINK_TRACE) { Serial.print("[UART RX] "); Serial.println(line); }
 
@@ -328,7 +357,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         return;
     }
 
-    if (parseEnvLine(line) || parseProgressLine(line)) {
+    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line)) {
         if (wasPending) m_status = DaughterCmdStatus::OK;
         return;
     }
@@ -442,12 +471,16 @@ void DaughterBoardLink::update() {
         bool progressDue = calibrating && (now - m_lastProgressSentMs >= DAUGHTER_PROGRESS_POLL_MS);
         bool envDue      = static_cast<int32_t>(m_envWantedUntilMs - now) > 0 &&
                            (m_lastEnvSentMs == 0 || now - m_lastEnvSentMs >= DAUGHTER_ENV_POLL_MS);
+        bool learnDue    = static_cast<int32_t>(m_learnWantedUntilMs - now) > 0 &&
+                           (m_lastLearnSentMs == 0 || now - m_lastLearnSentMs >= DAUGHTER_ENV_POLL_MS);
         if (statusDue) {
             if (sendStatus()) m_statusRefreshRequested = false;
         } else if (progressDue) {
             sendProgress();
         } else if (envDue) {
             sendEnv();
+        } else if (learnDue) {
+            sendLearn();
         }
     }
 }

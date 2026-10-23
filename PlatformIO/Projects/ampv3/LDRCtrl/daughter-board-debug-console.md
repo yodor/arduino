@@ -7,11 +7,11 @@ purpose: the calibration decides for itself, and everything worth looking at is 
 | Command | What it does |
 |---|---|
 | `CAL [R=<ohms>\|R=AUTO]` | The calibration, exactly as the master's `CAL`: a cell check against the stored calibration, then a full characterization (nothing stored, or the cells changed), a resync (same cells) or a re-solve + resync (same cells, new R). `R=` must lie in the measured range. |
-| `FORGET` | Deletes both stored calibrations (memory and flash). The next `CAL` or boot runs a full characterization, Rtotal back to AUTO. |
+| `FORGET CAL` / `FORGET COMP` / `FORGET ALL` | `CAL`: both stored calibrations and what belonged to them (reference rail, source/load model, environment at calibration, last match); the next `CAL` (or boot) runs a full characterization. `COMP`: the thermal learning log; the compensation switches off until the next resyncs relearn it. `ALL`: both. A plain `FORGET` only shows these options. The same commands exist on the master protocol (revision 9). |
 | `VOL [<n>\|UP\|DOWN]` | Sets the volume (0-based, both channels) and always reports, per channel: the step, its dB (`TRANSPARENT` for the top step: series 150 Ω on both channels, shunt off, about −0.47 dB; `[muted]` if muted), the series and shunt duties and their target Rs/Rsh. With `RELAY ON` it also measures both cells live (after the 3 s settling time when the volume changed) and shows each as a ratio to its target plus the real dB; in audio mode the sensors are disconnected, so no live values. |
 | `TEMP` | Every temperature at once: RP2040 die, the driver block (NTC on the aluminium block), the 3.3 V rail (via the TL431), and both cell sensors (DS18B20) with their IDs and L/R assignment. The DS18B20 conversion takes up to ~0.75 s. Also shows the rail compensation: the reference rail (stored with the calibration's curves), the rail now, and the resulting drive correction. |
 | `TEMP ID L` / `TEMP ID R` | Assigns the cell sensors: warm that board's sensor with a fingertip; the one that rises becomes that side, the other the other side. Saved in flash (by sensor ID). |
-| `LEARN` / `LEARN CLEAR` | The thermal learning log: one line per resync with each channel's knee shift (PWM counts) next to how much the driver block, each cell and the 3.3 V rail changed since the previous calibration; then a fit per channel (counts per C of block, per C of cell, per % of rail, with R2). Needs at least 3 resyncs across about 0.5 C of change. `CLEAR` starts the log over. Every calibration saves the environment it was made in; `TEMP` and `DIAG` show the change since then. |
+| `LEARN` | The thermal learning log: one line per resync with each channel's knee shift (PWM counts) next to how much the driver block, each cell and the 3.3 V rail changed since the previous calibration; then a fit per channel (counts per C of block, per C of cell, per % of rail, with R2). Needs at least 3 resyncs across about 0.5 C of change. `FORGET COMP` starts the log over. Every calibration saves the environment it was made in; `TEMP` and `DIAG` show the change since then. |
 | `COMP` / `COMP ON` / `COMP OFF` | Thermal compensation from the learned fit: each side's duties get k x (driver-block temperature now - at the last calibration), from the block's 1-minute average; k comes from `LEARN`'s fit vs the block, used once trusted (3+ resyncs, 0.5 C spread, R2 >= 0.6). Off during every calibration (resyncs keep measuring the raw shift, so the learning refines itself). `COMP OFF` for an A/B listen; not stored, boots ON. `TEMP` and `DIAG` show it. |
 | `VOL INFO` | Every step in one table, L and R side by side: target dB, series duty and target Rs, shunt duty and target Rsh per channel (no live check), then — from the last `DIAG ALL` verify since boot — each channel's measured dB, L−R and the **match %** (the quieter channel's amplitude as a share of the louder's: 0.8 dB → 91%, 0.1 dB → 99%), with a mean/worst summary. Without a `DIAG ALL` since boot those columns show `--`. `>` marks the current step. It ends with the **health findings** (below). |
 | `MUTE ON\|OFF` | The LDR mute (both channels). |
@@ -88,3 +88,12 @@ naming the element and what to try next. `OK no findings` when there is nothing.
 | `INFO AUTO is set by the L/R series: …` — which channel, and which limit (slope, memory, step error), limits the depth | the capability model, per channel | — |
 | `WARN die N C now, M C at the last CAL` (≥ 3 °C) | die temperature | `CAL` |
 | `INFO no DIAG ALL since boot …` | — | run `DIAG ALL` for the measured checks |
+
+### Sense wiring per LDR board layout
+
+`DIAG` shows which ADS1115 input carries each board's top junction: the original LDR board has
+it on A1 (A3 = middle junction), the second edition on A3 (A1 = middle junction). `Config.hpp`
+sets the starting assumption per channel (`LDR_L_TOP_ON_A3`, `LDR_R_TOP_ON_A3`, default: second
+edition). A reading that shows the series drop with the wrong sign switches the mapping by itself
+and prints `[sensor L] ADS inputs: top junction is on ... -- mapping switched` once, so a mixed
+or swapped pair of boards still measures correctly.

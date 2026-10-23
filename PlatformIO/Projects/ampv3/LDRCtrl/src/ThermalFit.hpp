@@ -32,7 +32,7 @@ inline Slope fit(const Entry *e, uint8_t n, uint8_t c, uint8_t xSel) {
   for (uint8_t i = 0; i < n; i++) {
     const float y = e[i].shift[c];
     const float x = xSel == 0 ? e[i].dBlock : xSel == 1 ? e[i].dCell[c] : e[i].dRailPct;
-    if (isnan(x) || isnan(y)) continue;
+    if (!isfinite(x) || !isfinite(y)) continue;   // NaN, or inf from NaN arithmetic on the RP2040
     sxy += (double)x * y; sxx += (double)x * x; syy += (double)y * y;
     s.n++;
   }

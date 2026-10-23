@@ -17,6 +17,7 @@
 #include "ClockScreen.hpp"
 #include "DisplayTestScreen.hpp"
 #include "PowerControl.hpp"
+#include "PowerOverlay.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
@@ -78,6 +79,12 @@ static MenuScreen g_menuScreen;
 // (see DisplayTestScreen.hpp for the tests and controls).
 static DisplayTestScreen g_displayTest;
 static bool              g_displayTestOpen = false;
+
+// Power / standby. g_powerView is what the power layer currently owns the
+// panel with (NONE = the normal screens/menu/overlays below it).
+enum class PowerView : uint8_t { NONE, POPUP, STANDBY_CLOCK, STANDBY_DARK };
+static PowerOverlay g_powerOverlay;
+static PowerView    g_powerView = PowerView::NONE;
 
 static VolumeOverlay g_volumeOverlay;
 static bool          g_overlayShown = false;
@@ -176,7 +183,7 @@ void setup() {
 
     VolumeControl::instance().init();
     Serial.println("[OK] VolumeControl initialized.");
-    Serial.printf("[OK] Power control: amp %s (IR power key toggles)\n", PowerControl::instance().isOn() ? "ON" : "OFF");
+    Serial.printf("[OK] Power control: %s (IR power key toggles)\n", PowerControl::instance().isOn() ? "ON" : "STANDBY");
 
     RtcClock::instance().begin(); // logs its own outcome
 
@@ -201,7 +208,7 @@ static uint32_t g_loopTimeSumUs   = 0; // full loop() iteration, incl. pacing de
 static uint32_t g_lastReportMs    = 0;
 
 // Timestamps of the last GAIN_UP/GAIN_DOWN IR events, used to treat a
-// recent-enough repeat train as "still held" -- see MOTOR_COMMAND_TIMEOUT_MS.
+// recent-enough repeat train as "still held" -- see IR_VOLUME_HOLD_MS.
 static uint32_t g_lastGainUpMs   = 0;
 static uint32_t g_lastGainDownMs = 0;
 
@@ -224,9 +231,29 @@ void loop() {
 
     UIEvent event = InputEngine::instance().pollEvents();
 
-    // The power key works everywhere -- menu and display test included.
+    // --- Power / standby ---
+    // The power key works everywhere. Switching off closes the menu and the
+    // display test first, so standby always starts from a clean state.
+    PowerControl& power = PowerControl::instance();
     if (event == UIEvent::POWER_TOGGLE) {
-        PowerControl::instance().toggle();
+        if (power.isOn()) {
+            if (g_menuOpen) closeMenu();
+            g_displayTestOpen = false;
+        }
+        power.toggle();
+        event = UIEvent::NONE;
+    }
+    power.update();
+    g_powerOverlay.update();
+
+    // Not on (standby, or a power sequence running): nothing but the power
+    // key does anything. In standby, any other key shows the
+    // "press POWER" popup.
+    if (!power.isOn()) {
+        bool anyKey = (event != UIEvent::NONE) ||
+                      InputEngine::instance().volUpJustPressed() ||
+                      InputEngine::instance().volDownJustPressed();
+        if (anyKey && power.isStandby()) g_powerOverlay.showHint();
         event = UIEvent::NONE;
     }
 
@@ -293,9 +320,8 @@ void loop() {
             DisplaySettings::instance().toggleChannelMode();
         }
 
-        // Physical UP/DN buttons: these were never wired to reach the menu
-        // at all before (they only ever drove continuous motor control,
-        // never generated a discrete event pollEvents() could return).
+        // Physical UP/DN buttons: outside the menu they're read as held
+        // levels (volume), not as discrete events pollEvents() returns.
         // While the menu is open, treat them as edge-triggered -- one
         // focus-step per physical press, same reasoning as the IR
         // repeat-filtering above -- checked independently of `event`
@@ -371,7 +397,7 @@ void loop() {
     // actual button states, so navigating the menu (which repurposes the
     // same physical volume buttons) never also changes real volume.
     // VolumeControl::update() is still called every loop either way, since
-    // it must keep servicing the daughter board link/motor regardless.
+    // it must keep servicing the daughter board link regardless.
     // The Display Test menu action fires inside the menu's enter() above.
     if (DisplayTestScreen::consumeStartRequest()) {
         if (g_menuOpen) closeMenu();
@@ -383,12 +409,12 @@ void loop() {
     }
 
     bool wantVolUp = false, wantVolDown = false;
-    if (!g_menuOpen && !g_displayTestOpen) {
+    if (power.isOn() && !g_menuOpen && !g_displayTestOpen) {
         uint32_t nowMsForVolume = millis();
         wantVolUp   = InputEngine::instance().isVolUpHeld()
-                        || (nowMsForVolume - g_lastGainUpMs < MOTOR_COMMAND_TIMEOUT_MS);
+                        || (nowMsForVolume - g_lastGainUpMs < IR_VOLUME_HOLD_MS);
         wantVolDown = InputEngine::instance().isVolDownHeld()
-                        || (nowMsForVolume - g_lastGainDownMs < MOTOR_COMMAND_TIMEOUT_MS);
+                        || (nowMsForVolume - g_lastGainDownMs < IR_VOLUME_HOLD_MS);
     }
     VolumeControl::instance().update(wantVolUp, wantVolDown);
 
@@ -399,19 +425,68 @@ void loop() {
     g_volumeOverlay.update();
     if (g_menuOpen || g_displayTestOpen) g_volumeOverlay.dismiss();
 
-    bool wantOverlay = g_volumeOverlay.isActive();
-    if (wantOverlay && !g_overlayShown) {
-        g_volumeOverlay.onEnter();
-    } else if (!wantOverlay && g_overlayShown) {
-        // The overlay painted over the whole panel -- let the screen
-        // rebuild from scratch rather than trust its delta-redraw state.
-        g_screens[g_currentScreenIdx]->onEnter();
+    // What the power layer wants on the panel: its popup (sequence or hint),
+    // the standby display, or nothing (normal operation).
+    PowerView wantPower = PowerView::NONE;
+    if (g_powerOverlay.isActive()) {
+        wantPower = PowerView::POPUP;
+    } else if (!power.isOn()) {
+        wantPower = (DisplaySettings::instance().getStandbyDisplay() == StandbyDisplay::OFF)
+                        ? PowerView::STANDBY_DARK : PowerView::STANDBY_CLOCK;
     }
-    g_overlayShown = wantOverlay;
+    if (wantPower != PowerView::NONE) {
+        // The power layer owns the panel: the volume overlay just stops (no
+        // re-entering the screen underneath, which isn't shown).
+        g_volumeOverlay.dismiss();
+        g_overlayShown = false;
+    }
+    if (wantPower != g_powerView) {
+        uint8_t brightness = DisplaySettings::instance().getBrightnessPercent();
+        switch (wantPower) {
+            case PowerView::POPUP:
+                Renderer::instance().setBacklightPercent(brightness);
+                g_powerOverlay.onEnter();
+                break;
+            case PowerView::STANDBY_CLOCK:
+                Renderer::instance().setBacklightPercent(
+                    DisplaySettings::instance().getStandbyDisplay() == StandbyDisplay::DIM_CLOCK ? STANDBY_DIM_PERCENT : brightness);
+                g_clockScreen.onEnter();
+                break;
+            case PowerView::STANDBY_DARK:
+                Renderer::instance().clear();
+                Renderer::instance().setBacklightPercent(0);
+                break;
+            case PowerView::NONE:
+                // Back to normal: the screen the user had (menu and test
+                // were closed on the way into standby).
+                Renderer::instance().setBacklightPercent(brightness);
+                g_screens[g_currentScreenIdx]->onEnter();
+                break;
+        }
+        g_powerView = wantPower;
+    }
+
+    if (g_powerView == PowerView::NONE) {
+        bool wantOverlay = g_volumeOverlay.isActive();
+        if (wantOverlay && !g_overlayShown) {
+            g_volumeOverlay.onEnter();
+        } else if (!wantOverlay && g_overlayShown) {
+            // The overlay painted over the whole panel -- let the screen
+            // rebuild from scratch rather than trust its delta-redraw state.
+            g_screens[g_currentScreenIdx]->onEnter();
+        }
+        g_overlayShown = wantOverlay;
+    }
 
     uint32_t renderStartUs = micros();
 
-    if (g_displayTestOpen) {
+    if (g_powerView == PowerView::POPUP) {
+        g_powerOverlay.render();
+    } else if (g_powerView == PowerView::STANDBY_CLOCK) {
+        g_clockScreen.render();
+    } else if (g_powerView == PowerView::STANDBY_DARK) {
+        // nothing to draw -- backlight off
+    } else if (g_displayTestOpen) {
         g_displayTest.render();
     } else if (g_menuOpen) {
         g_menuScreen.render();
@@ -453,7 +528,10 @@ void loop() {
             Serial.print("ms avg | loop: ");
             Serial.print(avgLoopMs, 2);
             Serial.print("ms avg | screen: ");
-            Serial.print(g_displayTestOpen ? g_displayTest.name()
+            Serial.print(g_powerView == PowerView::POPUP ? g_powerOverlay.name()
+                         : g_powerView == PowerView::STANDBY_CLOCK ? "STANDBY CLOCK"
+                         : g_powerView == PowerView::STANDBY_DARK ? "STANDBY (display off)"
+                         : g_displayTestOpen ? g_displayTest.name()
                          : g_menuOpen ? g_menuScreen.name()
                          : g_overlayShown ? g_volumeOverlay.name()
                          : g_screens[g_currentScreenIdx]->name());

@@ -100,6 +100,8 @@ public:
   int8_t lowestValidStep() const;  // -1 if none
   int8_t highestValidStep() const; // -1 if none
   bool relayEnergized() const { return relay_.isEnergized(); }
+  void setSensorWiring(bool topOnA3, char label) { sensor_.setWiring(topOnA3, label); }
+  bool sensorTopOnA3() const { return sensor_.topOnA3(); }
 
   // Bench diagnostic: briefly activates the bus, scans for ACKing
   // addresses, deactivates again. Independent of relay state.

@@ -89,6 +89,12 @@ void endFullCharacterization() {
 float referenceVolts() { return gRef; }
 float averageVolts() { return gEma; }
 
+void forgetReference() {
+  gRef = NAN;
+  LittleFS.remove(REF_PATH);
+  if (gDrv) gDrv->setRailScale(1.0f);
+}
+
 void report(Stream &out) {
   const float latest = Board::railVolts();
   out.print(F("  rail compensation: "));

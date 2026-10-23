@@ -85,6 +85,14 @@ struct DaughterProgress {
     int32_t  etaS      = -1;   // seconds left, -1 unknown
 };
 
+// Revision 9 LEARN reply -- the thermal learning's progress (display only).
+struct DaughterLearn {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    char n[6] = "--", spread[8] = "--", comp[10] = "--", kL[8] = "--", r2L[8] = "--", kR[8] = "--", r2R[8] = "--";
+    char minN[6] = "--", minSpread[8] = "--", minR2[8] = "--";
+};
+
 // Outcome of the last CAL command (the reply to CAL itself; completion is
 // learned from STATUS afterwards).
 enum class DaughterCalStart : uint8_t { NONE, PENDING, STARTED, REJECTED };
@@ -112,10 +120,18 @@ public:
     bool sendStatus();
     bool sendEnv();                          // rev 8, read-only, answered even while busy
     bool sendProgress();                     // rev 8, read-only, answered even while busy
+    bool sendLearn();                        // rev 9, read-only, answered even while busy
+
+    // rev 9: "FORGET CAL" / "FORGET COMP" / "FORGET ALL" -- answered OK at
+    // once, then the daughter is BUSY for ~3 s. FORGET CAL leaves the volume
+    // muted until a new calibration (a full one, ~6.5 min) completes.
+    enum class Forget : uint8_t { CAL, COMP, ALL };
+    bool sendForget(Forget what);
 
     // ENV is polled only while someone wants it (the calibration pages ask
     // on every refresh); at most every DAUGHTER_ENV_POLL_MS.
-    void requestEnv() { m_envWantedUntilMs = millis() + 3000; }
+    void requestEnv()   { m_envWantedUntilMs   = millis() + 3000; }
+    void requestLearn() { m_learnWantedUntilMs = millis() + 3000; } // same idea, for LEARN
 
     // Ask for a STATUS as soon as the link is free (update() sends it).
     void requestStatusRefresh() { m_statusRefreshRequested = true; }
@@ -128,6 +144,7 @@ public:
 
     const DaughterEnv&      env()      const { return m_env; }
     const DaughterProgress& progress() const { return m_progress; }
+    const DaughterLearn&    learn()    const { return m_learn; }
 
     // The last CAL command: started, or rejected with getCalStartError().
     DaughterCalStart calStart() const        { return m_calStart; }
@@ -153,7 +170,7 @@ private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET
     };
 
     bool sendLine(const char* line, PendingCmd cmd);
@@ -161,6 +178,7 @@ private:
     bool parseStatusLine(const char* line);
     bool parseEnvLine(const char* line);
     bool parseProgressLine(const char* line);
+    bool parseLearnLine(const char* line);
     void setError(const char* text);
     uint32_t currentPollIntervalMs() const;
 
@@ -190,6 +208,9 @@ private:
 
     DaughterEnv      m_env;
     DaughterProgress m_progress;
+    DaughterLearn    m_learn;
+    uint32_t         m_lastLearnSentMs    = 0;
+    uint32_t         m_learnWantedUntilMs = 0;
     uint32_t         m_lastEnvSentMs      = 0;
     uint32_t         m_envWantedUntilMs   = 0;
     uint32_t         m_lastProgressSentMs = 0;

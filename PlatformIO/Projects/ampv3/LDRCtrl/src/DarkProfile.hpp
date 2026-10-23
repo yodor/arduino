@@ -33,10 +33,12 @@
 // ============================================================================
 namespace DarkWalk {
 constexpr float    START_OHMS      = 25000.0f;
-constexpr float    TOP_OHMS        = 400000.0f;
+constexpr float    TOP_OHMS        = 650000.0f; // beyond any Rtotal AUTO would pick (cells reach 500k+)
 constexpr float    STEP_RATIO      = 2.0f;
 constexpr uint8_t  FIRST_STEP      = 2;      // counts, before a slope is known
-constexpr uint8_t  MAX_STEP        = 6;
+constexpr uint8_t  MAX_STEP        = 10;     // lets STEP_RATIO (x2 per point) happen at ~0.075 ln/count;
+                                            // at 6 the walk gained only x1.5-1.6 per point and ran out
+                                            // of points at 338k on a cell that reaches 530k+
 constexpr uint8_t  APPROACH_COUNTS = 2;
 constexpr uint32_t APPROACH_MS     = 6000;
 constexpr uint32_t SETTLE_POLL_MS  = 1000;
@@ -45,6 +47,10 @@ constexpr float    SETTLE_BAND     = 1.02f;
 constexpr uint32_t LOUD_MS          = 10000;
 constexpr uint32_t RETURN_MS        = 5000;      // the accepted settling time
 constexpr float    MIN_RISE        = 1.05f;  // each point must read at least 5% darker than the last
+// The memory test (a loud passage, back, read after RETURN_MS: 15 s) only from this depth on:
+// shallow points measure x1.00-1.03, far below every limit, and Rtotal never operates there.
+// Unmeasured points store memory 0; memoryAt() uses only the measured ones.
+constexpr float    MEMORY_FROM_OHMS = 80000.0f;
 
 // The next duty to try, from the last two settled points (or FIRST_STEP before
 // there are two). Duties fall as the walk goes darker.
@@ -93,18 +99,25 @@ struct DarkProfile {
   // Memory at resistance r from the ok points, log-interpolated in ohms.
   // Below the first point: the first point's value. Above the deepest ok point:
   // unknown -> false (the calibration never extrapolates into the dark).
+  // Memory at depth r, from the MEASURED points only (memory > 0). Shallower than the first
+  // measured point: that point's value (memory grows with depth, so this is conservative).
+  // Deeper than the walk reached, or nothing measured: unknown.
   bool memoryAt(float r, float &h) const {
     const uint8_t k = okCount();
     if (k == 0 || r > p[k - 1].ohms * 1.0001f) return false;
-    if (r <= p[0].ohms) { h = p[0].memory; return true; }
-    for (uint8_t i = 0; i + 1 < k; i++) {
-      if (r <= p[i + 1].ohms) {
-        const float f = logf(r / p[i].ohms) / logf(p[i + 1].ohms / p[i].ohms);
-        h = p[i].memory + f * (p[i + 1].memory - p[i].memory);
+    int8_t prev = -1;
+    for (uint8_t i = 0; i < k; i++) {
+      if (!(p[i].memory > 0.0f)) continue;
+      if (r <= p[i].ohms) {
+        if (prev < 0) { h = p[i].memory; return true; }
+        const float f = logf(r / p[prev].ohms) / logf(p[i].ohms / p[prev].ohms);
+        h = p[prev].memory + f * (p[i].memory - p[prev].memory);
         return true;
       }
+      prev = (int8_t)i;
     }
-    h = p[k - 1].memory;
+    if (prev < 0) return false;
+    h = p[prev].memory;
     return true;
   }
 };

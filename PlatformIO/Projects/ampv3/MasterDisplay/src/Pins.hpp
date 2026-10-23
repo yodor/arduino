@@ -24,9 +24,10 @@ constexpr uint8_t AUDIO_PIN_R = 27; // ADC1
 /**
  * Keypad GPIO pins UP , DOWN , LEFT , RIGHT
  * Volume control maps to button BTN_UP_PIN, BTN_DN_PIN 
- * these are read as a continuous held/released level so the motor keeps
- * running for as long as the button stays down 
- * unlike BTN_LT_PIN/BTN_RT_PIN (edge-triggered, one action per press)
+ * these are read as a continuous held/released level, so the volume keeps
+ * stepping for as long as the button stays down,
+ * unlike BTN_LT_PIN/BTN_RT_PIN (one action per press: a short press on
+ * release -- previous/next -- or a 1 s hold: LEFT = menu, RIGHT = power)
  */
 constexpr uint8_t BTN_UP_PIN = 2;
 constexpr uint8_t BTN_RT_PIN = 3;
@@ -35,13 +36,15 @@ constexpr uint8_t BTN_LT_PIN = 12;
 
 
 /** 
- * Additional masterboard pins for mute ctrl, IR sensor and motorized volume control 
+ * Additional masterboard pins: IR sensor (and the unused motor driver pins, kept for reference)
  */
 
 // TSOP31238 output pin
 constexpr uint8_t IR_PIN  = 11; 
 
-// DRV8833 motor driver pins, driving a motorized volume potentiometer.
+// DRV8833 motor driver pins (motorized volume pot) -- REFERENCE ONLY: the
+// motor control was removed (volume is the daughter board's), and nothing in
+// the firmware drives these pins; they stay inputs.
 constexpr uint8_t DRV8833_IN1_PIN = 6;
 constexpr uint8_t DRV8833_IN2_PIN = 7;
 

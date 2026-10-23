@@ -1,5 +1,4 @@
 #include "VolumeControl.hpp"
-#include "VolumeMotor.hpp"
 #include "DaughterBoardLink.hpp"
 
 VolumeControl& VolumeControl::instance() {
@@ -9,7 +8,6 @@ VolumeControl& VolumeControl::instance() {
 
 void VolumeControl::init() {
     DaughterBoardLink::instance().init(DAUGHTER_UART_TX_PIN, DAUGHTER_UART_RX_PIN, DAUGHTER_UART_BAUD);
-    VolumeMotor::instance().init(DRV8833_IN1_PIN, DRV8833_IN2_PIN);
     // No mute action at boot: the daughter starts muted under its own boot
     // hold and releases on its own; its real MUTE state is adopted from the
     // first IDLE STATUS (syncFromDaughterStatus()).
@@ -33,13 +31,28 @@ void VolumeControl::toggleMute() {
 }
 
 void VolumeControl::ampMuteOn() {
-    DaughterBoardLink::instance().sendAmpMuteOn();
-    m_ampMuted = true;
+    m_ampMuted       = true;
+    m_ampMutePending = true;
+    retryPendingCommands();
 }
 
 void VolumeControl::ampMuteOff() {
-    DaughterBoardLink::instance().sendAmpMuteOff();
-    m_ampMuted = false;
+    m_ampMuted       = false;
+    m_ampMutePending = true;
+    retryPendingCommands();
+}
+
+bool VolumeControl::ampMuteConfirmed() const {
+    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const DaughterStatus&    s    = link.status();
+    return !m_ampMutePending && link.isStatusFresh() &&
+           static_cast<int32_t>(s.receivedMs - m_ampMuteSentMs) > 0 && s.ampMute == m_ampMuted;
+}
+
+void VolumeControl::forget(DaughterBoardLink::Forget what) {
+    m_forgetWhat    = what;
+    m_forgetPending = true;
+    retryPendingCommands();
 }
 
 void VolumeControl::calibrate(CalR mode, uint32_t ohms) {
@@ -54,6 +67,13 @@ void VolumeControl::retryPendingCommands() {
     if (m_mutePending && !link.isBusy()) {
         bool sent = m_muted ? link.sendMuteOn() : link.sendMuteOff();
         if (sent) m_mutePending = false;
+    }
+    if (m_ampMutePending && !link.isBusy()) {
+        bool sent = m_ampMuted ? link.sendAmpMuteOn() : link.sendAmpMuteOff();
+        if (sent) { m_ampMutePending = false; m_ampMuteSentMs = millis(); }
+    }
+    if (m_forgetPending && !link.isBusy()) {
+        if (link.sendForget(m_forgetWhat)) m_forgetPending = false;
     }
     if (m_calPending && !link.isBusy()) {
         bool sent = (m_calMode == CalR::AUTO_R) ? link.sendCalibrateAuto()
@@ -94,7 +114,9 @@ void VolumeControl::syncFromDaughterStatus() {
 
     if (s.busy) return;
 
-    m_ampMuted = s.ampMute;
+    // Adopt the daughter's amp mute unless our own request is still on its
+    // way (its boot hold also drives this on its own).
+    if (!m_ampMutePending && static_cast<int32_t>(s.receivedMs - m_ampMuteSentMs) > 0) m_ampMuted = s.ampMute;
 
     bool inGrace = (millis() - m_lastMuteChangeMs) < DAUGHTER_MUTE_ADOPT_GRACE_MS;
     if (!m_mutePending && !inGrace) {
@@ -103,9 +125,6 @@ void VolumeControl::syncFromDaughterStatus() {
 }
 
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
-    // Motor: continuous drive while held -- no-op if not connected.
-    VolumeMotor::instance().update(wantVolUpHeld, wantVolDownHeld);
-
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.update();
     syncFromDaughterStatus();

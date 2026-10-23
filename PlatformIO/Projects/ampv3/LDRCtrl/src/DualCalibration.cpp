@@ -456,36 +456,42 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
     for (uint8_t c = 0; c < na; c++) if (active[c]) ch[c]->driveElementFine(true, (uint32_t)duty[c] * FPC);
     float ra[MAX_CH]; uint8_t secs[MAX_CH]; bool settled[MAX_CH];
     settleRead(ch, na, active, ra, secs, settled);
-    // 2. memory: a loud passage, back, read once the accepted settling time has passed
-    for (uint8_t c = 0; c < na; c++) {
-      if (!active[c]) continue;
-      ch[c]->driveElementFine(true, loudSer[c]);
-      ch[c]->driveElementFine(false, loudShu[c]);
+    // 2. memory: a loud passage, back, read once the accepted settling time has passed --
+    //    only for points deep enough to matter (MEMORY_FROM_OHMS); shallow ones skip it.
+    bool mem[MAX_CH], anyMem = false;
+    for (uint8_t c = 0; c < na; c++) { mem[c] = active[c] && ra[c] >= MEMORY_FROM_OHMS; anyMem = anyMem || mem[c]; }
+    if (anyMem) {
+      for (uint8_t c = 0; c < na; c++) {
+        if (!mem[c]) continue;
+        ch[c]->driveElementFine(true, loudSer[c]);
+        ch[c]->driveElementFine(false, loudShu[c]);
+      }
+      BusyHook::wait(LOUD_MS);
+      for (uint8_t c = 0; c < na; c++) {
+        if (!mem[c]) continue;
+        ch[c]->driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * FPC);
+        ch[c]->driveElementFine(true, (uint32_t)duty[c] * FPC);
+      }
+      BusyHook::wait(RETURN_MS);
     }
-    BusyHook::wait(LOUD_MS);
-    for (uint8_t c = 0; c < na; c++) {
-      if (!active[c]) continue;
-      ch[c]->driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * FPC);
-      ch[c]->driveElementFine(true, (uint32_t)duty[c] * FPC);
-    }
-    BusyHook::wait(RETURN_MS);
     // 3. record, decide, print
     for (uint8_t c = 0; c < na; c++) {
       if (!active[c]) continue;
-      const float rb = readAvg3(ch[c]);
+      const float rb = mem[c] ? readAvg3(ch[c]) : 0.0f;
       DarkPoint d{};
       d.duty = (uint16_t)duty[c];
       d.settleS = secs[c];
       d.ohms = ra[c];
-      d.memory = (ra[c] > 0.0f && rb > 0.0f) ? (ra[c] >= rb ? ra[c] / rb : rb / ra[c]) : 0.0f;
+      d.memory = (mem[c] && ra[c] > 0.0f && rb > 0.0f) ? (ra[c] >= rb ? ra[c] / rb : rb / ra[c]) : 0.0f;
       const bool darker = !havePrev[c] || ra[c] > prevOhms[c] * MIN_RISE;
-      d.ok = (settled[c] && ra[c] > 0.0f && rb > 0.0f && darker) ? 1 : 0;
+      d.ok = (settled[c] && ra[c] > 0.0f && (!mem[c] || rb > 0.0f) && darker) ? 1 : 0;
       prof[c].add(d);
       out.print(F("  ")); out.print(labels ? labels[c] : '?');
       out.print(F(" duty ")); out.print(duty[c]);
       out.print(F(": ")); out.print(ra[c] / 1000.0f, 1);
       out.print(F("k settled in ")); out.print(secs[c]);
-      out.print(F(" s, memory x")); out.print(d.memory, 3);
+      if (mem[c]) { out.print(F(" s, memory x")); out.print(d.memory, 3); }
+      else out.print(F(" s (shallow: no memory test)"));
       if (!d.ok) out.print(settled[c] ? (darker ? F("  -- unreadable: end of walk") : F("  -- not darker than the last point: end of walk"))
                                       : F("  -- did not settle: end of walk"));
       out.println();
@@ -561,12 +567,41 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
   // The trim ends at the loud steps; a cell needs a while to recover from that (R's
   // series cell well over a minute on the bench). Measure the quiet point as it is in
   // listening, not seconds after a loud passage.
-  out.print(F("  holding the quiet step ")); out.print(QUIET_HOLD_MS / 1000); out.println(F(" s first"));
+  // Hold the quiet step until the cells have settled from the trims' loud steps: at least
+  // HOLD_MIN_S, then as soon as BOTH channels' series readings drift less than HOLD_BAND over
+  // the last HOLD_WINDOW readings (2 s apart, 10 s) -- a slow memory tail shows as steady
+  // drift and keeps the hold going -- at most QUIET_HOLD_MS. (Was a fixed 60 s.)
+  constexpr uint32_t HOLD_MIN_S = 30;
+  constexpr uint8_t  HOLD_WINDOW = 6;
+  constexpr float    HOLD_BAND = 1.004f;
   CalProgress::phase(CalProgress::Phase::HOLD);
-  for (uint32_t t = 0; t < QUIET_HOLD_MS / 1000; t++) {   // 1 s waits: PROGRESS counts it down
-    CalProgress::step((uint16_t)t, (uint16_t)(QUIET_HOLD_MS / 1000));
+  float win[MAX_CH][HOLD_WINDOW] = {};
+  uint8_t nWin = 0;
+  uint32_t held = 0;
+  bool steady = false;
+  const uint32_t maxS = QUIET_HOLD_MS / 1000;
+  for (uint32_t t = 0; t < maxS; t++) {             // 1 s waits: PROGRESS counts it up
+    CalProgress::step((uint16_t)t, (uint16_t)maxS);
     BusyHook::wait(1000);
+    held = t + 1;
+    if (held % 2 || held + 10 < HOLD_MIN_S) continue; // readings every 2 s, from 20 s on
+    for (uint8_t c = 0; c < na; c++) {
+      for (uint8_t i = 0; i + 1 < HOLD_WINDOW; i++) win[c][i] = win[c][i + 1];
+      win[c][HOLD_WINDOW - 1] = readAvg3(ch[c]);
+    }
+    if (nWin < HOLD_WINDOW) nWin++;
+    if (nWin < HOLD_WINDOW || held < HOLD_MIN_S) continue;
+    steady = true;
+    for (uint8_t c = 0; c < na && steady; c++) {
+      float lo = win[c][0], hi = win[c][0];
+      for (uint8_t i = 1; i < HOLD_WINDOW; i++) { if (win[c][i] < lo) lo = win[c][i]; if (win[c][i] > hi) hi = win[c][i]; }
+      if (!(lo > 0.0f) || hi > lo * HOLD_BAND) steady = false;
+    }
+    if (steady) break;
   }
+  out.print(F("  quiet step held ")); out.print(held);
+  out.println(steady ? F(" s: settled (both channels within 0.4 % over 10 s)")
+                     : F(" s: the full hold (still drifting, or readings unavailable)"));
   CalProgress::phase(CalProgress::Phase::SEEK);
   for (uint8_t it = 0; it < MAX_PROBES; it++) {
     CalProgress::step(it, MAX_PROBES);
@@ -1035,6 +1070,26 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
 void characterizeBoth(LDRVolume &left, LDRVolume &right, Stream &out) {
   LDRVolume *both[2] = {&left, &right};
   characterize(both, 2, out, "LR");
+}
+
+// ---------------------------------------------------------------------------
+// FORGET (console and master protocol share these).
+// ---------------------------------------------------------------------------
+void forgetCalibration(LDRVolume &left, LDRVolume &right) {
+  left.calForget();
+  right.calForget();
+  // Everything that described THAT calibration goes with it.
+  RailComp::forgetReference();
+  ThermalLog::forgetEnvironment();
+  LittleFS.remove("/model.txt");
+  LittleFS.remove("/lastmatch.txt");
+  gLastMatchDb = NAN; gLastMatchLoaded = true;
+  ThermalComp::refresh();               // no reference temperature: no offsets
+}
+
+void forgetCompensation() {
+  ThermalLog::clear();
+  ThermalComp::refresh();               // no fit: offsets 0 at once, relearns from the next resyncs
 }
 
 } // namespace DualCalibration

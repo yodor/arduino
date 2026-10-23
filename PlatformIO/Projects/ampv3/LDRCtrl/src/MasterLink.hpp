@@ -87,6 +87,7 @@ private:
   void reportStatus(StatusKind kind = StatusKind::IDLE, const char *text = nullptr);
   void reportEnv();       // protocol 8: ENV -- temperatures, rail, compensation (cached, instant)
   void reportProgress();  // protocol 8: PROGRESS -- what a running calibration is doing
+  void reportLearn();     // protocol 9: LEARN -- the thermal learning's progress and fit quality
 
   // The reply to any strict command while the boot mute hold is active.
   void replyBootHold();

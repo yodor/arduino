@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 8
+# Master Board <-> Daughter Board UART Protocol — revision 9
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=8`; revision 8 adds the `ENV` and `PROGRESS` queries below, `STATUS` itself is unchanged) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=9`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`; `STATUS` itself is unchanged) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9
 ```
 
 | Key | Meaning |
@@ -185,6 +185,41 @@ Display labels a master might use: `CHECK` "Checking cells", `SWEEP_SERIES` "Mea
 cells", `SWEEP_SHUNT` "Measuring shunt cells", `WALK` "Mapping the dark end", `SOLVE`
 "Computing the volume steps", `TRIM` "Trimming L/R step i/n", `HOLD` "Settling (n s)",
 `SEEK` "Stereo matching", `SAVE` "Saving".
+
+## Revision 9: `LEARN` and `FORGET`
+
+### `LEARN` -- the thermal learning's progress (read-only, answered at any time)
+
+```
+LEARN
+OK LEARN N=7 SPREAD=1.24 COMP=ON KL=-5.84 R2L=0.99 KR=-5.28 R2R=0.99 MINN=3 MINSPREAD=0.50 MINR2=0.60
+```
+
+| Key | Meaning |
+|---|---|
+| `N` | resyncs in the learning log |
+| `SPREAD` | how much the driver-block temperature varied across them (RMS change, C) |
+| `COMP` | as in `ENV`: `ON`, `PART`, `LEARNING`, `OFF` |
+| `KL`, `KR` | learned slope per side, PWM counts per C of block temperature (`--` before any fit) |
+| `R2L`, `R2R` | how much of the drift that slope explains (0..1) |
+| `MINN`, `MINSPREAD`, `MINR2` | the bar a side's fit must clear before the compensation uses it |
+
+A display can show e.g. "Learning: 2/3 resyncs, 0.3/0.5 C" until `COMP=ON`. Like `ENV` and
+`PROGRESS` it is answered while idle, during a calibration and during the boot hold.
+
+### `FORGET CAL` / `FORGET COMP` / `FORGET ALL`
+
+| Command | Clears | Keeps |
+|---|---|---|
+| `FORGET CAL` | both stored calibrations and what belonged to them: the reference rail, the source/load model, the environment at calibration, the last stereo match. The attenuator falls back to the LDR mute (`CAL=NONE`) until the next `CAL`, which is a full characterization | the learning log (it describes the driver hardware, not one calibration) |
+| `FORGET COMP` | the thermal learning log; the compensation switches off at once (`COMP=LEARNING`) and relearns from the next resyncs | the calibration |
+| `FORGET ALL` | both | |
+
+Reply: `OK` **immediately**; the work (releasing to the LDR mute) then takes about 3 s, during
+which `STATUS` reads `BUSY` and `ENV`/`PROGRESS`/`LEARN` still answer. Any other `FORGET ...`
+gets `ERR usage: FORGET CAL|COMP|ALL`. Refused during the boot hold and during a calibration
+(`ERR busy`), like every setter. A master should ask for confirmation before sending
+`FORGET CAL`: the volume is muted until a new calibration completes (about 6.5 minutes).
 
 ## Calibration
 
@@ -297,9 +332,9 @@ driver (100k base bleeds), 2 = 1M base bleeds. Bump `CAL_HW_REV` in `Config.hpp`
 change as any hardware modification that alters the duty→resistance relationship, and flash
 it with BOOTSEL after the board is modified (see the comment in `Config.hpp`).
 
-## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks every command except `ENV` and `PROGRESS`
+## Boot hold (`MUTE_BOOT_HOLD_MS`) blocks every command except `ENV`, `PROGRESS` and `LEARN`
 
-(Revision 8: the read-only `ENV` and `PROGRESS` are answered during the hold; everything else is refused as described below.)
+(Revisions 8-9: the read-only `ENV`, `PROGRESS` and `LEARN` are answered during the hold; everything else, `FORGET` included, is refused as described below.)
 
 During the boot-mute hold window the daughter refuses **every** strict-protocol
 command — `VOL`, `MUTE`, `AMP_MUTE`, `CAL …`, `STATUS` — so nothing can disturb the
@@ -308,7 +343,7 @@ is the regular status line, with **`STATUS=BUSY`** and
 **`ERR=boot mute hold active, <n>ms remaining`**, for whichever command was sent:
 
 ```
-OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=8 ERR=boot mute hold active, 3200ms remaining
+OK STATUS=BUSY TEMP=27.7 UP=2 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=1 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=9 ERR=boot mute hold active, 3200ms remaining
 ```
 
 So a master treats it as any other "busy": wait `n` ms (or just poll `STATUS`) and
@@ -405,7 +440,7 @@ stored measurements at the next `CAL` or boot (`LASTCAL=RESOLVE`), without a ful
 
 - One calibration command: `CAL`, `CAL R=<ohms>` or `CAL R=AUTO`. `CAL FAST` and `CAL FULL`
   no longer exist; they get the ordinary `CAL args` error.
-- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=8`.
+- `STATUS` adds `LASTCAL=FULL|RESYNC|RESOLVE|NONE` and reports `PROTO=9`.
 - A full characterization takes about 4–5 minutes, a resync about 2 — poll `STATUS` until
   `IDLE`, as before.
 

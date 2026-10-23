@@ -65,6 +65,8 @@ void setup() {
   masterLinkUart.enableBusyService();
   masterLinkUsb.enableBusyService(); // USB too, from the very start: STATUS over USB is immediate even during the boot calibration
 
+  leftChannel.setSensorWiring(LDR_L_TOP_ON_A3, 'L');   // LDR board layout (auto-corrected)
+  rightChannel.setSensorWiring(LDR_R_TOP_ON_A3, 'R');
   leftChannel.begin();  // relay de-energized (audio mode), i2c bus left inactive
   rightChannel.begin();
   CellTemps::begin();   // the DS18B20s next to the cells (bounded search; a bad bus just reports)

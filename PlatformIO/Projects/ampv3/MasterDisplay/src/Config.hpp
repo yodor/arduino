@@ -3,38 +3,31 @@
 #include <Pins.hpp>
 #include <IRCodes.hpp>
 
+// The remote only reports a held volume key as a train of repeat codes
+// (~every 108ms), so a GAIN_UP/GAIN_DOWN counts as "still held" until this
+// long after the last one -- that's what drives the daughter's VOL UP/DOWN
+// repeats while the key is down. Physical buttons report held directly.
+constexpr unsigned long IR_VOLUME_HOLD_MS = 150;
 
-
-
-
-// Motor PWM duty cycle (0-255) and speed-step size for increase/decrease.
-// 255 is full speed; for a volume-pot motor a lower starting point often
-// makes fine adjustments easier to land -- tune to your actual mechanism
-// (gear ratio, pot rotation range) rather than assuming full speed is right.
-constexpr uint8_t MOTOR_MIN_SPEED     = 50;
-constexpr uint8_t MOTOR_MAX_SPEED     = 255;
-constexpr uint8_t MOTOR_DEFAULT_SPEED = 150;
-constexpr uint8_t MOTOR_SPEED_STEP    = 25;
-
-// How long a "still commanded" signal can go stale before the motor
-// safety-stops. A physical button's release is detected instantly via GPIO
-// level, but IR intent is only known from the last received repeat code, so
-// this bounds how long the motor keeps running after the last IR signal
-// before assuming the remote button was released.
-constexpr unsigned long MOTOR_COMMAND_TIMEOUT_MS = 150;
-
-// Absolute continuous-run cutoff regardless of input source, in case of a
-// mechanical jam, stuck button, or a missed release signal.
-constexpr unsigned long MOTOR_MAX_RUN_TIME_MS = 10000;
-
-// Volume is driven through BOTH the DRV8833 motor and the daughter board's
-// UART link unconditionally -- whichever is fitted takes effect. Mute is
-// the daughter board's alone (its LDR mute; the amp mute/boot hold is its
-// own AMP_MUTE) -- the master no longer has a local mute pin.
+// Volume and mute are the daughter board's alone (its LDR network; the amp
+// mute/boot hold is its own AMP_MUTE).
 
 // Amp mains power (PowerControl): the relay state right after boot. The
 // power key toggles it; it isn't remembered across a power cut.
 constexpr bool POWER_ON_AT_BOOT = false;
+
+// Power sequence (PowerControl): how long to wait for the daughter to
+// confirm the amp is muted before switching mains (it usually confirms in a
+// few ms; this is only the cap if it doesn't answer), and how long the amp
+// gets to power up with mains on before it's unmuted.
+constexpr uint32_t POWER_MUTE_WAIT_MS = 800;
+constexpr uint32_t POWER_ON_SETTLE_MS = 3000;
+
+// Standby: how long the power popup stays up after a sequence finishes or
+// after a key is pressed in standby ("Press POWER to switch on"), and the
+// backlight of the "Dim Clock" standby display.
+constexpr uint32_t POWER_POPUP_MS       = 2000;
+constexpr uint8_t  STANDBY_DIM_PERCENT  = 15;
 
 // UART daughter board link (pins in Pins.hpp).
 constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
@@ -46,12 +39,10 @@ constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter 
 // Protocol revision this master is written for. A daughter reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 8;
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 9;
 
-// How often to re-fire VOL UP/DOWN while a volume button is held, since
-// each command is a single discrete step on the daughter board rather than
-// a continuous drive signal (unlike the motor path, which drives
-// continuously for as long as wantUp/wantDown is true).
+// How often to re-fire VOL UP/DOWN while a volume button is held -- each
+// command is a single discrete step on the daughter board.
 constexpr uint32_t DAUGHTER_VOL_REPEAT_MS = 250;
 
 // How long to wait for a reply to any command before giving up and
@@ -70,7 +61,7 @@ constexpr uint32_t DAUGHTER_STATUS_POLL_BUSY_MS = 2000;
 
 // Revision 8 read-only queries: PROGRESS polled this often while a
 // calibration runs (for the progress page), ENV this often while a page
-// that shows it is open.
+// that shows it is open (LEARN, rev 9, likewise).
 constexpr uint32_t DAUGHTER_PROGRESS_POLL_MS = 1000;
 constexpr uint32_t DAUGHTER_ENV_POLL_MS      = 5000;
 

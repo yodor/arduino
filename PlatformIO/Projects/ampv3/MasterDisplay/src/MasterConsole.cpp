@@ -2,6 +2,7 @@
 #include "DaughterBoardLink.hpp"
 #include "Version.hpp"
 #include "RtcClock.hpp"
+#include "InputEngine.hpp"
 #include <cstdio>
 #include <cctype>
 #include <cstring>
@@ -20,6 +21,8 @@ void MasterConsole::printHelp() {
     Serial.println("  HELP       this list");
     Serial.println("  DAUGHTER   pass-through to the daughter board's bench console");
     Serial.println("             (type ~. at the start of a line to come back)");
+    Serial.println("  BUTTONS    button monitor on/off: logs every raw edge on the");
+    Serial.println("             four button pins and each debounced press/release");
     Serial.println("  TIME       show the clock module's time");
     Serial.println("  TIME YYYY-MM-DD HH:MM:SS   set it");
 }
@@ -100,6 +103,11 @@ void MasterConsole::handleLine(char* line) {
         printHelp();
     } else if (!strcmp(line, "DAUGHTER") || !strcmp(line, "D")) {
         enterPassthrough();
+    } else if (!strcmp(line, "BUTTONS") || !strcmp(line, "BTN")) {
+        InputEngine& in = InputEngine::instance();
+        in.setMonitor(!in.monitor());
+        Serial.printf("[Console] Button monitor %s\n", in.monitor() ? "ON -- press the buttons; BUTTONS again to stop" : "OFF");
+        in.printRawStates();
     } else if (!strncmp(line, "TIME", 4) && (line[4] == '\0' || line[4] == ' ')) {
         handleTime(line + 4);
     } else {
