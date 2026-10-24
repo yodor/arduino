@@ -2,6 +2,8 @@
 #include "Renderer.hpp"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
+#include <climits>
 
 namespace {
 // Default GFX font: 6x8 px per character at size 1.
@@ -22,10 +24,10 @@ constexpr uint8_t  kHintSize       = 2;
 constexpr int16_t  kHintY          = 100;
 constexpr uint16_t kHintColor      = 0x8410;
 
-// INFO pages
-constexpr uint8_t  kInfoTextSize = 2;   // 12x16 px characters -> 35 per line
-constexpr int16_t  kInfoTopY     = 30;
-constexpr uint16_t kInfoRowH     = 18;
+// INFO pages: large text, 3 rows at a time
+constexpr uint8_t  kInfoTextSize = 3;   // 18x24 px characters -> 23 per line (kInfoCols)
+constexpr int16_t  kInfoTopY     = 32;
+constexpr uint16_t kInfoRowH     = 36;
 
 // EDITOR
 constexpr uint8_t  kEditorSize  = 5;    // 30x40 px characters
@@ -46,6 +48,53 @@ void drawCentered(Arduino_GFX* gfx, const char* text, uint8_t size, int16_t y, u
 }
 } // namespace
 
+// --- Color palette (COLOR items) ---------------------------------------------
+
+// Hue circle in kMenuPaletteSize-1 steps at full saturation and brightness,
+// then white.
+uint16_t menuPaletteColor(uint8_t index) {
+    if (index >= kMenuPaletteSize - 1) return 0xFFFF;
+    float h = index * 360.0f / (kMenuPaletteSize - 1);
+    float x = 1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f);
+    float r = 0, g = 0, b = 0;
+    if      (h < 60)  { r = 1; g = x; }
+    else if (h < 120) { r = x; g = 1; }
+    else if (h < 180) { g = 1; b = x; }
+    else if (h < 240) { g = x; b = 1; }
+    else if (h < 300) { r = x; b = 1; }
+    else              { r = 1; b = x; }
+    return static_cast<uint16_t>((static_cast<uint16_t>(r * 31 + 0.5f) << 11) |
+                                 (static_cast<uint16_t>(g * 63 + 0.5f) << 5) |
+                                  static_cast<uint16_t>(b * 31 + 0.5f));
+}
+
+namespace {
+// Palette entry closest to an arbitrary RGB565 color.
+int16_t nearestPaletteIndex(uint16_t c) {
+    auto r = [](uint16_t v) { return static_cast<int32_t>((v >> 11) & 0x1F) * 255 / 31; };
+    auto g = [](uint16_t v) { return static_cast<int32_t>((v >> 5)  & 0x3F) * 255 / 63; };
+    auto b = [](uint16_t v) { return static_cast<int32_t>( v        & 0x1F) * 255 / 31; };
+    int16_t best = 0;
+    int32_t bestD = INT32_MAX;
+    for (uint8_t i = 0; i < kMenuPaletteSize; ++i) {
+        uint16_t p = menuPaletteColor(i);
+        int32_t dr = r(p) - r(c), dg = g(p) - g(c), db = b(p) - b(c);
+        int32_t d = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+// Chooser geometry: the spectrum bar, the focus marker, the swatch.
+constexpr int16_t kBarTop    = 40;
+constexpr int16_t kBarH      = 36;
+constexpr int16_t kMarkTop   = 34;  // focus box from here...
+constexpr int16_t kMarkBot   = 92;  // ...to the triangle's tip below the bar
+constexpr int16_t kSwatchY   = 98;
+constexpr int16_t kSwatchH   = 28;
+int16_t stripeX(int16_t i) { return static_cast<int16_t>(static_cast<int32_t>(i) * SCREEN_WIDTH / kMenuPaletteSize); }
+} // namespace
+
 void MenuScreen::init(const MenuItem* rootItems, size_t rootCount) {
     m_stack[0] = { rootItems, rootCount, 0 };
 }
@@ -56,6 +105,7 @@ void MenuScreen::onEnter() {
     m_inValueChoice       = false;
     m_inInfo              = false;
     m_inEditor            = false;
+    m_inColor             = false;
     m_dirty               = true;
 }
 
@@ -70,6 +120,13 @@ void MenuScreen::clampEditorFields() {
 }
 
 void MenuScreen::moveFocus(int delta) {
+    if (m_inColor) {
+        // Up (delta -1) moves right along the bar, Down left; wraps.
+        int16_t old = m_colorIdx;
+        m_colorIdx = static_cast<int16_t>((m_colorIdx - delta + kMenuPaletteSize) % kMenuPaletteSize);
+        if (!m_dirty) drawColorFocus(old);
+        return;
+    }
     if (m_inEditor) {
         // Up (delta -1) increases the value, wrapping within the field's range.
         const MenuEditor* ed = focusedItem().editor;
@@ -118,6 +175,13 @@ void MenuScreen::enter() {
     StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) return;
     if (m_inInfo) return; // read-only page -- nothing to select
+    if (m_inColor) {
+        const MenuItem& it = frame.items[frame.focusedIdx];
+        if (it.color && it.color->set) it.color->set(menuPaletteColor(static_cast<uint8_t>(m_colorIdx)));
+        m_inColor = false; // Right = set, back to the list
+        m_dirty   = true;
+        return;
+    }
 
     const MenuItem& item = frame.items[frame.focusedIdx];
 
@@ -129,6 +193,11 @@ void MenuScreen::enter() {
             item.editor->save(m_editorValues); // last field: Right = save
             m_inEditor = false;
             m_dirty    = true;
+            // A follow-up choice (e.g. Cancel / Start), Cancel-first.
+            if (item.options && item.optionCount > 0) {
+                m_inValueChoice = true;
+                m_optionIdx     = 0;
+            }
         }
         return;
     }
@@ -162,11 +231,27 @@ void MenuScreen::enter() {
             m_dirty      = true;
             break;
         case MenuItemType::EDITOR:
-            if (!item.editor || !item.editor->load(m_editorValues)) return;
+            if (!item.editor || !item.editor->load(m_editorValues)) {
+                // Nothing to edit right now (e.g. Rtotal while a calibration
+                // runs): show the item's info page instead, if it has one.
+                if (item.fillInfo) {
+                    m_inInfo     = true;
+                    m_infoScroll = 0;
+                    refillInfo();
+                    m_dirty      = true;
+                }
+                return;
+            }
             m_inEditor    = true;
             m_editorField = 0;
             clampEditorFields();
             m_dirty       = true;
+            break;
+        case MenuItemType::COLOR:
+            if (!item.color) return;
+            m_inColor  = true;
+            m_colorIdx = nearestPaletteIndex(item.color->get ? item.color->get() : 0xFFFF);
+            m_dirty    = true;
             break;
         case MenuItemType::VALUE_CHOICE:
             // Open on the currently active option, so the first thing shown
@@ -189,6 +274,11 @@ void MenuScreen::enter() {
 }
 
 bool MenuScreen::back() {
+    if (m_inColor) {
+        m_inColor = false; // Left = cancel, nothing set
+        m_dirty   = true;
+        return true;
+    }
     if (m_inEditor) {
         if (m_editorField > 0) {
             --m_editorField;
@@ -260,6 +350,7 @@ void MenuScreen::drawFull() {
     if (!gfx) return;
     if (m_inInfo)   { drawInfo();       return; }
     if (m_inEditor) { drawEditorFull(); return; }
+    if (m_inColor)  { drawColorFull();  return; }
 
     gfx->fillScreen(COLOR_BLACK);
 
@@ -310,13 +401,17 @@ void MenuScreen::drawFull() {
                 hint = "edit >";
                 int16_t vals[kEditorMaxFields] = {};
                 const MenuEditor* ed = item.editor;
-                if (ed && ed->load(vals)) {
+                if (ed && ed->describe) {
+                    ed->describe(valueHint, sizeof(valueHint));
+                    hint      = valueHint;
+                    hintColor = COLOR_YELLOW;
+                } else if (ed && ed->load(vals)) {
                     size_t len = 0;
                     for (uint8_t i = 0; i < ed->fieldCount && len + 12 < sizeof(valueHint); ++i) {
                         char part[12];
                         if (ed->format) ed->format(vals, i, part, sizeof(part));
                         else            snprintf(part, sizeof(part), "%0*d", ed->digits[i], static_cast<int>(vals[i]));
-                        char sep[2] = {i ? ed->separator : '\0', '\0'};
+                        char sep[2] = {(i && ed->separator) ? ed->separator : '\0', '\0'};
                         len += snprintf(valueHint + len, sizeof(valueHint) - len, "%s%s", sep, part);
                     }
                     // Trim the padding a fixed-width field may carry.
@@ -329,6 +424,7 @@ void MenuScreen::drawFull() {
                 break;
             }
             case MenuItemType::ACTION:  hint = item.onAction ? "run >" : ""; break;
+            case MenuItemType::COLOR:   hint = ""; break; // a swatch is drawn instead, below
         }
     }
 
@@ -337,6 +433,10 @@ void MenuScreen::drawFull() {
     uint8_t size = (textWidth(label, kLabelSize) <= SCREEN_WIDTH - 20) ? kLabelSize : kLabelSizeSmall;
     drawCentered(gfx, label, size, kLabelCenterY - kCharH * size / 2, COLOR_WHITE);
     if (hint[0]) drawCentered(gfx, hint, kHintSize, kHintY, hintColor);
+    if (!m_inValueChoice && item.type == MenuItemType::COLOR && item.color && item.color->get) {
+        constexpr int16_t w = 96, h = 16;
+        gfx->fillRect((SCREEN_WIDTH - w) / 2, kHintY, w, h, item.color->get());
+    }
 
 }
 
@@ -374,10 +474,12 @@ void MenuScreen::drawInfo() {
     size_t visible = infoVisibleRows();
     gfx->setTextSize(kInfoTextSize);
     gfx->setTextColor(COLOR_WHITE, COLOR_BLACK);
+    gfx->setTextWrap(false); // a line longer than kInfoCols is clipped, never spills into the next row
     for (size_t row = 0; row < visible && (m_infoScroll + row) < m_infoCount; ++row) {
         gfx->setCursor(4, kInfoTopY + row * kInfoRowH);
         gfx->print(m_infoLines[m_infoScroll + row]);
     }
+    gfx->setTextWrap(true);
 
     constexpr int16_t w = 12, h = 8, x = SCREEN_WIDTH - w - 6;
     if (m_infoScroll > 0) {
@@ -408,7 +510,7 @@ void MenuScreen::drawEditorFields() {
 
     int16_t chars = 0;
     for (uint8_t i = 0; i < ed->fieldCount; ++i) chars += ed->digits[i];
-    chars += ed->fieldCount - 1; // separators
+    if (ed->separator) chars += ed->fieldCount - 1; // separators ('\0' = none: e.g. one digit per field)
     int16_t x = (SCREEN_WIDTH - chars * kCharW * kEditorSize) / 2;
 
     gfx->setTextSize(kEditorSize);
@@ -422,7 +524,7 @@ void MenuScreen::drawEditorFields() {
         gfx->print(buf);
         x += ed->digits[i] * kCharW * kEditorSize;
 
-        if (i + 1 < ed->fieldCount) {
+        if (i + 1 < ed->fieldCount && ed->separator) {
             char sep[2] = {ed->separator, '\0'};
             gfx->setTextColor(COLOR_WHITE, COLOR_BLACK);
             gfx->setCursor(x, kEditorY);
@@ -430,4 +532,48 @@ void MenuScreen::drawEditorFields() {
             x += kCharW * kEditorSize;
         }
     }
+}
+
+// --- COLOR ----------------------------------------------------------------
+
+void MenuScreen::drawColorFull() {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    gfx->fillScreen(COLOR_BLACK);
+    drawHeader(focusedItem().label, 0, 0);
+    for (int16_t i = 0; i < kMenuPaletteSize; ++i) {
+        gfx->fillRect(stripeX(i), kBarTop, stripeX(i + 1) - stripeX(i), kBarH, menuPaletteColor(static_cast<uint8_t>(i)));
+    }
+    drawCentered(gfx, "UP/DOWN choose   RIGHT set   LEFT cancel", 1, SCREEN_HEIGHT - 10, kHintColor);
+    m_colorDrawnIdx = -1;
+    drawColorFocus(-1);
+}
+
+// Repaints the stripes around the old focus (wiping its marker), draws the
+// marker -- a white box around the stripe and a triangle under it -- at the
+// new focus, and fills the swatch with the focused color.
+void MenuScreen::drawColorFocus(int16_t oldIdx) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    if (oldIdx >= 0) {
+        int16_t lo = oldIdx - 1 < 0 ? 0 : oldIdx - 1;
+        int16_t hi = oldIdx + 1 >= kMenuPaletteSize ? kMenuPaletteSize - 1 : oldIdx + 1;
+        int16_t x0 = stripeX(lo) - 3, x1 = stripeX(hi + 1) + 3;
+        if (x0 < 0) x0 = 0;
+        if (x1 > SCREEN_WIDTH) x1 = SCREEN_WIDTH;
+        gfx->fillRect(x0, kMarkTop, x1 - x0, kBarTop - kMarkTop, COLOR_BLACK);
+        gfx->fillRect(x0, kBarTop + kBarH, x1 - x0, kMarkBot - (kBarTop + kBarH) + 1, COLOR_BLACK);
+        for (int16_t i = lo; i <= hi; ++i) {
+            gfx->fillRect(stripeX(i), kBarTop, stripeX(i + 1) - stripeX(i), kBarH, menuPaletteColor(static_cast<uint8_t>(i)));
+        }
+        // The box overhangs into the stripes beyond lo/hi by up to 3 px.
+        if (lo > 0)                      gfx->fillRect(stripeX(lo) - 3, kBarTop, 3, kBarH, menuPaletteColor(static_cast<uint8_t>(lo - 1)));
+        if (hi < kMenuPaletteSize - 1)   gfx->fillRect(stripeX(hi + 1), kBarTop, 3, kBarH, menuPaletteColor(static_cast<uint8_t>(hi + 1)));
+    }
+    int16_t x0 = stripeX(m_colorIdx), x1 = stripeX(m_colorIdx + 1);
+    gfx->drawRect(x0 - 2, kMarkTop + 2, (x1 - x0) + 4, kBarH + 6, COLOR_WHITE);
+    gfx->drawRect(x0 - 3, kMarkTop + 1, (x1 - x0) + 6, kBarH + 8, COLOR_WHITE);
+    int16_t cx = (x0 + x1) / 2;
+    gfx->fillTriangle(cx - 6, kMarkBot, cx + 6, kMarkBot, cx, kBarTop + kBarH + 6, COLOR_WHITE);
+
+    gfx->fillRect(12, kSwatchY, SCREEN_WIDTH - 24, kSwatchH, menuPaletteColor(static_cast<uint8_t>(m_colorIdx)));
+    m_colorDrawnIdx = m_colorIdx;
 }

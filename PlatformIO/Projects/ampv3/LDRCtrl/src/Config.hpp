@@ -69,7 +69,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-24a (master-controlled power-up: muted until told; boot only checks)"
+#define FW_VERSION "2026-10-26b (thermal compensation range 45 counts: covers a cold start)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -86,9 +86,10 @@ constexpr uint16_t CAL_BRIGHT_HOLD_DUTY = (uint16_t)(((uint32_t)LED_PWM_WRAP * 8
 // op-amp's virtual ground (measured), and the JFET buffer in front has a ~400R
 // output impedance. Solving against the real loaded gain makes each step's dB --
 // and STATUS DB= -- the true one; with the old unloaded solve the loud steps were
-// up to ~7 dB quieter than labelled. Set AMP_INPUT_LOAD_OHMS to 0 to solve
-// unloaded again (and bump CAL_ALGO_REV: the meaning of saved LUTs changes).
-// AUDIO_SOURCE_OHMS is approximate; its effect is <= ~0.4 dB, at the loud end only.
+// up to ~7 dB quieter than labelled. These two are DEFAULTS: SET SRC <ohms> and
+// SET LOAD <ohms> (0 = unloaded, e.g. a high-impedance buffer) change them at runtime,
+// stored in flash; a calibration solved for other values then reports CAL=STALE and
+// a plain CAL re-solves. The source's effect is <= ~0.4 dB, at the loud end only.
 
 // Set it to about 300 Ω. The difference from 400 Ω is far too small to matter, though.
 // Where 300 Ω comes from. The dual-rail board's output impedance has three parts in series:
@@ -104,7 +105,7 @@ constexpr uint16_t CAL_BRIGHT_HOLD_DUTY = (uint16_t)(((uint32_t)LED_PWM_WRAP * 8
 // - Put a 1k resistor from J8 pin 1 to GND, and measure again. That's V_load.
 // - Calculate Z_out = 1k × (V_open / V_load − 1).
 // Expect roughly 200–350 Ω. Enter whatever you measure, and the setting is exact for that board.
-constexpr float AMP_INPUT_LOAD_OHMS = 10000.0f;
+constexpr float AMP_INPUT_LOAD_OHMS_DEFAULT = 10000.0f;  // default; SET LOAD <ohms> changes it at runtime
 // LDR board layout per channel: which ADS1115 input carries the TOP junction.
 //   true  = second-edition LDR board (A1 = middle, A3 = top)
 //   false = original LDR board       (A1 = top,    A3 = middle)
@@ -113,7 +114,7 @@ constexpr float AMP_INPUT_LOAD_OHMS = 10000.0f;
 constexpr bool LDR_L_TOP_ON_A3 = true;
 constexpr bool LDR_R_TOP_ON_A3 = true;
 
-constexpr float AUDIO_SOURCE_OHMS   = 300.0f;
+constexpr float AUDIO_SOURCE_OHMS_DEFAULT   = 300.0f;  // JFET splitter; SET SRC <ohms> changes it at runtime
 
 
 // ---------------------------------------------------------------------------
@@ -201,8 +202,8 @@ constexpr uint32_t TRIM_PRECONDITION_MS = 8000;
 // real difference between the two boards) -- use CALREF <L|R> <ohms> to
 // override at runtime if a future board swap actually needs a different
 // value.
-constexpr float RREF_LEFT_OHMS = 9990.0f;
-constexpr float RREF_RIGHT_OHMS = 9990.0f;
+constexpr float RREF_LEFT_OHMS = 10000.0f;
+constexpr float RREF_RIGHT_OHMS = 10000.0f;
 
 // Default number of volume steps and total attenuation range (dB) the LUT
 // solve spans, log/geometric across steps. Real achievable range depends
@@ -280,4 +281,4 @@ constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 // keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 10; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: no boot hold/boot calibration, CAL=CHANGED|STALE, volume refused until calibrated
+constexpr uint8_t PROTO_VERSION = 12; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: master-controlled power-up; 11: ENV without CELLL/CELLR; 12: SET SRC/LOAD, MODEL, COMP

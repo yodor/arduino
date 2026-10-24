@@ -85,6 +85,7 @@ private:
   void reportEnv();       // protocol 8: ENV -- temperatures, rail, compensation (cached, instant)
   void reportProgress();  // protocol 8: PROGRESS -- what a running calibration is doing
   void reportLearn();     // protocol 9: LEARN -- the thermal learning's progress and fit quality
+  void reportModel();     // protocol 12: MODEL -- source/load in use and as solved
 
 
   // BusyHook listener: runs inside calibration's blocking waits.

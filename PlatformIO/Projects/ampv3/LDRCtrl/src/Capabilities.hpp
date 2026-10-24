@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "Calibration.hpp"
+#include "AudioModel.hpp"
 #include "DarkProfile.hpp" // LdrCurve
 #include "Config.hpp"
 #include "DividerMath.hpp"
@@ -336,7 +337,7 @@ template <class OUT>
 void printReport(OUT &out, const LdrCurve *const *ser, const LdrCurve *const *shu,
                  const char *const *labels, uint8_t n, float currentR,
                  const DarkProfile *const *prof = nullptr) {
-  const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+  const DividerMath::Load load = AudioModel::load();
   ChannelCaps cc[2];
   for (uint8_t i = 0; i < n; i++) {
     cc[i] = measure(*ser[i], *shu[i], prof ? prof[i] : nullptr);
@@ -349,8 +350,8 @@ void printReport(OUT &out, const LdrCurve *const *ser, const LdrCurve *const *sh
   }
   { Line h; h.raw("CAPABILITIES ");
     for (uint8_t i = 0; i < n; i++) h.raw(labels[i]);
-    h.raw(" -- curves in memory; model: Rsrc="); h.num(AUDIO_SOURCE_OHMS, 0);
-    h.raw(" Rload="); h.num(AMP_INPUT_LOAD_OHMS, 0);
+    h.raw(" -- curves in memory; model: Rsrc="); h.num(AudioModel::sourceOhms(), 0);
+    h.raw(" Rload="); h.num(AudioModel::loadOhms(), 0);
     h.raw(" margin="); h.num(RANGE_SAFETY_MARGIN_DB, 1);
     h.raw("dB dither="); h.num(CAPS_DITHER_LEVELS, 0);
     out.println(h.b); }

@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 10
+# Master Board <-> Daughter Board UART Protocol — revision 12
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=10`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby") so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=12`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=10
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12
 ```
 
 | Key | Meaning |
@@ -136,13 +136,12 @@ values read `--`.
 
 ```
 ENV
-OK ENV BLOCK=22.81 CELLL=21.75 CELLR=21.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.84 KR=-5.28 DBLOCK=+0.17 MATCH=+0.05
+OK ENV BLOCK=22.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.40 KR=-5.21 DBLOCK=+0.17 MATCH=+0.05
 ```
 
 | Key | Meaning |
 |---|---|
 | `BLOCK` | driver block temperature (NTC on the aluminium block), C, 1-minute average |
-| `CELLL`, `CELLR` | cell temperatures (DS18B20 next to each LDR board), C; refreshed in the background every 30 s |
 | `RAIL` | 3.3 V rail via the TL431, V, 1-minute average (the value the rail correction uses) |
 | `COMP` | thermal compensation: `ON` (both sides), `PART` (one side), `LEARNING` (enabled, fit not trusted yet), `OFF` (switched off) |
 | `OFFL`, `OFFR` | the offset each side's drive gets right now, PWM counts (`--` when not applied) |
@@ -150,14 +149,13 @@ OK ENV BLOCK=22.81 CELLL=21.75 CELLR=21.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-
 | `DBLOCK` | block temperature change since the last calibration, C |
 | `MATCH` | L/R balance the last calibration reached at the quiet point, dB (`+` = R quieter) |
 
-The reply is instant: everything comes from running averages and caches (the DS18B20s are
-read in the background, never inside the reply's 500 ms).
+The reply is instant: everything comes from running averages. **Revision 11 removed `CELLL` and `CELLR`** (the DS18B20 cell sensors are no longer supported: the drift follows the driver block). A master that parsed them must drop them; every other key keeps its order.
 
 ### `PROGRESS` -- what a calibration is doing
 
 ```
 PROGRESS
-OK PROGRESS KIND=RESYNC PHASE=TRIM SIDE=L STEP=12/32 PCT=11 ETA=122
+OK PROGRESS KIND=RESYNC PHASE=TRIM STEP=12/32 PCT=11 ETA=101
 OK PROGRESS KIND=RESYNC PHASE=HOLD STEP=45/60 PCT=67 ETA=44
 OK PROGRESS KIND=RESYNC PHASE=DONE PCT=100 ETA=0
 ```
@@ -166,13 +164,13 @@ OK PROGRESS KIND=RESYNC PHASE=DONE PCT=100 ETA=0
 |---|---|
 | `KIND` | `FULL`, `RESYNC`, `RESOLVE`; `NONE` while the cell check is still deciding |
 | `PHASE` | `IDLE`, `CHECK`, `SWEEP_SERIES`, `SWEEP_SHUNT`, `WALK`, `SOLVE`, `TRIM`, `HOLD`, `SEEK`, `SAVE`, `DONE` |
-| `SIDE` | `L` / `R` where the phase works per channel (`TRIM`); absent otherwise |
+| `SIDE` | not sent by current firmware: since 2026-10-25a both channels trim together, so no phase works on one side at a time. A master should treat it as optional |
 | `STEP` | progress inside the phase, `i/n` (trim step, seconds of the 60 s quiet hold, seek probe); absent if the phase has no count |
 | `PCT` | overall estimate, 0-99 while running, 100 at `DONE` |
 | `ETA` | estimated seconds left |
 
 `PHASE=DONE` stays until the next calibration starts. Typical master loop while
-`STATUS=BUSY`: poll `PROGRESS` once a second and show `PHASE`/`SIDE`/`STEP` plus a bar from
+`STATUS=BUSY`: poll `PROGRESS` once a second and show `PHASE`/`STEP` plus a bar from
 `PCT`; when `STATUS` returns to `IDLE`, show the result from `STATUS` (`LASTCAL`, `CAL`) and
 `ENV` (`MATCH`).
 
@@ -183,7 +181,7 @@ nominal duration, never claiming more than 95 % of a phase until it ends.
 
 Display labels a master might use: `CHECK` "Checking cells", `SWEEP_SERIES` "Measuring series
 cells", `SWEEP_SHUNT` "Measuring shunt cells", `WALK` "Mapping the dark end", `SOLVE`
-"Computing the volume steps", `TRIM` "Trimming L/R step i/n", `HOLD` "Settling (n s)",
+"Computing the volume steps", `TRIM` "Trimming step i/n", `HOLD` "Settling (n s)",
 `SEEK` "Stereo matching", `SAVE` "Saving".
 
 ## Revision 9: `LEARN` and `FORGET`
@@ -220,6 +218,40 @@ which `STATUS` reads `BUSY` and `ENV`/`PROGRESS`/`LEARN` still answer. Any other
 gets `ERR usage: FORGET CAL|COMP|ALL`. Refused during a calibration
 (`ERR busy`), like every setter. A master should ask for confirmation before sending
 `FORGET CAL`: the volume is muted until a new calibration completes (about 6.5 minutes).
+
+## Revision 12: the audio model at runtime, and `COMP`
+
+### `SET SRC <ohms>` / `SET LOAD <ohms>`
+
+The step tables are solved for the source's output impedance (the splitter: about 300 for the
+JFET splitter, 47 for an op-amp splitter with a 47 ohm output resistor) and the load after the
+attenuator (the amplifier's input, 10000; or a buffer's input bias resistor; `0` = unloaded).
+These used to be compile-time constants; now they are set at runtime and **stored in flash**.
+
+| Command | Range | Reply |
+|---|---|---|
+| `SET SRC <ohms>` | 0..100000 | `OK` / `ERR SRC range 0..100000` |
+| `SET LOAD <ohms>` | 0 (unloaded) or 1000..100000000 | `OK` / `ERR LOAD range 0 or 1000..100000000` |
+
+If the stored calibration was solved for other values, it becomes **`CAL=STALE`** at once: the
+LDR mute engages and `VOL`/`MUTE OFF` are refused until a plain `CAL` re-solves (about 2-3 min,
+no full characterization). Setting the solved values back clears that `STALE` again (the LDR mute
+stays on until `MUTE OFF`). Refused during a calibration (`ERR busy`), like every setter.
+
+### `MODEL` (read-only, answered at any time)
+
+```
+MODEL
+OK MODEL SRC=300 LOAD=10000 SOLVED_SRC=47 SOLVED_LOAD=10000
+```
+
+`SRC`/`LOAD`: the values in use. `SOLVED_SRC`/`SOLVED_LOAD`: the values the stored calibration
+was solved for (`--` if unknown). When they differ, `STATUS` shows `CAL=STALE`.
+
+### `COMP ON` / `COMP OFF`
+
+The thermal compensation on or off (`OK`). Not stored: it boots ON. `ENV` reports the state
+(`COMP=ON|PART|LEARNING|OFF`). Meant for an A/B comparison from the menu.
 
 ## Calibration
 
@@ -444,10 +476,14 @@ show `ERR=` to the user.
 
 `R`, the measured range, the dark-end profiles, the cell fingerprints and the calibration
 history are saved to flash with the calibration, so a power cycle does not revert them; at
-boot the daughter checks the cells against the saved fingerprint and either uses the saved
-calibration (same cells) or re-characterizes (changed cells) with no command needed. The
-master sends `CAL` when it wants the cells resynced (for example after warm-up, or from a
-"Recalibrate" menu item); the daughter decides how much work that takes.
+power-up the daughter checks the cells against the saved fingerprint and reports the result
+in `CAL=` (`OK`, or `CHANGED` for other cells), **without calibrating** (revision 10). The
+master sends `CAL` when the user asks for it (from the calibration menu); the daughter
+decides how much work that takes.
+
+**The volume is not stored, on either board:** after power-up the daughter is at step 0 (the
+quietest) with both mutes on. The master takes the volume from `STATUS` (`VOL=`), never from
+its own flash, so the two can never disagree.
 
 ## Accepted behaviour: levels settle over a few seconds
 

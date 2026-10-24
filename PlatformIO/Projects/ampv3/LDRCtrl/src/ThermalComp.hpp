@@ -14,7 +14,10 @@ namespace ThermalComp {
 
 // ---- pure arithmetic (host-tested) ----
 constexpr float MIN_R2 = 0.6f;            // the fit must explain most of the drift
-constexpr float MAX_COUNTS = 15.0f;       // safety bound on the offset
+// Safety bound on the offset. At the learned ~5.4 counts/C, 15 covered only ~2.8 C: a cold
+// start after a warm calibration (block 5-8 C cooler) needed 27-43 counts and the middle steps
+// played quiet until a resync. 45 covers ~8 C; a broken NTC still gives no offset at all.
+constexpr float MAX_COUNTS = 45.0f;
 constexpr float DEADBAND_COUNTS = 0.05f;  // re-apply only when the offset moves this much
 inline float offsetCounts(float k, float tNow, float tRef) {
   if (isnan(k) || isnan(tNow) || isnan(tRef)) return 0.0f;

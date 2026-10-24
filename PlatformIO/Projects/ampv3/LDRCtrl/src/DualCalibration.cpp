@@ -1,8 +1,10 @@
 #include "DualCalibration.hpp"
+#include "AudioModel.hpp"
 #include "ThermalLog.hpp"
 #include "RailComp.hpp"
 #include "ThermalComp.hpp"
 #include "CalProgress.hpp"
+#include "QuietSeek.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
@@ -131,7 +133,7 @@ struct ConvState {
   bool done = false;
 };
 
-// One non-blocking poll. Same convergence rule as LDRVolume::convergeRead
+// One non-blocking poll. Same convergence rule as the trim (two consecutive readings within 1 %)
 // (two consecutive readings within 1%, or timeout).
 void pollOne(LDRVolume &v, bool wantSeries, unsigned long timeoutMs, ConvState &st) {
   if (st.done) return;
@@ -545,12 +547,13 @@ float gKneeShiftLR[2] = {NAN, NAN};
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
   gKneeShiftLR[0] = gKneeShiftLR[1] = NAN;
   const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
-  constexpr uint8_t MAX_PROBES = 6;
-  constexpr float TOL = 1.015f;        // each channel within 1.5% of its target ...
+  constexpr uint8_t MAX_PROBES = 8;
+  constexpr float TOL = QuietSeek::TOL; // each channel within 1.5% of its target ...
   constexpr float PAIR_TOL = 1.015f;   // ... and the two within 1.5% of each other (~0.13 dB)
   constexpr uint32_t QUIET_HOLD_MS = 60000;
   int8_t s0[MAX_CH]; uint32_t oldF[MAX_CH], f[MAX_CH]; float target[MAX_CH], perCount[MAX_CH], got[MAX_CH], err[MAX_CH];
   bool active[MAX_CH], ok[MAX_CH]; uint8_t probes[MAX_CH] = {0, 0};
+  bool everRead[MAX_CH] = {false, false};
   out.println(F("--- quiet-end series point (settled seek, stereo-matched) ---"));
   for (uint8_t c = 0; c < na; c++) {
     s0[c] = ch[c]->lowestValidStep();
@@ -618,15 +621,9 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
       next[c] = f[c];
       if (!active[c]) continue;
       probes[c]++;
-      if (r[c] <= 0.0f) { active[c] = false; continue; }
-      got[c] = r[c];
-      err[c] = logf(r[c] / target[c]);
-      ok[c] = fabsf(err[c]) <= logf(TOL);
-      float step = err[c] / perCount[c];              // > 0: too dark -> brighter
-      if (step > 3.0f) step = 3.0f;
-      if (step < -3.0f) step = -3.0f;
-      const int32_t nf = (int32_t)f[c] + (int32_t)lroundf(step * (float)FPC);
-      next[c] = nf > (int32_t)FPC ? (uint32_t)nf : FPC;
+      const QuietSeek::Decision d = QuietSeek::decide(f[c], r[c], target[c], perCount[c], FPC);
+      ok[c] = d.ok; err[c] = d.err; next[c] = d.next;
+      if (d.readable) { everRead[c] = true; got[c] = r[c]; }
     }
     // Done when every channel is within TOL and, as a pair, within PAIR_TOL of each
     // other: stereo matching first. Otherwise correct the channel(s) still off -- or,
@@ -644,11 +641,22 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
   const float Lc = (float)FPC;
   for (uint8_t c = 0; c < na; c++) {
     if (s0[c] < 0) continue;
+    if (!everRead[c]) {
+      // Never readable, even after going brighter: a sensing or hardware problem, not a shift.
+      // Leave the duty where it was rather than move blindly.
+      f[c] = oldF[c];
+      out.print(F("  WARN ")); out.print(labels ? labels[c] : '?');
+      out.println(F(": the quiet point could not be read at all -- duties left unchanged (check the cells and the ADS1115)"));
+    } else if (!ok[c]) {
+      out.print(F("  WARN ")); out.print(labels ? labels[c] : '?');
+      out.println(F(": the quiet point was not reached within the probes -- the partial shift is applied, but not used for learning"));
+    }
     out.print(F("  ")); out.print(labels ? labels[c] : '?');
     out.print(F(": seriesDuty ")); out.print(oldF[c] / Lc, 2); out.print(F("->")); out.print(f[c] / Lc, 2);
     out.print(F("  Rs ")); out.print(got[c] / 1000.0f, 1); out.print(F("k (target ")); out.print(target[c] / 1000.0f, 1);
     out.print(F("k, ")); out.print(probes[c]); out.print(F(" settled probes)"));
-    gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0] = ((float)f[c] - (float)oldF[c]) / Lc;
+    // Only a CONVERGED seek is a measured knee shift; anything else is "unknown" to the learning.
+    gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0] = ok[c] ? ((float)f[c] - (float)oldF[c]) / Lc : NAN;
     const uint8_t shifted = ch[c]->applyQuietSeek(oldF[c], f[c]);
     if (shifted) {
       out.print(F("; knee shift "));
@@ -734,6 +742,20 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
 // The source/load model a stored solution was made with ("/model.txt": "<Rsrc> <Rload>").
 // No file = unknown (solutions made before this existed) -> treated as changed, re-solved once.
 namespace {
+bool readSolvedModel(float &src, float &load) {
+  File f = LittleFS.open("/model.txt", "r");
+  if (!f) return false;
+  char buf[48] = {0};
+  const size_t n = f.read((uint8_t *)buf, sizeof(buf) - 1);
+  f.close();
+  buf[n] = 0;
+  char *end;
+  src = (float)strtod(buf, &end);
+  if (end == buf) return false;
+  const char *p = end;
+  load = (float)strtod(p, &end);
+  return end != p;
+}
 bool modelMatches() {
   File f = LittleFS.open("/model.txt", "r");
   if (!f) return false;
@@ -744,18 +766,19 @@ bool modelMatches() {
   char *end;
   const float src = (float)strtod(buf, &end);
   const float load = (float)strtod(end, nullptr);
-  return fabsf(src - AUDIO_SOURCE_OHMS) < 0.5f && fabsf(load - AMP_INPUT_LOAD_OHMS) < 0.5f;
+  return fabsf(src - AudioModel::sourceOhms()) < 0.5f && fabsf(load - AudioModel::loadOhms()) < 0.5f;
 }
 void saveModel() {
   File f = LittleFS.open("/model.txt", "w");
   if (!f) return;
-  f.print(AUDIO_SOURCE_OHMS, 1); f.print(' '); f.print(AMP_INPUT_LOAD_OHMS, 1); f.println();
+  f.print(AudioModel::sourceOhms(), 1); f.print(' '); f.print(AudioModel::loadOhms(), 1); f.println();
   f.close();
 }
 } // namespace
 
 // What the stored calibration needs before the attenuator may play (set at power-up by the
 // check, cleared by a completed CAL, set to NO_CAL by FORGET CAL).
+bool gStaleFromModel = false;   // the STALE came from SET SRC / SET LOAD (see onModelChanged)
 CalNeed gNeed = CalNeed::NO_CAL;
 CalNeed calNeed() { return gNeed; }
 const char *calNeedName() {
@@ -785,7 +808,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
   float policyR = 0.0f;
   if (cs == CellState::MATCH && !req.hasR && !req.rAuto) {
     using namespace Capabilities;
-    const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+    const DividerMath::Load load = AudioModel::load();
     ChannelCaps cc[2];
     const LdrCurve *ser[2];
     for (uint8_t c = 0; c < 2; c++) {
@@ -804,12 +827,12 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     }
   }
   // Same cells, same Rtotal -- but was the stored solution made with the source/load model
-  // Config has now (AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS)? If not, re-solve from the stored
+  // Config has now (AudioModel::sourceOhms(), AudioModel::loadOhms())? If not, re-solve from the stored
   // measurements (a new splitter, a buffer...): no full scan needed.
   const bool modelChanged = (cs == CellState::MATCH) && !modelMatches();
   if (modelChanged) {
     out.print(F("CAL: the source/load model changed since the last solve (now Rsrc "));
-    out.print(AUDIO_SOURCE_OHMS, 0); out.print(F(" ohm, Rload ")); out.print(AMP_INPUT_LOAD_OHMS, 0);
+    out.print(AudioModel::sourceOhms(), 0); out.print(F(" ohm, Rload ")); out.print(AudioModel::loadOhms(), 0);
     out.println(F(" ohm) -- re-solving"));
   }
   if (boot) {
@@ -858,7 +881,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
       out.println(F("CAL: cells match -- new Rtotal, re-solved from the stored measurements, then resync"));
       if (req.rAuto) {
         using namespace Capabilities;
-        const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+        const DividerMath::Load load = AudioModel::load();
         ChannelCaps cc[2];
         const LdrCurve *ser[2];
         for (uint8_t c = 0; c < 2; c++) {
@@ -879,6 +902,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     }
   }
   gNeed = (left.hasUsableLut() && right.hasUsableLut()) ? CalNeed::NONE : CalNeed::NO_CAL;
+  gStaleFromModel = false;
   return cs;
 }
 
@@ -894,12 +918,10 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   Board::reportDieTemp(out, F("Die temp at start"));
   for (uint8_t c = 0; c < n; c++) ch[c]->relayEnergize(true);
 
-  for (uint8_t c = 0; c < n; c++) {
-    if (labels) { out.print(F("Channel ")); out.println(labels[c]); }
-    CalProgress::phase(CalProgress::Phase::TRIM, labels ? labels[c] : 0, c, n);
-    ch[c]->trimLoop(out);
-  }
+  CalProgress::phase(CalProgress::Phase::TRIM);
+  LDRVolume::trimLoopBoth(ch, n, out, labels);   // both channels together: shared waits
   settleQuietPoint(ch, n, labels, out);
+  for (uint8_t c = 0; c < n; c++) { ch[c]->guardShunt(out, labels ? labels[c] : '?'); ch[c]->guardSeries(out, labels ? labels[c] : '?'); }
   CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < n; c++) {
     CalMeta m = ch[c]->calMeta();
@@ -995,7 +1017,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // manual R that was valid when requested gets clamped if the cells moved since).
   {
     using namespace Capabilities;
-    const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+    const DividerMath::Load load = AudioModel::load();
     ChannelCaps cc[MAX_CH];
     const LdrCurve *ser[MAX_CH];
     bool autoMode = false;
@@ -1053,14 +1075,16 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // off; a calibration isn't finished until it has been trimmed against
   // live measurements. The relay is still energized here. Saved once, after
   // the trim: flash keeps the previous calibration until then.
-  for (uint8_t c = 0; c < na; c++) {
-    if (labels) { out.print(F("Channel ")); out.println(labels[idx[c]]); }
-    CalProgress::phase(CalProgress::Phase::TRIM, labels ? labels[idx[c]] : 0, c, na);
-    act[c]->trimLoop(out);
+  CalProgress::phase(CalProgress::Phase::TRIM);
+  {
+    char lab2[3] = {0, 0, 0};
+    for (uint8_t c = 0; c < na; c++) lab2[c] = labels ? labels[idx[c]] : '?';
+    LDRVolume::trimLoopBoth(act, na, out, lab2);   // both channels together: shared waits
   }
   // The quiet-end series point (shared by the quietest steps), placed with settled
   // readings -- the quick trim above leaves the deep series duties alone.
   settleQuietPoint(act, na, lab, out);
+  for (uint8_t c = 0; c < na; c++) { act[c]->guardShunt(out, lab ? lab[c] : '?'); act[c]->guardSeries(out, lab ? lab[c] : '?'); }
   CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < na; c++) {
     CalMeta m = act[c]->calMeta();
@@ -1116,5 +1140,26 @@ void forgetCompensation() {
   ThermalLog::clear();
   ThermalComp::refresh();               // no fit: offsets 0 at once, relearns from the next resyncs
 }
+
+// ---------------------------------------------------------------------------
+// The audio model changed at runtime (SET SRC / SET LOAD). If the stored calibration was
+// solved for other values, it is STALE: LDR mute on, volume refused until CAL re-solves
+// (protocol 10 rules). Setting the solved values back clears a STALE that only this caused.
+// ---------------------------------------------------------------------------
+void onModelChanged(LDRVolume &left, LDRVolume &right) {
+  if (!left.hasUsableLut() || !right.hasUsableLut()) return;    // nothing solved to go stale
+  const bool matches = modelMatches();
+  if (!matches && gNeed == CalNeed::NONE) {
+    gNeed = CalNeed::STALE;
+    gStaleFromModel = true;
+    left.mute();
+    right.mute();
+  } else if (matches && gNeed == CalNeed::STALE && gStaleFromModel) {
+    gNeed = CalNeed::NONE;                // back to the solved values: valid again (still muted)
+    gStaleFromModel = false;
+  }
+}
+
+bool solvedModel(float &src, float &load) { return readSolvedModel(src, load); }
 
 } // namespace DualCalibration

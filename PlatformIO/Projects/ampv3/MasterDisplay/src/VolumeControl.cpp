@@ -1,5 +1,5 @@
 #include "VolumeControl.hpp"
-#include "PersistentSettings.hpp"
+#include <cstring>
 #include "DaughterBoardLink.hpp"
 
 VolumeControl& VolumeControl::instance() {
@@ -50,6 +50,34 @@ bool VolumeControl::ampMuteConfirmed() const {
            static_cast<int32_t>(s.receivedMs - m_ampMuteSentMs) > 0 && s.ampMute == m_ampMuted;
 }
 
+void VolumeControl::setModelSource(uint32_t ohms) {
+    m_srcOhms    = ohms;
+    m_srcPending = true;
+    retryPendingCommands();
+}
+
+void VolumeControl::setModelLoad(uint32_t ohms) {
+    m_loadOhms    = ohms;
+    m_loadPending = true;
+    retryPendingCommands();
+}
+
+int8_t VolumeControl::compensationState() const {
+    const DaughterEnv& e = DaughterBoardLink::instance().env();
+    if (m_compRequested && (m_compPending || !e.valid || static_cast<int32_t>(e.receivedMs - m_compSentMs) <= 0)) {
+        return m_compOn ? 1 : 0;
+    }
+    if (!e.valid || !strcmp(e.comp, "--")) return -1;
+    return strcmp(e.comp, "OFF") ? 1 : 0; // ON, PART and LEARNING are all "enabled"
+}
+
+void VolumeControl::setCompensation(bool on) {
+    m_compOn        = on;
+    m_compPending   = true;
+    m_compRequested = true;
+    retryPendingCommands();
+}
+
 void VolumeControl::forget(DaughterBoardLink::Forget what) {
     m_forgetWhat    = what;
     m_forgetPending = true;
@@ -65,17 +93,6 @@ void VolumeControl::calibrate(CalR mode, uint32_t ohms) {
 
 void VolumeControl::retryPendingCommands() {
     DaughterBoardLink& link = DaughterBoardLink::instance();
-    // The power-up/post-calibration restore goes out FIRST, and the mute
-    // waits until it has: VOL <n> must land while the LDR mute is still on,
-    // so MUTE OFF brings the music in at the restored step, never at the
-    // daughter's power-up step.
-    if (m_volRestorePending) {
-        if (!link.isBusy() && link.sendVolSet(m_savedStep)) {
-            m_volRestorePending = false;
-            m_volRestoreSentMs  = millis();
-        }
-        return; // everything else waits for the restore
-    }
     if (m_mutePending && !link.isBusy()) {
         bool sent = m_muted ? link.sendMuteOn() : link.sendMuteOff();
         if (sent) m_mutePending = false;
@@ -83,6 +100,15 @@ void VolumeControl::retryPendingCommands() {
     if (m_ampMutePending && !link.isBusy()) {
         bool sent = m_ampMuted ? link.sendAmpMuteOn() : link.sendAmpMuteOff();
         if (sent) { m_ampMutePending = false; m_ampMuteSentMs = millis(); }
+    }
+    if (m_srcPending && !link.isBusy()) {
+        if (link.sendSetSrc(m_srcOhms)) m_srcPending = false;
+    }
+    if (m_loadPending && !link.isBusy()) {
+        if (link.sendSetLoad(m_loadOhms)) m_loadPending = false;
+    }
+    if (m_compPending && !link.isBusy()) {
+        if (link.sendComp(m_compOn)) { m_compPending = false; m_compSentMs = millis(); }
     }
     if (m_forgetPending && !link.isBusy()) {
         if (link.sendForget(m_forgetWhat)) m_forgetPending = false;
@@ -127,26 +153,21 @@ void VolumeControl::syncFromDaughterStatus() {
     bool calOk = (s.cal == DaughterCalState::OK);
     if (!m_ready) {
         if (!calOk) return; // still muted by the daughter; m_muted keeps the user's intent
-        // CAL=OK: bring the saved step back (silently, the LDR mute is still
-        // on), then unmute -- unless the user muted meanwhile.
-        if (m_savedStep >= 0 && m_savedStep >= s.volMin && m_savedStep <= s.volMax && m_savedStep != s.vol) {
-            m_volRestorePending = true;
-        }
+        // CAL=OK: unmute -- unless the user muted meanwhile. The daughter
+        // keeps its own step (0 on a first power-up).
         if (!m_muted) {
             m_mutePending      = true; // sends MUTE OFF (m_muted is false)
             m_lastMuteChangeMs = millis();
         }
         m_ready = true;
-        Serial.printf("[Volume] Calibrated -- %s%s\n",
-                      m_volRestorePending ? "restoring the saved step, " : "",
-                      m_muted ? "staying muted (user mute)" : "unmuting");
+        Serial.printf("[Volume] Calibrated -- %s (step %d)\n",
+                      m_muted ? "staying muted (user mute)" : "unmuting", s.vol);
         retryPendingCommands();
         return;
     }
 
     if (!calOk) {
-        m_ready             = false;
-        m_volRestorePending = false; // redone when CAL is OK again
+        m_ready = false;
         Serial.printf("[Volume] Calibration needed (%s) -- the daughter keeps the volume muted\n", calStateText(s.cal));
         return;
     }
@@ -155,19 +176,12 @@ void VolumeControl::syncFromDaughterStatus() {
     if (!m_mutePending && !inGrace) {
         m_muted = s.mute; // the daughter is the source of truth
     }
-
-    // Remember the step the volume settles on (saved a few seconds later by
-    // main.cpp's deferred save). Statuses from before the restore command
-    // still show the daughter's pre-restore step, so they don't count.
-    if (!m_volRestorePending && static_cast<int32_t>(s.receivedMs - m_volRestoreSentMs) > 0 &&
-        s.vol >= 0 && s.vol != m_savedStep) {
-        m_savedStep = s.vol;
-        PersistentSettings::instance().markDirty();
-    }
 }
 
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
     DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.holdPolls(m_mutePending || m_calPending || m_ampMutePending || m_forgetPending || m_compPending ||
+                   m_srcPending || m_loadPending);
     link.update();
     syncFromDaughterStatus();
     retryPendingCommands();

@@ -95,7 +95,10 @@ void report(Stream &out) {
     if (!gUse[c]) { out.println(F("fit not trusted yet -- no offset")); continue; }
     out.print(gK[c], 2); out.print(F(" counts/C (R2 ")); out.print(gR2[c], 2);
     out.print(F(") -> offset ")); if (gApplied[c] >= 0) out.print('+'); out.print(gApplied[c], 2);
-    out.println(F(" counts"));
+    out.print(F(" counts"));
+    if (fabsf(gApplied[c]) >= ThermalComp::MAX_COUNTS - 0.01f)
+      out.print(F("  (AT THE SAFETY LIMIT: the block is far from the calibration temperature -- a CAL resyncs)"));
+    out.println();
   }
 }
 

@@ -86,7 +86,7 @@ struct DaughterStatus {
 struct DaughterEnv {
     bool     valid      = false;
     uint32_t receivedMs = 0;
-    char block[8] = "--", cellL[8] = "--", cellR[8] = "--", rail[8] = "--", comp[10] = "--";
+    char block[8] = "--", rail[8] = "--", comp[10] = "--"; // rev 11 dropped CELLL/CELLR
     char offL[8] = "--", offR[8] = "--", kL[8] = "--", kR[8] = "--", dBlock[8] = "--", match[8] = "--";
 };
 
@@ -108,6 +108,16 @@ struct DaughterLearn {
     uint32_t receivedMs = 0;
     char n[6] = "--", spread[8] = "--", comp[10] = "--", kL[8] = "--", r2L[8] = "--", kR[8] = "--", r2R[8] = "--";
     char minN[6] = "--", minSpread[8] = "--", minR2[8] = "--";
+};
+
+// Revision 12 MODEL reply: the audio model the step tables are solved for --
+// the source (splitter) output impedance and the load after the attenuator
+// (0 = unloaded) -- in use, and as the stored calibration was solved for
+// (-1 = unknown). In use != solved means CAL=STALE until a CAL re-solves.
+struct DaughterModel {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    int32_t  src = -1, load = -1, solvedSrc = -1, solvedLoad = -1;
 };
 
 // Outcome of the last CAL command (the reply to CAL itself; completion is
@@ -145,6 +155,18 @@ public:
     enum class Forget : uint8_t { CAL, COMP, ALL };
     bool sendForget(Forget what);
 
+    // rev 12 "COMP ON" / "COMP OFF": the daughter's thermal compensation (its
+    // current state is ENV's COMP field). Not stored: it boots ON.
+    bool sendComp(bool on);
+
+    // rev 12 audio model: "SET SRC <ohms>" (0..100000) / "SET LOAD <ohms>"
+    // (0 = unloaded, or 1000..100000000). Stored on the daughter; a value
+    // other than what the calibration was solved for makes it CAL=STALE.
+    bool sendSetSrc(uint32_t ohms);
+    bool sendSetLoad(uint32_t ohms);
+    bool sendModel();                        // rev 12, read-only, answered at any time
+    void requestModel() { m_modelWantedUntilMs = millis() + 3000; } // polled while wanted, like ENV
+
     // ENV is polled only while someone wants it (the calibration pages ask
     // on every refresh); at most every DAUGHTER_ENV_POLL_MS.
     void requestEnv()   { m_envWantedUntilMs   = millis() + 3000; }
@@ -152,6 +174,11 @@ public:
 
     // Ask for a STATUS as soon as the link is free (update() sends it).
     void requestStatusRefresh() { m_statusRefreshRequested = true; }
+
+    // While true, update() starts no polls of its own (STATUS / PROGRESS /
+    // ENV / LEARN), so a queued user command (mute, calibrate...) gets the
+    // next free slot instead of waiting behind a background query.
+    void holdPolls(bool hold) { m_holdPolls = hold; }
 
     bool isBusy() const { return m_status == DaughterCmdStatus::PENDING; } // a command is in flight
 
@@ -162,6 +189,7 @@ public:
     const DaughterEnv&      env()      const { return m_env; }
     const DaughterProgress& progress() const { return m_progress; }
     const DaughterLearn&    learn()    const { return m_learn; }
+    const DaughterModel&    model()    const { return m_model; }
 
     // The last CAL command: started, or rejected with getCalStartError().
     DaughterCalStart calStart() const        { return m_calStart; }
@@ -187,7 +215,7 @@ private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL
     };
 
     bool sendLine(const char* line, PendingCmd cmd);
@@ -196,6 +224,7 @@ private:
     bool parseEnvLine(const char* line);
     bool parseProgressLine(const char* line);
     bool parseLearnLine(const char* line);
+    bool parseModelLine(const char* line);
     void setError(const char* text);
     uint32_t currentPollIntervalMs() const;
 
@@ -226,12 +255,16 @@ private:
     DaughterEnv      m_env;
     DaughterProgress m_progress;
     DaughterLearn    m_learn;
+    DaughterModel    m_model;
+    uint32_t         m_lastModelSentMs    = 0;
+    uint32_t         m_modelWantedUntilMs = 0;
     uint32_t         m_lastLearnSentMs    = 0;
     uint32_t         m_learnWantedUntilMs = 0;
     uint32_t         m_lastEnvSentMs      = 0;
     uint32_t         m_envWantedUntilMs   = 0;
     uint32_t         m_lastProgressSentMs = 0;
     bool             m_wasCalibrating     = false;
+    bool             m_holdPolls          = false;
     DaughterCalStart m_calStart = DaughterCalStart::NONE;
     char             m_calStartError[128] = {};
 

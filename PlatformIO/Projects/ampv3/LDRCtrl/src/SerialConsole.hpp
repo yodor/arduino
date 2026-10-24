@@ -56,6 +56,7 @@ private:
   void printCurve(const char *label, const LdrCurve &curve);
   void printLut(const VolumeLut &lut);
   void printVolumeDetail(LDRVolume &v, const char *label);
+  void printModel();
   void printVolumeTable();
 
   // The last DIAG ALL verify (real dB per step, volume up), kept for VOL INFO's match

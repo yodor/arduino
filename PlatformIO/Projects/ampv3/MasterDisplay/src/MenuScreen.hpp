@@ -37,7 +37,7 @@ public:
 
     // True while an editor is open -- main.cpp then lets held buttons and IR
     // repeat frames auto-repeat Up/Down, so values can be run up quickly.
-    bool acceptsRepeats() const { return m_inEditor; }
+    bool acceptsRepeats() const { return m_inEditor || m_inColor; }
 
 private:
     // Root -> Settings -> Clock -> (overlay) needs 3; one spare level.
@@ -59,6 +59,8 @@ private:
     void drawEditorFull();
     void drawEditorFields();  // just the value row -- no screen clear, so adjusting doesn't flicker
     void clampEditorFields();
+    void drawColorFull();
+    void drawColorFocus(int16_t oldIdx); // move the focus marker, refresh the swatch
 
     StackFrame m_stack[kMaxDepth];
     size_t     m_stackDepth = 1; // always >= 1; index 0 is the root list
@@ -78,6 +80,11 @@ private:
     bool    m_inEditor    = false;
     uint8_t m_editorField = 0;
     int16_t m_editorValues[kEditorMaxFields] = {};
+
+    // COLOR overlay: the color chooser.
+    bool    m_inColor  = false;
+    int16_t m_colorIdx = 0;
+    int16_t m_colorDrawnIdx = -1;
 
     bool m_dirty             = true; // full redraw needed
     bool m_editorFieldsDirty = false;

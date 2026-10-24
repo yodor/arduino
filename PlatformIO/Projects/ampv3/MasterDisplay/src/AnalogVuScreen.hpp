@@ -2,11 +2,18 @@
 #include "Screen.hpp"
 #include "Config.hpp"
 
-// Analog-style VU meter(s). STEREO: two needle gauges side by side. MONO:
-// one larger, centered gauge, using the averaged (not summed) L+R signal.
-// Level source is RMS of the raw waveform samples (not FFT bin data) --
-// RMS/average power is what a real VU meter actually responds to, unlike
-// the peak-bin-per-band approach the spectrum bars use.
+// Analog VU meter(s), drawn to use the whole panel: the scale is a wide,
+// flat elliptical arc spanning the meter's full width, with the needle's
+// pivot BELOW the bottom edge -- only the upper part of the needle is seen,
+// like looking through a real meter's window. Mono: one meter across the
+// whole panel; stereo: two side by side (L, R).
+//
+// The scale reads dBFS (RMS), matching AudioLevel::dbNormalize(): -50 at the
+// left end to 0 at the right, labelled every 10 dB plus -5, red from -6 dB.
+// It's drawn bold (4 px arc, 3 px ticks) and never touched again: the needle
+// stops short of the ticks, the labels sit outside the arc and the channel
+// letters in the bottom corners, out of the needle's path -- so only the
+// needle itself is erased and redrawn, and only when it moves.
 class AnalogVuScreen : public Screen {
 public:
     void onEnter() override;
@@ -14,30 +21,31 @@ public:
     const char* name() const override { return "ANALOG VU"; }
 
 private:
-    // Single-pole IIR filter approximating classic analog VU meter
-    // response (ANSI C16.5: ~300ms to reach 99% of a step input), driven
-    // by real elapsed time each call rather than assuming a fixed frame
-    // rate -- so it behaves consistently even if actual frame timing
-    // varies.
     struct VuBallistics {
         float    value        = 0.0f; // current needle position, 0..1
         uint32_t lastUpdateMs = 0;
-
         void update(float target, uint32_t now);
     };
 
     struct Gauge {
-        int16_t pivotX = 0;
-        int16_t pivotY = 0;
-        int16_t radius = 0; // needle length; the static scale arc is drawn further out (see kScaleMarginPx) so erasing the needle never touches it
-        float   prevAngleDeg = 0.0f;
-        bool    needleDrawn  = false;
+        // area on the panel
+        int16_t x = 0, y = 0, w = 0, h = 0;
+        bool    compact = false;   // stereo: smaller labels and margins
+        // the scale ellipse: arc point at parameter phi is
+        // (pivotX + a*sin(phi), pivotY - b*cos(phi)), phi in [-phiMax, +phiMax]
+        float   pivotX = 0, pivotY = 0, a = 0, b = 0;
+        // the needle as last drawn (clipped to the area), for erasing
+        int16_t nx0 = 0, ny0 = 0, nx1 = 0, ny1 = 0;
+        bool    needleDrawn = false;
         VuBallistics ballistics;
     };
 
-    void drawStaticScale(const Gauge& gauge);
-    void updateNeedle(Gauge& gauge, float magnitude, uint32_t now);
+    void layoutGauge(Gauge& g, int16_t x, int16_t y, int16_t w, int16_t h, bool compact);
+    void arcPoint(const Gauge& g, float pos, float inset, float& px, float& py) const;
+    void drawScale(const Gauge& g, const char* channelLabel);
+    void updateNeedle(Gauge& g, float level, uint32_t now);
+    void drawNeedle(const Gauge& g, uint16_t color);
 
-    Gauge m_leftGauge;  // also used as the single gauge in MONO mode
+    Gauge m_leftGauge;  // also the single gauge in MONO mode
     Gauge m_rightGauge; // unused in MONO mode
 };

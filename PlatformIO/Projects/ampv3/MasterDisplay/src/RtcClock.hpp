@@ -15,16 +15,10 @@ struct RtcDateTime {
 // Pins.hpp). Small self-contained driver -- the DS3231 is just a handful of
 // BCD registers, not worth a library dependency.
 //
-// Sync policy at boot (begin()): the clock is set from the firmware's build
-// time (__DATE__/__TIME__) only when it can't be trusted --
-//  - the DS3231's Oscillator Stop Flag is set (never set, or it lost power
-//    including the backup battery), or
-//  - it reads EARLIER than the build time (it can't be right if it's behind
-//    the moment this firmware was compiled).
-// Otherwise it's left alone, so reflashing or power cycling never drags a
-// correct clock back to an older build timestamp. The build time is when the
-// compiler last processed RtcClock.cpp -- typically some seconds to a minute
-// before the board actually boots, so a fresh sync starts that far behind.
+// The time is never set automatically: begin() only makes sure the
+// oscillator runs on the battery and reports the time (flagging it if the
+// oscillator had stopped). Setting it is up to the user -- Settings -> Clock
+// (Set Time / Set Date) or the USB console's TIME command.
 class RtcClock {
 public:
     static RtcClock& instance();
@@ -43,9 +37,6 @@ public:
 
     // "YYYY-MM-DD HH:MM:SS" (needs a 20-byte buffer).
     static void format(const RtcDateTime& dt, char* out, size_t outSize);
-
-    // The firmware's build time, parsed from __DATE__/__TIME__.
-    static RtcDateTime buildTime();
 
     // 0 = Sunday ... 6 = Saturday.
     static uint8_t weekday(const RtcDateTime& dt);

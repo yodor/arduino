@@ -11,13 +11,13 @@
 // main.cpp is just the wiring.
 // ============================================================================
 
-#include "CellTemps.hpp"
 #include "RailComp.hpp"
 #include "ThermalComp.hpp"
 #include <Arduino.h>
 #include <Wire.h>
 #include "Pins.hpp"
 #include "Config.hpp"
+#include "AudioModel.hpp"
 #include "Board.hpp"
 #include "DriverChannels.hpp"
 #include "LDRVolume.hpp"
@@ -54,6 +54,7 @@ static MasterLink masterLinkUart(Serial1, board, leftChannel, rightChannel, cons
 
 void setup() {
   board.begin();        // Serial, mute/regulator pre-latch, clocks, boot info, LED
+  AudioModel::begin();  // source/load model (SET SRC / SET LOAD), before any calibration loads
   driver.begin();       // 4 PWM channels, all start at duty=0
   // The master link comes up BEFORE anything slow, and answers "busy" while
   // a calibration blocks the main loop: a first-boot calibration takes
@@ -73,7 +74,6 @@ void setup() {
   // changes them. The master restores the volume (VOL n is silent while muted) and unmutes.
   leftChannel.mute();
   rightChannel.mute();
-  CellTemps::begin();   // the DS18B20s next to the cells (bounded search; a bad bus just reports)
   RailComp::begin(driver); // 3.3 V rail compensation (TL431) against the stored reference
   ThermalComp::begin(driver); // driver-block temperature compensation, from the learned fit
 
@@ -98,7 +98,6 @@ void loop() {
   board.update();        // non-blocking heartbeat LED toggle
   RailComp::tick();      // re-measure the rail every few s; re-scale the drive if it moved
   ThermalComp::tick();   // follow the block temperature; re-offset the drive if it moved
-  CellTemps::tick();     // background cell readings for ENV (never blocks ~750 ms)
   masterLinkUsb.poll();  // strict protocol by default on USB; DEBUG -> consoleUsb
   masterLinkUart.poll(); // strict protocol by default on UART0; DEBUG -> consoleUart
 }

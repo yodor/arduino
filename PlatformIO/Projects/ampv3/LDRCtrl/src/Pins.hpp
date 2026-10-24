@@ -26,7 +26,7 @@ constexpr uint8_t DIAGNOSTIC_LED_PIN = 25;
 constexpr uint8_t UART_TX_PIN = 16;
 constexpr uint8_t UART_RX_PIN = 17;
 
-// ---- Driver board v1b (aluminium block, NTC + TL431 + DS18B20) -- the only supported board ----
+// ---- Driver board v1b (aluminium block, NTC + TL431; its DS18B20 connector is unused) -- the only supported board ----
 constexpr const char *DRIVER_BOARD_NAME = "v1b";
 // 4n25 amp bootup/power mute pin
 constexpr uint8_t AMP_MUTE_PIN  = 18;
@@ -37,7 +37,6 @@ constexpr uint8_t PWM_SER_L    = 0;
 constexpr uint8_t PWM_SHUNT_L  = 3;
 constexpr uint8_t COIL_CTRL_L  = 1;
 // Sensors
-constexpr uint8_t ONEWIRE_PIN   = 21; // DS18B20 bus (both LDR-board sensors, 4.7k pull-up to 3.3V)
 constexpr uint8_t ADC_NTC_PIN   = 26; // ADC0: 100k B3950 on the transistor block, 100k from ADC_VREF
 constexpr uint8_t ADC_GUARD_PIN = 27; // ADC1: tied to AGND on the board -- never drive it
 constexpr uint8_t ADC_REF_PIN   = 28; // ADC2: TL431 (2.495 V), tracks the 3.3 V rail

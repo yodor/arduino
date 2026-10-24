@@ -95,6 +95,7 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     if (cmd == PendingCmd::ENV)      m_lastEnvSentMs      = m_commandSentMs;
     if (cmd == PendingCmd::PROGRESS) m_lastProgressSentMs = m_commandSentMs;
     if (cmd == PendingCmd::LEARN)    m_lastLearnSentMs    = m_commandSentMs;
+    if (cmd == PendingCmd::MODEL)    m_lastModelSentMs    = m_commandSentMs;
     if (cmd == PendingCmd::CAL)      m_calStart           = DaughterCalStart::PENDING;
     m_lineLen       = 0;     // fresh reply incoming; discard anything stale
     m_lineOverflow  = false;
@@ -118,6 +119,30 @@ bool DaughterBoardLink::sendStatus()     { return sendLine("STATUS",       Pendi
 bool DaughterBoardLink::sendEnv()        { return sendLine("ENV",          PendingCmd::ENV); }
 bool DaughterBoardLink::sendProgress()   { return sendLine("PROGRESS",     PendingCmd::PROGRESS); }
 bool DaughterBoardLink::sendLearn()      { return sendLine("LEARN",        PendingCmd::LEARN); }
+bool DaughterBoardLink::sendComp(bool on) {
+    bool sent = sendLine(on ? "COMP ON" : "COMP OFF", PendingCmd::COMP);
+    if (sent) { m_lastEnvSentMs = 0; requestEnv(); } // re-read COMP right after
+    return sent;
+}
+
+bool DaughterBoardLink::sendSetSrc(uint32_t ohms) {
+    char line[24];
+    snprintf(line, sizeof(line), "SET SRC %lu", static_cast<unsigned long>(ohms));
+    bool sent = sendLine(line, PendingCmd::SET_MODEL);
+    if (sent) { m_lastModelSentMs = 0; requestModel(); requestStatusRefresh(); } // read both back (CAL may go STALE)
+    return sent;
+}
+
+bool DaughterBoardLink::sendSetLoad(uint32_t ohms) {
+    char line[24];
+    snprintf(line, sizeof(line), "SET LOAD %lu", static_cast<unsigned long>(ohms));
+    bool sent = sendLine(line, PendingCmd::SET_MODEL);
+    if (sent) { m_lastModelSentMs = 0; requestModel(); requestStatusRefresh(); }
+    return sent;
+}
+
+bool DaughterBoardLink::sendModel() { return sendLine("MODEL", PendingCmd::MODEL); }
+
 bool DaughterBoardLink::sendForget(Forget what) {
     const char* line = (what == Forget::CAL) ? "FORGET CAL" : (what == Forget::COMP) ? "FORGET COMP" : "FORGET ALL";
     return sendLine(line, PendingCmd::FORGET);
@@ -262,8 +287,6 @@ bool DaughterBoardLink::parseEnvLine(const char* line) {
     DaughterEnv e;
     forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* v) {
         if      (!strcmp(k, "BLOCK"))  copyField(e.block, v);
-        else if (!strcmp(k, "CELLL"))  copyField(e.cellL, v);
-        else if (!strcmp(k, "CELLR"))  copyField(e.cellR, v);
         else if (!strcmp(k, "RAIL"))   copyField(e.rail, v);
         else if (!strcmp(k, "COMP"))   copyField(e.comp, v);
         else if (!strcmp(k, "OFFL"))   copyField(e.offL, v);
@@ -321,6 +344,24 @@ bool DaughterBoardLink::parseLearnLine(const char* line) {
     return true;
 }
 
+// "OK MODEL SRC=300 LOAD=10000 SOLVED_SRC=47 SOLVED_LOAD=10000" (rev 12)
+bool DaughterBoardLink::parseModelLine(const char* line) {
+    static const char kPrefix[] = "OK MODEL ";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterModel m;
+    auto num = [](const char* v) -> int32_t { return (v[0] == '-' && v[1] == '-') ? -1 : static_cast<int32_t>(atol(v)); };
+    forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* v) {
+        if      (!strcmp(k, "SRC"))         m.src        = num(v);
+        else if (!strcmp(k, "LOAD"))        m.load       = num(v);
+        else if (!strcmp(k, "SOLVED_SRC"))  m.solvedSrc  = num(v);
+        else if (!strcmp(k, "SOLVED_LOAD")) m.solvedLoad = num(v);
+    });
+    m.valid      = true;
+    m.receivedMs = millis();
+    m_model = m;
+    return true;
+}
+
 void DaughterBoardLink::handleResponseLine(const char* line) {
     if (DAUGHTER_LINK_TRACE) { Serial.print("[UART RX] "); Serial.println(line); }
 
@@ -359,7 +400,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         return;
     }
 
-    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line)) {
+    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line) || parseModelLine(line)) {
         if (wasPending) m_status = DaughterCmdStatus::OK;
         return;
     }
@@ -379,6 +420,11 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         // e.g. "ERR busy" (a calibration is running -- the command was
         // dropped, not queued) or "ERR step limit or no calibration loaded".
         setError(line);
+        if (cmd == PendingCmd::COMP || cmd == PendingCmd::FORGET || cmd == PendingCmd::SET_MODEL ||
+            cmd == PendingCmd::AMP_MUTE_ON || cmd == PendingCmd::AMP_MUTE_OFF) {
+            Serial.print("[Daughter] Command refused: ");
+            Serial.println(line);
+        }
         requestStatusRefresh();
     } else {
         // Every branch must leave m_status != PENDING, or every later send
@@ -468,13 +514,15 @@ void DaughterBoardLink::update() {
     // Polls, whenever the link is free: STATUS when due (or asked for);
     // PROGRESS every second while a calibration runs; ENV while a page
     // showing it is open.
-    if (m_status != DaughterCmdStatus::PENDING) {
+    if (m_status != DaughterCmdStatus::PENDING && !m_holdPolls) {
         bool statusDue   = m_statusRefreshRequested || (now - m_lastStatusSentMs >= currentPollIntervalMs());
         bool progressDue = calibrating && (now - m_lastProgressSentMs >= DAUGHTER_PROGRESS_POLL_MS);
         bool envDue      = static_cast<int32_t>(m_envWantedUntilMs - now) > 0 &&
                            (m_lastEnvSentMs == 0 || now - m_lastEnvSentMs >= DAUGHTER_ENV_POLL_MS);
         bool learnDue    = static_cast<int32_t>(m_learnWantedUntilMs - now) > 0 &&
                            (m_lastLearnSentMs == 0 || now - m_lastLearnSentMs >= DAUGHTER_ENV_POLL_MS);
+        bool modelDue    = static_cast<int32_t>(m_modelWantedUntilMs - now) > 0 &&
+                           (m_lastModelSentMs == 0 || now - m_lastModelSentMs >= DAUGHTER_ENV_POLL_MS);
         if (statusDue) {
             if (sendStatus()) m_statusRefreshRequested = false;
         } else if (progressDue) {
@@ -483,6 +531,8 @@ void DaughterBoardLink::update() {
             sendEnv();
         } else if (learnDue) {
             sendLearn();
+        } else if (modelDue) {
+            sendModel();
         }
     }
 }

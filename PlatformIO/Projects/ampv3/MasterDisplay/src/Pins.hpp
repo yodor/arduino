@@ -2,6 +2,8 @@
 #include <Arduino.h>
 
 constexpr uint8_t REGULATOR_MODE_PIN = 23;
+// Diagnostic LED (the Pico's on-board LED) -- REFERENCE ONLY: the firmware
+// never configures or drives it, so the pin stays in its reset state (input).
 constexpr uint8_t DIAGNOSTIC_LED_PIN = 25;
 
 /** 
@@ -27,7 +29,7 @@ constexpr uint8_t AUDIO_PIN_R = 27; // ADC1
  * these are read as a continuous held/released level, so the volume keeps
  * stepping for as long as the button stays down,
  * unlike BTN_LT_PIN/BTN_RT_PIN (one action per press: a short press on
- * release -- previous/next -- or a 1 s hold: LEFT = menu, RIGHT = power)
+ * release -- previous/next -- or a 3 s hold: LEFT = menu, RIGHT = power)
  */
 constexpr uint8_t BTN_UP_PIN = 2;
 constexpr uint8_t BTN_RT_PIN = 3;

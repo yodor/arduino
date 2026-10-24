@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "Config.hpp"
 #include "ScreenRegistry.hpp"
 
 // Whether screens display left/right channels separately or combine them
@@ -17,6 +18,13 @@ enum class ChannelMode : uint8_t {
 enum class StereoLayout : uint8_t {
     SIDE_BY_SIDE, // left/right bar groups side by side across the width (formerly BarSpectrumScreen's only layout)
     TOP_BOTTOM    // left grows up from center, right grows down, meeting at a shared centerline (formerly OctaveScreen's only layout)
+};
+
+// What the Clock screen shows next to HH:MM (Settings -> Clock -> Display).
+enum class ClockMode : uint8_t {
+    CLOCK_ONLY, // HH:MM, as big as the panel allows
+    SECONDS,    // HH:MM:SS
+    DATE        // HH:MM with the date in a column on the right
 };
 
 // What the display shows in standby (Settings -> Power -> Standby Display).
@@ -39,12 +47,6 @@ public:
     void toggleChannelMode() {
         m_channelMode = (m_channelMode == ChannelMode::STEREO) ? ChannelMode::MONO : ChannelMode::STEREO;
     }
-
-    // Index into main.cpp's g_screens[] array to boot into -- the screen last
-    // shown (main.cpp updates it on every screen change and saves it after a
-    // few seconds); a fresh unit starts on the Clock (kDefaultScreenIndex).
-    uint8_t getStartingScreenIndex() const { return m_startingScreenIndex; }
-    void setStartingScreenIndex(uint8_t idx) { m_startingScreenIndex = idx; }
 
     // SpectrumScreen's stereo arrangement -- see StereoLayout's comment
     // above for what each value means.
@@ -93,10 +95,18 @@ public:
     // Clock screen (Settings -> Clock). Read by ClockScreen when it lays
     // itself out in onEnter() -- the menu always re-enters the active screen
     // on close, so changes apply as soon as the menu closes.
-    bool getClockShowDate() const    { return m_clockShowDate; }
-    void setClockShowDate(bool on)   { m_clockShowDate = on; }
-    bool getClockShowSeconds() const { return m_clockShowSeconds; }
-    void setClockShowSeconds(bool on){ m_clockShowSeconds = on; }
+    ClockMode getClockMode() const      { return m_clockMode; }
+    void      setClockMode(ClockMode m) { m_clockMode = m; }
+    uint16_t  getClockColor() const     { return m_clockColor; }  // RGB565, the lit digits
+    void      setClockColor(uint16_t c) { m_clockColor = c; }
+
+    // Auto standby (Settings -> Power): minutes of silence before switching
+    // to standby, 0 = off.
+    uint8_t getAutoStandbyMinutes() const    { return m_autoStandbyMin; }
+    void    setAutoStandbyMinutes(uint8_t m) { m_autoStandbyMin = m; }
+    // Input peak (ADC counts) above which the inputs count as playing.
+    uint16_t getAutoStandbyThreshold() const    { return m_autoStandbyThreshold; }
+    void     setAutoStandbyThreshold(uint16_t t) { m_autoStandbyThreshold = t; }
     bool getClock24h() const         { return m_clock24h; }
     void setClock24h(bool on)        { m_clock24h = on; }
 
@@ -106,13 +116,14 @@ public:
 private:
     DisplaySettings() = default;
     ChannelMode  m_channelMode         = ChannelMode::STEREO;
-    uint8_t      m_startingScreenIndex = kDefaultScreenIndex;
     StereoLayout m_stereoLayout        = StereoLayout::SIDE_BY_SIDE;
     bool         m_mirrorLeftBars      = true; // matches the old MIRROR_LEFT_CHANNEL_BARS default
     uint8_t      m_brightnessPercent   = 100;  // matches the original always-on digitalWrite(HIGH) behavior
     bool         m_peaksEnabled        = true; // matches current always-on behavior
-    bool         m_clockShowDate       = true;
-    bool         m_clockShowSeconds    = false;
+    ClockMode    m_clockMode           = ClockMode::DATE;
+    uint16_t     m_clockColor          = 0x07E0; // green
     bool         m_clock24h            = true;
     StandbyDisplay m_standbyDisplay    = StandbyDisplay::CLOCK;
+    uint8_t      m_autoStandbyMin      = 0;      // off
+    uint16_t     m_autoStandbyThreshold = AUTO_STANDBY_AUDIO_THRESHOLD;
 };

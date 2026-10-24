@@ -26,10 +26,6 @@ uint8_t dayOfWeek(uint16_t y, uint8_t m, uint8_t d) {
     return static_cast<uint8_t>((y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7 + 1);
 }
 
-// Comparable single number for "is a earlier than b".
-uint64_t sortKey(const RtcDateTime& t) {
-    return ((((static_cast<uint64_t>(t.year) * 13 + t.month) * 32 + t.day) * 24 + t.hour) * 60 + t.minute) * 60 + t.second;
-}
 } // namespace
 
 uint8_t RtcClock::weekday(const RtcDateTime& dt) {
@@ -55,28 +51,6 @@ bool RtcClock::writeRegs(uint8_t reg, const uint8_t* buf, size_t len) {
     Wire1.write(reg);
     Wire1.write(buf, len);
     return Wire1.endTransmission() == 0;
-}
-
-RtcDateTime RtcClock::buildTime() {
-    // __DATE__ = "Mmm dd yyyy" (day space-padded), __TIME__ = "hh:mm:ss"
-    static const char kMonths[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
-    const char* date = __DATE__;
-    const char* time = __TIME__;
-
-    RtcDateTime t;
-    char mon[4] = {date[0], date[1], date[2], '\0'};
-    const char* found = strstr(kMonths, mon);
-    t.month = found ? static_cast<uint8_t>((found - kMonths) / 3 + 1) : 1;
-
-    int d = 1, y = 2000, hh = 0, mm = 0, ss = 0;
-    sscanf(date + 4, "%d %d", &d, &y);
-    sscanf(time, "%d:%d:%d", &hh, &mm, &ss);
-    t.day    = static_cast<uint8_t>(d);
-    t.year   = static_cast<uint16_t>(y);
-    t.hour   = static_cast<uint8_t>(hh);
-    t.minute = static_cast<uint8_t>(mm);
-    t.second = static_cast<uint8_t>(ss);
-    return t;
 }
 
 void RtcClock::format(const RtcDateTime& dt, char* out, size_t outSize) {
@@ -151,24 +125,19 @@ bool RtcClock::begin() {
     uint8_t status = 0;
     bool oscStopped = readRegs(kRegStatus, &status, 1) && (status & kStatusOSF);
 
+    // The clock is never overwritten automatically -- it keeps whatever it
+    // has. If the oscillator had stopped (never set, or both main power and
+    // the battery were lost), the time can't be trusted: say so, and leave
+    // setting it to the user (Settings -> Clock, or the console's TIME).
     RtcDateTime now;
-    bool readOk = read(now);
-    RtcDateTime built = buildTime();
-
     char buf[20];
-    if (oscStopped || !readOk || sortKey(now) < sortKey(built)) {
-        if (set(built)) {
-            RtcClock::format(built, buf, sizeof(buf));
-            Serial.print("[RTC] DS3231 set from build time: ");
-            Serial.print(buf);
-            Serial.println(oscStopped ? " (clock had stopped / was never set)" : " (clock was behind the build)");
-        } else {
-            Serial.println("[RTC] DS3231 found, but setting the time failed");
-        }
-    } else {
+    if (read(now)) {
         RtcClock::format(now, buf, sizeof(buf));
         Serial.print("[RTC] DS3231 found, time ");
-        Serial.println(buf);
+        Serial.print(buf);
+        Serial.println(oscStopped ? " -- NOT VALID (clock had stopped): set it in Settings > Clock" : "");
+    } else {
+        Serial.println("[RTC] DS3231 found, but reading the time failed");
     }
     return true;
 }

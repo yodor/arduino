@@ -1,6 +1,6 @@
 #include "SerialConsole.hpp"
+#include "AudioModel.hpp"
 #include "Pins.hpp"
-#include "CellTemps.hpp"
 #include "ThermalLog.hpp"
 #include "RailComp.hpp"
 #include "ThermalComp.hpp"
@@ -158,7 +158,7 @@ void SerialConsole::diagVerify() {
   stream_.print(F("--- VERIFY: every step, both channels, read "));
   stream_.print(VERIFY_SETTLE_MS / 1000.0f, 1);
   stream_.println(F(" s after arriving (cells settled) ---"));
-  const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+  const DividerMath::Load load = AudioModel::load();
   static float up[2][VolumeLut::MAX_STEPS], dn[2][VolumeLut::MAX_STEPS];
   for (uint8_t c = 0; c < 2; c++) for (uint8_t i = 0; i < VolumeLut::MAX_STEPS; i++) {
     up[c][i] = NAN; dn[c][i] = NAN; lastUpSer_[c][i] = NAN; lastUpShu_[c][i] = NAN;
@@ -313,10 +313,12 @@ void SerialConsole::printHelp() {
   stream_.println(F("  AMP_MUTE ON|OFF         amplifier mute"));
   stream_.println(F("  SET <channel> <duty>    raw duty 0-4095 on SER_L, SER_R, SHUNT_L or SHUNT_R"));
   stream_.println(F("  RELAY ON|OFF            both relays (OFF restores the volume, then reconnects)"));
-  stream_.println(F("  TEMP                    all temperatures: die, driver block (NTC), rail, both cells"));
-  stream_.println(F("  TEMP ID L|R             assign the cell sensors: warm that board's sensor by hand"));
+  stream_.println(F("  TEMP                    temperatures and rail: die, driver block (NTC), 3.3 V (TL431)"));
   stream_.println(F("  LEARN                   thermal learning log: knee shift per resync vs temperature changes"));
   stream_.println(F("  COMP [ON|OFF]           thermal compensation from the learned fit (A/B; boots ON)"));
+  stream_.println(F("  SET SRC <ohms>          source (splitter) output impedance; stored; CAL re-solves"));
+  stream_.println(F("  SET LOAD <ohms>         load after the attenuator (amp input; 0 = none); stored; CAL re-solves"));
+  stream_.println(F("  MODEL                   the source/load in use and what the calibration was solved for"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
   stream_.println(F("  DIAG ALL                + cell check, verify up/down, dark-end walk, creep (~8-9 min)"));
@@ -363,9 +365,9 @@ void SerialConsole::printStored(LDRVolume &v, const char *label) {
   stream_.print(F("  depth "));
   stream_.print(v.rangeDb(), 2);
   stream_.print(F(" dB  model Rsrc="));
-  stream_.print(AUDIO_SOURCE_OHMS, 0);
+  stream_.print(AudioModel::sourceOhms(), 0);
   stream_.print(F(" Rload="));
-  stream_.println(AMP_INPUT_LOAD_OHMS, 0);
+  stream_.println(AudioModel::loadOhms(), 0);
   const CalMeta &m = v.calMeta();
   stream_.print(F("History: full characterizations "));
   stream_.print(m.fullCount);
@@ -447,6 +449,21 @@ void SerialConsole::diagCellCheck() {
 // One line per channel for VOL: the step, its dB, and what each cell is driven to and
 // aimed at. With the relay energized (RELAY ON) the cells are also measured live --
 // in audio mode the sensors are disconnected.
+// MODEL / SET SRC / SET LOAD: the audio model in use, and the one the calibration was solved for.
+void SerialConsole::printModel() {
+  stream_.print(F("OK model: source ")); stream_.print(AudioModel::sourceOhms(), 0);
+  stream_.print(F(" ohm, load "));
+  if (AudioModel::loadOhms() > 0.0f) { stream_.print(AudioModel::loadOhms(), 0); stream_.print(F(" ohm")); }
+  else stream_.print(F("none (unloaded)"));
+  float s, l;
+  if (DualCalibration::solvedModel(s, l)) {
+    stream_.print(F(" | calibration solved for ")); stream_.print(s, 0); stream_.print(F(" / ")); stream_.print(l, 0);
+  }
+  stream_.print(F(" | CAL=")); stream_.println(DualCalibration::calNeedName());
+  if (DualCalibration::calNeed() == DualCalibration::CalNeed::STALE)
+    stream_.println(F("  the calibration was solved for another model: send CAL to re-solve (~2-3 min); the LDR mute stays on until then"));
+}
+
 void SerialConsole::printVolumeDetail(LDRVolume &v, const char *label) {
   stream_.print(F("  ")); stream_.print(label); stream_.print(F(": "));
   if (!v.hasLut() || v.currentStep() >= v.numSteps()) { stream_.println(F("no calibration")); return; }
@@ -470,9 +487,33 @@ void SerialConsole::printVolumeDetail(LDRVolume &v, const char *label) {
     if (v.adcRead(vref, rs, rsh) && rs > 0.0f && rsh > 0.0f) { s += rs; h += rsh; m++; }
     BusyHook::wait(20);
   }
-  if (!m) { stream_.println(F("live: unreadable")); return; }
+  const DividerMath::Load load = AudioModel::load();
+  if (!m) {
+    // Too little measuring current: at the loud steps of a deep Rtotal the shunt is so dark
+    // (~Rtotal) that only a few uA flow. The audio is disconnected (relay on), so read the
+    // series with the shunt briefly held bright -- its resistance does not depend on the shunt.
+    v.driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT);
+    BusyHook::wait(300);
+    float s2 = 0; uint8_t m2 = 0;
+    for (uint8_t r = 0; r < 3; r++) {
+      float vref, rs, rsh;
+      if (v.adcRead(vref, rs, rsh) && rs > 0.0f) { s2 += rs; m2++; }
+      BusyHook::wait(20);
+    }
+    v.driveElementFine(false, e.shuntFine);           // back to this step's shunt
+    if (!m2) { stream_.println(F("live: unreadable")); return; }
+    const float rs = s2 / m2;
+    stream_.print(F("live Rs ")); stream_.print(rs, 0);
+    stream_.print(F(" (x")); stream_.print(rs / e.targetRs, 2); stream_.print(')');
+    stream_.print(F(" [read with the shunt held bright] Rsh too dark to read"));
+    if (e.targetRsh > 0.0f) {
+      stream_.print(F("  real ~")); stream_.print(20.0f * log10f(DividerMath::gain(rs, e.targetRsh, load)), 2);
+      stream_.print(F(" dB (shunt taken at its target)"));
+    }
+    stream_.println();
+    return;
+  }
   const float rs = s / m, rsh = h / m;
-  const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
   stream_.print(F("live Rs ")); stream_.print(rs, 0);
   stream_.print(F(" (x")); stream_.print(rs / e.targetRs, 2); stream_.print(')');
   stream_.print(F(" Rsh ")); stream_.print(rsh, 0);
@@ -671,7 +712,7 @@ void SerialConsole::printHealth() {
   // 4. which channel and which limit set AUTO
   {
     using namespace Capabilities;
-    const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+    const DividerMath::Load load = AudioModel::load();
     ChannelCaps cc[2]; const LdrCurve *ser[2];
     for (uint8_t c = 0; c < 2; c++) { cc[c] = measure(v[c]->seriesCurve(), v[c]->shuntCurve(), &v[c]->darkProfile()); ser[c] = &v[c]->seriesCurve(); }
     float own[2];
@@ -786,18 +827,11 @@ void SerialConsole::handleLine(String line) {
     ThermalLog::printLog(stream_);
 
   } else if (cmd == "TEMP") {
-    if (n >= 3 && tok[1].equalsIgnoreCase("ID")) {
-      if (tok[2].equalsIgnoreCase("L")) CellTemps::identify(stream_, 0);
-      else if (tok[2].equalsIgnoreCase("R")) CellTemps::identify(stream_, 1);
-      else stream_.println(F("ERR usage: TEMP ID L|R"));
-      return;
-    }
     stream_.println(F("--- temperatures ---"));
     stream_.print(F("  RP2040 die     ")); stream_.print(Board::dieTempC(), 1); stream_.println(F(" C"));
     const float tb = Board::blockTempC(), vr = Board::railVolts();
     stream_.print(F("  driver block   ")); if (isnan(tb)) stream_.println(F("-- (NTC open/shorted)")); else { stream_.print(tb, 2); stream_.println(F(" C (NTC)")); }
     stream_.print(F("  3.3 V rail     ")); if (isnan(vr)) stream_.println(F("-- (TL431 not read)")); else { stream_.print(vr, 3); stream_.println(F(" V (TL431)")); }
-    CellTemps::printSensors(stream_);
     ThermalLog::printSince(stream_);
     RailComp::report(stream_);
     ThermalComp::report(stream_);
@@ -820,8 +854,22 @@ void SerialConsole::handleLine(String line) {
       stream_.println(on ? F("OK audio disconnected") : F("OK volume restored, audio reconnected"));
     }
 
+  } else if (cmd == "SET" && n >= 3 && (tok[1].equalsIgnoreCase("SRC") || tok[1].equalsIgnoreCase("LOAD"))) {
+    const bool src = tok[1].equalsIgnoreCase("SRC");
+    const float ohms = tok[2].toFloat();
+    const bool ok = src ? AudioModel::setSource(ohms) : AudioModel::setLoad(ohms);
+    if (!ok) {
+      stream_.println(src ? F("ERR SET SRC <ohms>: 0..100000") : F("ERR SET LOAD <ohms>: 0 (unloaded) or 1000..100000000"));
+      return;
+    }
+    DualCalibration::onModelChanged(left_, right_);
+    printModel();
+
+  } else if (cmd == "MODEL") {
+    printModel();
+
   } else if (cmd == "SET") {
-    if (n < 3) { stream_.println(F("ERR usage: SET <SER_L|SER_R|SHUNT_L|SHUNT_R> <duty 0-4095>")); return; }
+    if (n < 3) { stream_.println(F("ERR usage: SET <SER_L|SER_R|SHUNT_L|SHUNT_R> <duty 0-4095> | SET SRC <ohms> | SET LOAD <ohms>")); return; }
     const int ch = DriverChannels::find(tok[1]);
     const long duty = tok[2].toInt();
     if (ch < 0 || duty < 0 || duty > (long)DriverChannels::WRAP) { stream_.println(F("ERR usage: SET <SER_L|SER_R|SHUNT_L|SHUNT_R> <duty 0-4095>")); return; }

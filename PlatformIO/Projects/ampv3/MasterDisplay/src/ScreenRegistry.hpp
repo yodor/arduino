@@ -1,25 +1,21 @@
 #pragma once
 #include <Arduino.h>
 
-// Names of available screens, used by the "Starting Screen" menu setting.
-// Order and count here MUST match main.cpp's g_screens[] array exactly,
-// since DisplaySettings::setStartingScreenIndex() stores a plain index
-// into that array -- main.cpp enforces this with a static_assert against
-// kScreenCount, so a mismatch fails to compile rather than silently
-// pointing "Starting Screen" options at the wrong screen.
+// Names of the screens, in the order RIGHT/LEFT step through them. Order and
+// count MUST match main.cpp's g_screens[] array (a static_assert there checks
+// the count).
 constexpr const char* kScreenNames[] = {
-    "Spectrum",
-    "Waveform",
-    "Analog VU",
-    "Digital VU",
     "Clock",
+    "Waveform",
+    "Spectrum",
+    "Digital VU",
+    "Analog VU",
 };
 constexpr size_t kScreenCount = sizeof(kScreenNames) / sizeof(kScreenNames[0]);
 
-// The screen a fresh unit (no saved settings) starts on. After that the unit
-// remembers whichever screen was last shown (DisplaySettings' starting-screen
-// index, saved a few seconds after each screen change).
-constexpr uint8_t kDefaultScreenIndex = 4; // "Clock"
+// The unit always boots on the first screen, the Clock. The current screen
+// isn't saved (no flash writes for screen changes).
+constexpr uint8_t kDefaultScreenIndex = 0; // "Clock"
 
 constexpr bool screenNameIs(const char* a, const char* b) {
     return (*a == *b) && (*a == '\0' || screenNameIs(a + 1, b + 1));

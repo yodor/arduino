@@ -4,14 +4,31 @@
 #include "DisplaySettings.hpp"
 #include "AudioLevel.hpp"
 #include <cmath>
+#include <cstring>
 
 namespace {
-constexpr float    kSweepDeg      = 45.0f; // needle swings -45deg (quiet) to +45deg (loud) from vertical
-constexpr int16_t  kScaleMarginPx = 12;    // gap between needle tip radius and the static scale arc's radius
-}
+constexpr float kPhiMax  = 50.0f * static_cast<float>(M_PI) / 180.0f; // half the scale's sweep, in ellipse parameter
+constexpr float kFloorDb = -50.0f; // must match AudioLevel::dbNormalize(): -50 dB -> 0, 0 dB -> 1
+constexpr float kRedFromDb = -6.0f;
+
+struct Mark { float db; const char* label; };
+const Mark kLabelled[] = { {-40, "-40"}, {-30, "-30"}, {-20, "-20"}, {-10, "-10"}, {-5, "-5"}, {0, "0"} };
+
+constexpr int16_t  kArcThick   = 4;   // px, the arc's thickness (drawn inward)
+constexpr int16_t  kMajorLen   = 13;  // tick lengths, inward from the arc
+constexpr int16_t  kMinorLen   = 7;
+constexpr int16_t  kTickWidth  = 3;   // px
+constexpr int16_t  kNeedleGap  = 4;   // the needle's tip stops this far inside the longest ticks
+constexpr uint16_t kScaleColor = COLOR_WHITE;
+constexpr uint16_t kRedColor   = COLOR_RED;
+constexpr uint16_t kNeedleColor = 0xFD20; // orange
+constexpr uint16_t kLabelColor = 0xC618; // light gray
+
+float posForDb(float db) { return (db - kFloorDb) / -kFloorDb; }
+} // namespace
 
 void AnalogVuScreen::VuBallistics::update(float target, uint32_t now) {
-    constexpr float kTauSeconds = 0.3f / 4.605f; // ~0.0651s baseline
+    constexpr float kTauSeconds = 0.3f / 4.605f; // ~0.0651s baseline (VU-like 300 ms rise)
 
     float dtSec = (now - lastUpdateMs) / 1000.0f;
     lastUpdateMs = now;
@@ -20,99 +37,135 @@ void AnalogVuScreen::VuBallistics::update(float target, uint32_t now) {
     value += alpha * (target - value);
 }
 
+// Fits the scale ellipse to the area: the arc's ends at the area's left and
+// right edges (less a margin), its top just below the labels, its ends at
+// about 60% of the height -- which puts the pivot below the area.
+void AnalogVuScreen::layoutGauge(Gauge& g, int16_t x, int16_t y, int16_t w, int16_t h, bool compact) {
+    g.x = x; g.y = y; g.w = w; g.h = h;
+    g.compact = compact;
+    float margin = compact ? 12.0f : 18.0f;
+    float yTop   = y + (compact ? 22.0f : 30.0f); // room for the labels above the arc
+    float yEnd   = y + h * 0.6f;
+    g.a      = (w / 2.0f - margin) / sinf(kPhiMax);
+    g.b      = (yEnd - yTop) / (1.0f - cosf(kPhiMax));
+    g.pivotX = x + w / 2.0f;
+    g.pivotY = yTop + g.b;
+    g.needleDrawn = false;
+    g.ballistics  = VuBallistics{};
+}
+
+// A point on (or, with inset > 0, inside / with inset < 0, outside) the
+// scale arc at scale position pos (0 = left end, 1 = right end).
+void AnalogVuScreen::arcPoint(const Gauge& g, float pos, float inset, float& px, float& py) const {
+    float phi = (-1.0f + 2.0f * pos) * kPhiMax;
+    px = g.pivotX + (g.a - inset) * sinf(phi);
+    py = g.pivotY - (g.b - inset) * cosf(phi);
+}
+
+void AnalogVuScreen::drawScale(const Gauge& g, const char* channelLabel) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    float redFrom = posForDb(kRedFromDb);
+
+    // The arc, kArcThick px thick (concentric copies, inward), red at the top end.
+    constexpr int kSteps = 60;
+    for (int16_t k = 0; k < kArcThick; ++k) {
+        float px0, py0;
+        arcPoint(g, 0.0f, k, px0, py0);
+        for (int s = 1; s <= kSteps; ++s) {
+            float pos = static_cast<float>(s) / kSteps, px1, py1;
+            arcPoint(g, pos, k, px1, py1);
+            uint16_t c = (pos > redFrom) ? kRedColor : kScaleColor;
+            gfx->drawLine(lroundf(px0), lroundf(py0), lroundf(px1), lroundf(py1), c);
+            px0 = px1; py0 = py1;
+        }
+    }
+
+    // Ticks every 5 dB (labelled ones longer), kTickWidth px wide.
+    for (int db = static_cast<int>(kFloorDb); db <= 0; db += 5) {
+        bool major = false;
+        for (const Mark& m : kLabelled) major |= (static_cast<int>(m.db) == db);
+        float pos = posForDb(static_cast<float>(db)), ox, oy, ix, iy;
+        arcPoint(g, pos, 0.0f, ox, oy);
+        arcPoint(g, pos, major ? kMajorLen : kMinorLen, ix, iy);
+        uint16_t c = (pos > redFrom + 0.001f) ? kRedColor : kScaleColor;
+        for (int16_t d = 0; d < kTickWidth; ++d) {
+            int16_t o = d - kTickWidth / 2;
+            gfx->drawLine(lroundf(ix) + o, lroundf(iy), lroundf(ox) + o, lroundf(oy), c);
+        }
+    }
+
+    // Labels just outside the arc.
+    uint8_t size = g.compact ? 1 : 2;
+    gfx->setTextSize(size);
+    for (const Mark& m : kLabelled) {
+        float pos = posForDb(m.db), lx, ly;
+        arcPoint(g, pos, -(g.compact ? 4.0f : 6.0f), lx, ly);
+        int16_t tw = static_cast<int16_t>(strlen(m.label)) * 6 * size;
+        int16_t tx = static_cast<int16_t>(lroundf(lx)) - tw / 2;
+        if (tx < g.x) tx = g.x;
+        if (tx + tw > g.x + g.w) tx = g.x + g.w - tw;
+        gfx->setTextColor(pos > redFrom ? kRedColor : kLabelColor, COLOR_BLACK);
+        gfx->setCursor(tx, static_cast<int16_t>(lroundf(ly)) - 8 * size);
+        gfx->print(m.label);
+    }
+
+    // Channel letter (or "dBFS") in the bottom-left corner, out of the needle's path.
+    gfx->setTextSize(g.compact ? 2 : 1);
+    gfx->setTextColor(kLabelColor, COLOR_BLACK);
+    gfx->setCursor(g.x + 6, g.y + g.h - (g.compact ? 18 : 10));
+    gfx->print(channelLabel);
+}
+
+// The needle: from where its line enters the area (its pivot is below it)
+// up to just inside the ticks, 2 px wide.
+void AnalogVuScreen::drawNeedle(const Gauge& g, uint16_t color) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    gfx->drawLine(g.nx0, g.ny0, g.nx1, g.ny1, color);
+    gfx->drawLine(g.nx0 + 1, g.ny0, g.nx1 + 1, g.ny1, color);
+}
+
+void AnalogVuScreen::updateNeedle(Gauge& g, float level, uint32_t now) {
+    g.ballistics.update(level, now);
+    float pos = g.ballistics.value;
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > 1.0f) pos = 1.0f;
+
+    float tx, ty;
+    arcPoint(g, pos, kMajorLen + kNeedleGap, tx, ty);
+
+    // Clip the line tip -> pivot to the area: the pivot is below the bottom
+    // edge, so the visible part ends where the line leaves the area.
+    float dx = g.pivotX - tx, dy = g.pivotY - ty;
+    float t  = 1.0f;
+    float bottom = g.y + g.h - 1;
+    if (dy > 0.0f && ty + dy > bottom) t = (bottom - ty) / dy;
+    float left = g.x, right = g.x + g.w - 2; // -2: the needle is 2 px wide
+    float sx = tx + t * dx;
+    if (sx < left && dx < 0.0f)  t = (left - tx) / dx;
+    if (sx > right && dx > 0.0f) t = (right - tx) / dx;
+
+    int16_t x0 = static_cast<int16_t>(lroundf(tx + t * dx)), y0 = static_cast<int16_t>(lroundf(ty + t * dy));
+    int16_t x1 = static_cast<int16_t>(lroundf(tx)),          y1 = static_cast<int16_t>(lroundf(ty));
+    if (g.needleDrawn && x0 == g.nx0 && y0 == g.ny0 && x1 == g.nx1 && y1 == g.ny1) return; // didn't move
+
+    if (g.needleDrawn) drawNeedle(g, COLOR_BLACK);
+    g.nx0 = x0; g.ny0 = y0; g.nx1 = x1; g.ny1 = y1;
+    drawNeedle(g, kNeedleColor);
+    g.needleDrawn = true;
+}
+
 void AnalogVuScreen::onEnter() {
     Renderer::instance().clear();
-
     if (DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO) {
-        m_leftGauge.pivotX = SCREEN_WIDTH / 4;
-        m_leftGauge.pivotY = SCREEN_HEIGHT - 8;
-        m_leftGauge.radius = 90;
-
-        m_rightGauge.pivotX = (SCREEN_WIDTH * 3) / 4;
-        m_rightGauge.pivotY = SCREEN_HEIGHT - 8;
-        m_rightGauge.radius = 90;
-
-        drawStaticScale(m_leftGauge);
-        drawStaticScale(m_rightGauge);
+        int16_t half = SCREEN_WIDTH / 2;
+        layoutGauge(m_leftGauge,  0,    0, half, SCREEN_HEIGHT, true);
+        layoutGauge(m_rightGauge, half, 0, half, SCREEN_HEIGHT, true);
+        drawScale(m_leftGauge, "L");
+        drawScale(m_rightGauge, "R");
     } else {
-        m_leftGauge.pivotX = SCREEN_WIDTH / 2;
-        m_leftGauge.pivotY = SCREEN_HEIGHT - 8;
-        m_leftGauge.radius = 110;
-
-        drawStaticScale(m_leftGauge);
+        layoutGauge(m_leftGauge, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, false);
+        drawScale(m_leftGauge, "dBFS");
     }
-
-    m_leftGauge.needleDrawn  = false;
-    m_leftGauge.ballistics   = VuBallistics{};
-    m_rightGauge.needleDrawn = false;
-    m_rightGauge.ballistics  = VuBallistics{};
-}
-
-void AnalogVuScreen::drawStaticScale(const Gauge& gauge) {
-    Arduino_GFX* gfx = Renderer::instance().gfx();
-    if (!gfx) return;
-
-    int16_t scaleRadius = gauge.radius + kScaleMarginPx;
-    constexpr int kArcSteps = 24;
-    int16_t prevX = 0, prevY = 0;
-    
-    for (int step = 0; step <= kArcSteps; ++step) {
-        float angleDeg = -kSweepDeg + (2.0f * kSweepDeg) * step / kArcSteps;
-        float rad = angleDeg * static_cast<float>(M_PI) / 180.0f;
-        int16_t x = gauge.pivotX + static_cast<int16_t>(scaleRadius * sinf(rad));
-        int16_t y = gauge.pivotY - static_cast<int16_t>(scaleRadius * cosf(rad));
-        if (step > 0) {
-            gfx->drawLine(prevX, prevY, x, y, COLOR_DIM_GREEN);
-        }
-        prevX = x;
-        prevY = y;
-    }
-
-    auto tickAt = [&](float angleDeg, uint16_t color, int16_t tickLen) {
-        float rad = angleDeg * static_cast<float>(M_PI) / 180.0f;
-        int16_t xOuter = gauge.pivotX + static_cast<int16_t>(scaleRadius * sinf(rad));
-        int16_t yOuter = gauge.pivotY - static_cast<int16_t>(scaleRadius * cosf(rad));
-        int16_t xInner = gauge.pivotX + static_cast<int16_t>((scaleRadius - tickLen) * sinf(rad));
-        int16_t yInner = gauge.pivotY - static_cast<int16_t>((scaleRadius - tickLen) * cosf(rad));
-        gfx->drawLine(xInner, yInner, xOuter, yOuter, color);
-    };
-
-    tickAt(0.0f, COLOR_WHITE, 8);             
-    tickAt(kSweepDeg * 0.7f, COLOR_YELLOW, 8); 
-    tickAt(kSweepDeg * 0.95f, COLOR_RED, 8);   
-}
-
-// OPTIMIZED: Synchronized needle refresh layer to prevent scale tearing
-void AnalogVuScreen::updateNeedle(Gauge& gauge, float magnitude, uint32_t now) {
-    Arduino_GFX* gfx = Renderer::instance().gfx();
-    if (!gfx) return;
-
-    gauge.ballistics.update(magnitude, now);
-    float angleDeg = -kSweepDeg + gauge.ballistics.value * (2.0f * kSweepDeg);
-
-    auto calculateTip = [&](float angle, int16_t& outX, int16_t& outY) {
-        float rad = angle * static_cast<float>(M_PI) / 180.0f;
-        outX = gauge.pivotX + static_cast<int16_t>(gauge.radius * sinf(rad));
-        outY = gauge.pivotY - static_cast<int16_t>(gauge.radius * cosf(rad));
-    };
-
-    // 1. ERASE STEP: Wipe the old line trace first
-    if (gauge.needleDrawn) {
-        int16_t oldX, oldY;
-        calculateTip(gauge.prevAngleDeg, oldX, oldY);
-        gfx->drawLine(gauge.pivotX, gauge.pivotY, oldX, oldY, COLOR_BLACK);
-    }
-
-    // 2. REDRAW STEP: Draw the updated vector cleanly into memory
-    int16_t newX, newY;
-    calculateTip(angleDeg, newX, newY);
-    gfx->drawLine(gauge.pivotX, gauge.pivotY, newX, newY, COLOR_WHITE);
-
-    // 3. RE-PROTECT SCALE: Redrawing ticks keeps the scale arc whole if a needle passes it
-    drawStaticScale(gauge);
-
-    gauge.prevAngleDeg = angleDeg;
-    gauge.needleDrawn  = true;
 }
 
 void AnalogVuScreen::render() {
@@ -123,10 +176,8 @@ void AnalogVuScreen::render() {
     uint32_t now = millis();
 
     if (DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO) {
-        // UNIFIED: Pointing to your clean dynamic AudioEngine decibel normalization mapper utility function
         float levelL = AudioLevel::dbNormalize(AudioLevel::computeRms(leftWave, WAVEFORM_SAMPLES));
         float levelR = AudioLevel::dbNormalize(AudioLevel::computeRms(rightWave, WAVEFORM_SAMPLES));
-
         updateNeedle(m_leftGauge, levelL, now);
         updateNeedle(m_rightGauge, levelR, now);
     } else {
@@ -134,8 +185,7 @@ void AnalogVuScreen::render() {
         for (size_t i = 0; i < WAVEFORM_SAMPLES; ++i) {
             monoWave[i] = static_cast<int16_t>((leftWave[i] + rightWave[i]) / 2);
         }
-
         float levelMono = AudioLevel::dbNormalize(AudioLevel::computeRms(monoWave, WAVEFORM_SAMPLES));
-        updateNeedle(m_leftGauge, levelMono, now); 
+        updateNeedle(m_leftGauge, levelMono, now);
     }
 }

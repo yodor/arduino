@@ -1,4 +1,5 @@
 #include "LDRVolume.hpp"
+#include "AudioModel.hpp"
 #include "CalProgress.hpp"
 #include "DualCalibration.hpp"
 #include "BusyHook.hpp"
@@ -17,7 +18,7 @@ float LDRVolume::computeMaxRangeDb(float marginDb) const {
   float rshFloor = hc.point(hc.count() - 1).ohms;  // highest-duty = lowest-R point
   if (rshFloor <= 0.0f) return 0.0f;
 
-  const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+  const DividerMath::Load load = AudioModel::load();
   float rsFloor = sc.point(sc.count() - 1).ohms;
   if (rTotalOhms_ <= rshFloor || rTotalOhms_ <= rsFloor) return 0.0f;
   // Quietest: shunt at its floor. Loudest: series at its floor. Both through
@@ -55,111 +56,165 @@ uint8_t LDRVolume::calSolve(uint8_t steps, Stream &out) {
   return cal_.solveLut(steps, range, rTotalOhms_);
 }
 
-uint32_t LDRVolume::trimFine(bool wantSeries, float targetOhms, uint32_t guessFine,
-                             uint8_t maxProbes, float toleranceFrac) {
-  DriverChannels::Channel ch = wantSeries ? seriesCh_ : shuntCh_;
-  const LdrCurve &curve = wantSeries ? cal_.seriesCurve() : cal_.shuntCurve();
-  bool extrapolated;
-  const float slope0 = Capabilities::slopeAt(curve, targetOhms, extrapolated); // ln(ohms)/count; 0 = unknown
-  TrimSearch t;
-  t.begin(targetOhms, guessFine, maxProbes, toleranceFrac,
-          DriverChannels::FINE_PER_COUNT, DriverChannels::FINE_MAX, slope0);
-  while (true) {
-    driver_.setDutyFine(ch, t.current());
-    unsigned long elapsed;
-    const float measured = convergeRead(wantSeries, 300, elapsed);
-    if (!t.feed(measured)) break;
-  }
-  return t.best();
+
+
+bool LDRVolume::readElement(bool wantSeries, float &ohms) {
+  float vRef, rs, rsh;
+  if (!sensor_.read(vRef, rs, rsh)) return false;
+  ohms = wantSeries ? rs : rsh;
+  return true;
 }
 
-void LDRVolume::trimLoop(Stream &out) {
-  out.println(F("--- CAL: trim each step ---"));
+namespace {
+// Lockstep secant searches: each active channel probes its own duty, then all of them are
+// polled in ONE loop until each reading has converged (two consecutive within 1 %) or
+// 300 ms passed, and each search is fed its own reading. Repeats until every search has
+// finished. Same rule, tolerance and probe limit per channel as the sequential trim had --
+// only the waiting is shared.
+constexpr uint8_t  TRIM_MAX_PROBES  = 6;
+constexpr float    TRIM_TOLERANCE   = 0.015f;
+constexpr uint32_t CONVERGE_MAX_MS  = 300;
+constexpr uint32_t CONVERGE_POLL_MS = 15;
+} // namespace
 
-  uint8_t n = numSteps();
+void LDRVolume::trimLoopBoth(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels) {
+  constexpr uint8_t MAXC = 2;
+  if (n == 0) return;
+  if (n > MAXC) n = MAXC;
+  out.println(F("--- CAL: trim each step (both channels together) ---"));
+  const float L = (float)DriverChannels::FINE_PER_COUNT;
 
-  // Start from rest: drive this channel to its own first valid step and let
-  // the cells settle there before measuring anything (see
-  // TRIM_PRECONDITION_MS). Without this the first series measurement comes
-  // straight after a sweep or a louder volume, from a bright cell that reads
-  // low while it relaxes, and the search over-corrects toward too little
-  // light -- worst on the slower channel.
-  for (uint8_t i0 = 0; i0 < n; i0++) {
-    const VolumeLut::Entry &e0 = lut().step(i0);
-    if (!e0.valid) continue;
-    driver_.setDutyFine(seriesCh_, e0.seriesFine);
-    driver_.setDutyFine(shuntCh_, e0.shuntFine);
-    out.println(F("  settling at step 0 before trimming..."));
-    for (uint32_t waited = 0; waited < TRIM_PRECONDITION_MS; waited += 100) {
-      BusyHook::wait(100);
+  // Start from rest: every channel at its own first valid step, settled there before
+  // anything is measured (TRIM_PRECONDITION_MS) -- once, for all channels together.
+  for (uint8_t c = 0; c < n; c++) {
+    LDRVolume &v = *ch[c];
+    for (uint8_t i0 = 0; i0 < v.numSteps(); i0++) {
+      const VolumeLut::Entry &e0 = v.lut().step(i0);
+      if (!e0.valid) continue;
+      v.driver_.setDutyFine(v.seriesCh_, e0.seriesFine);
+      v.driver_.setDutyFine(v.shuntCh_, e0.shuntFine);
+      break;
     }
-    break;
   }
-  float lastSeriesTarget = -1.0f;
-  uint32_t lastSeriesFine = 0;
-  // Series targets at or above the shallowest settled point of the dark-end walk lie on
-  // the part of the series curve that WAS measured settled; a quick probe there would
-  // read a cell still relaxing and over-correct (the 200k lesson). Those duties stay as
-  // solved; the quietest one is then placed by settleQuietPoint().
-  const float settledFrom = profile_.okCount() ? profile_.shallowestOkOhms() : 1e30f;
-  for (uint8_t i = 0; i < n; i++) {
-    CalProgress::step(i, n);
-    const VolumeLut::Entry &e = lut().step(i);
-    if (!e.valid) continue;
-    if (lut().isTransparent(i)) {
-      out.print(F("  step "));
-      out.print(i);
-      out.println(F(": transparent (series bright, shunt off) -- not trimmed"));
-      continue;
+  out.println(F("  settling at step 0 before trimming..."));
+  for (uint32_t waited = 0; waited < TRIM_PRECONDITION_MS; waited += 100) BusyHook::wait(100);
+
+  // Per channel: the series result to reuse for neighbouring steps that want the same Rs,
+  // and the depth from which the series stays as solved (the walk's settled curve).
+  float lastSeriesTarget[MAXC], settledFrom[MAXC];
+  uint32_t lastSeriesFine[MAXC];
+  uint8_t nSteps = 0;
+  for (uint8_t c = 0; c < n; c++) {
+    lastSeriesTarget[c] = -1.0f; lastSeriesFine[c] = 0;
+    settledFrom[c] = ch[c]->profile_.okCount() ? ch[c]->profile_.shallowestOkOhms() : 1e30f;
+    if (ch[c]->numSteps() > nSteps) nSteps = ch[c]->numSteps();
+  }
+
+  // One lockstep search over the channels with want[c] set: series or shunt element.
+  auto searchAll = [&](bool series, const bool want[], const float target[], const uint32_t start[],
+                       uint32_t result[]) {
+    TrimSearch t[MAXC];
+    bool active[MAXC];
+    uint8_t nActive = 0;
+    for (uint8_t c = 0; c < n; c++) {
+      active[c] = want[c];
+      result[c] = start[c];
+      if (!want[c]) continue;
+      LDRVolume &v = *ch[c];
+      bool extrap;
+      const float slope0 = Capabilities::slopeAt(series ? v.cal_.seriesCurve() : v.cal_.shuntCurve(), target[c], extrap);
+      t[c].begin(target[c], start[c], TRIM_MAX_PROBES, TRIM_TOLERANCE,
+                 DriverChannels::FINE_PER_COUNT, DriverChannels::FINE_MAX, slope0);
+      nActive++;
     }
-
-    // Capture everything BEFORE the LUT is updated. `e` is a reference
-    // INTO the LUT, so once setLutStepDuty() runs it shows the NEW values:
-    // the old printout read e.seriesDuty after the update and so printed
-    // "new->new" -- it could never show a change, and every trim looked
-    // like it had moved nothing.
-    const uint32_t oldSeriesFine = e.seriesFine;
-    const uint32_t oldShuntFine = e.shuntFine;
-    const float targetRs = e.targetRs;
-    const float targetRsh = e.targetRsh;
-
-    uint32_t newSeriesFine = oldSeriesFine;
-    // Steps 0..~13 all want Rs within a couple of percent of each other
-    // (the series cell barely moves while the shunt does the work). Once
-    // one of them has been trimmed against a live measurement, the rest
-    // are the SAME physical operating point -- reuse that result instead
-    // of re-measuring a slow, lag-affected value 14 times over.
-    if (targetRs >= settledFrom) {
-      newSeriesFine = oldSeriesFine;
-    } else if (lastSeriesTarget > 0.0f &&
-        fabsf(targetRs - lastSeriesTarget) / lastSeriesTarget < 0.02f) {
-      newSeriesFine = lastSeriesFine;
-    } else {
-      newSeriesFine = trimFine(true, targetRs, oldSeriesFine, 6, 0.015f);
-      lastSeriesTarget = targetRs;
-      lastSeriesFine = newSeriesFine;
+    while (nActive > 0) {
+      for (uint8_t c = 0; c < n; c++)
+        if (active[c]) ch[c]->driver_.setDutyFine(series ? ch[c]->seriesCh_ : ch[c]->shuntCh_, t[c].current());
+      float prev[MAXC], lastGood[MAXC], meas[MAXC];
+      bool conv[MAXC];
+      for (uint8_t c = 0; c < n; c++) { prev[c] = -1.0f; lastGood[c] = -1.0f; meas[c] = -1.0f; conv[c] = !active[c]; }
+      const uint32_t t0 = millis();
+      while (true) {
+        bool all = true;
+        for (uint8_t c = 0; c < n; c++) {
+          if (conv[c]) continue;
+          float r;
+          if (ch[c]->readElement(series, r)) {
+            lastGood[c] = r;
+            if (prev[c] > 0.0f && fabsf(r - prev[c]) / prev[c] < 0.01f) { meas[c] = r; conv[c] = true; continue; }
+            prev[c] = r;
+          }
+          all = false;
+        }
+        if (all) break;
+        if (millis() - t0 >= CONVERGE_MAX_MS) {
+          for (uint8_t c = 0; c < n; c++) if (!conv[c]) meas[c] = lastGood[c];   // -1 if never readable
+          break;
+        }
+        BusyHook::wait(CONVERGE_POLL_MS);
+      }
+      for (uint8_t c = 0; c < n; c++) {
+        if (!active[c]) continue;
+        if (!t[c].feed(meas[c])) { active[c] = false; nActive--; result[c] = t[c].best(); }
+      }
     }
-    // The shunt reading below needs the series cell at THIS step's
-    // operating point, not wherever the last probe happened to leave it.
-    driver_.setDutyFine(seriesCh_, newSeriesFine);
+  };
 
-    uint32_t newShuntFine = trimFine(false, targetRsh, oldShuntFine, 6, 0.015f);
-
-    cal_.setLutStepDuty(i, newSeriesFine, newShuntFine);
-
-    out.print(F("  step "));
-    out.print(i);
-    // Duties print in counts with the dithered fraction (e.g. 581.63).
-    const float L = (float)DriverChannels::FINE_PER_COUNT;
-    out.print(F(": seriesDuty "));
-    out.print(oldSeriesFine / L, 2);
-    out.print(F("->"));
-    out.print(newSeriesFine / L, 2);
-    out.print(F("  shuntDuty "));
-    out.print(oldShuntFine / L, 2);
-    out.print(F("->"));
-    out.print(newShuntFine / L, 2);
-    out.println(targetRs >= settledFrom ? F("  (series from the settled curve)") : F(""));
+  for (uint8_t i = 0; i < nSteps; i++) {
+    CalProgress::step(i, nSteps);
+    bool use[MAXC], wantSer[MAXC], wantShu[MAXC], fromCurve[MAXC];
+    float tRs[MAXC] = {0, 0}, tRsh[MAXC] = {0, 0};
+    uint32_t oldSer[MAXC] = {0, 0}, oldShu[MAXC] = {0, 0}, newSer[MAXC] = {0, 0}, newShu[MAXC] = {0, 0};
+    for (uint8_t c = 0; c < n; c++) {
+      LDRVolume &v = *ch[c];
+      use[c] = false; wantSer[c] = false; wantShu[c] = false; fromCurve[c] = false;
+      if (i >= v.numSteps()) continue;
+      const VolumeLut::Entry &e = v.lut().step(i);
+      if (!e.valid) continue;
+      if (v.lut().isTransparent(i)) {
+        out.print(F("  ")); if (labels) out.print(labels[c]); out.print(F(" step ")); out.print(i);
+        out.println(F(": transparent (series bright, shunt off) -- not trimmed"));
+        continue;
+      }
+      // Capture BEFORE the LUT is updated (e is a reference into it).
+      use[c] = true;
+      oldSer[c] = e.seriesFine; oldShu[c] = e.shuntFine;
+      tRs[c] = e.targetRs; tRsh[c] = e.targetRsh;
+      newSer[c] = oldSer[c];
+      if (tRs[c] >= settledFrom[c]) {
+        fromCurve[c] = true;                    // on the walk's settled curve: stays as solved
+      } else if (lastSeriesTarget[c] > 0.0f && fabsf(tRs[c] - lastSeriesTarget[c]) / lastSeriesTarget[c] < 0.02f) {
+        newSer[c] = lastSeriesFine[c];          // the same operating point as a step already trimmed
+      } else {
+        wantSer[c] = true;
+      }
+      wantShu[c] = true;
+    }
+    // 1. series searches, together -- with the shunt held BRIGHT. The series cell's resistance
+    //    does not depend on the shunt (two separate vactrols), but the measuring current does:
+    //    with the shunt as dark as the loud steps want (~Rtotal), only a few uA flow and the
+    //    readings fail or drift (deep Rtotal: unreadable). The sweeps measure the same way.
+    for (uint8_t c = 0; c < n; c++)
+      if (wantSer[c]) ch[c]->driver_.setDutyFine(ch[c]->shuntCh_, (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT);
+    uint32_t serResult[MAXC];
+    searchAll(true, wantSer, tRs, oldSer, serResult);
+    for (uint8_t c = 0; c < n; c++) {
+      if (!use[c]) continue;
+      if (wantSer[c]) { newSer[c] = serResult[c]; lastSeriesTarget[c] = tRs[c]; lastSeriesFine[c] = newSer[c]; }
+      // the shunt reading needs the series at THIS step's operating point
+      ch[c]->driver_.setDutyFine(ch[c]->seriesCh_, newSer[c]);
+    }
+    // 2. shunt searches, together
+    searchAll(false, wantShu, tRsh, oldShu, newShu);
+    // 3. store and report
+    for (uint8_t c = 0; c < n; c++) {
+      if (!use[c]) continue;
+      ch[c]->cal_.setLutStepDuty(i, newSer[c], newShu[c]);
+      out.print(F("  ")); if (labels) out.print(labels[c]); out.print(F(" step ")); out.print(i);
+      out.print(F(": seriesDuty ")); out.print(oldSer[c] / L, 2); out.print(F("->")); out.print(newSer[c] / L, 2);
+      out.print(F("  shuntDuty ")); out.print(oldShu[c] / L, 2); out.print(F("->")); out.print(newShu[c] / L, 2);
+      out.println(fromCurve[c] ? F("  (series from the settled curve)") : F(""));
+    }
   }
 }
 
@@ -366,29 +421,6 @@ bool LDRVolume::stepDown() {
   return setStep(next);
 }
 
-float LDRVolume::convergeRead(bool wantSeries, unsigned long timeoutMs, unsigned long &elapsedOut) {
-  float prev = -1.0f;
-  float lastGood = -1.0f;
-  unsigned long start = millis();
-  while (true) {
-    float vRef, rs, rsh;
-    bool ok = sensor_.read(vRef, rs, rsh);
-    float cur = wantSeries ? rs : rsh;
-    if (ok) {
-      lastGood = cur;
-      if (prev > 0.0f && fabsf(cur - prev) / prev < 0.01f) {
-        elapsedOut = millis() - start;
-        return cur;
-      }
-      prev = cur;
-    }
-    if (millis() - start >= timeoutMs) {
-      elapsedOut = millis() - start;
-      return lastGood; // -1.0f if we never got a single valid reading
-    }
-    BusyHook::wait(15);
-  }
-}
 
 uint8_t LDRVolume::calSolveStereo(float capDb, uint8_t steps, Stream &out) {
   rangeCapDb_ = capDb;

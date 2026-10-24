@@ -4,7 +4,6 @@
 #include "Config.hpp"
 #include "DriverChannels.hpp"
 #include "BoardSensors.hpp"
-#include "CellTemps.hpp"
 #include <LittleFS.h>
 #ifdef LDR_BOARD_IS_PICO_W
 #include <WiFi.h>
@@ -249,15 +248,6 @@ void Board::reportDieTemp(Stream &out, const __FlashStringHelper *label, uint32_
   out.print(F(" C (NTC)  rail "));
   if (isnan(vr)) out.print(F("--")); else out.print(vr, 3);
   out.print(F(" V (TL431)  "));
-  if (CellTemps::count() > 0) {
-    float tc[2];
-    CellTemps::read(tc);
-    out.print(F("cells L "));
-    if (isnan(tc[0])) out.print(F("--")); else out.print(tc[0], 2);
-    out.print(F(" R "));
-    if (isnan(tc[1])) out.print(F("--")); else out.print(tc[1], 2);
-    out.print(F(" C (DS18B20)  "));
-  }
   out.print(F("uptime "));
   out.print(formatHms(up, hms, sizeof(hms)));
   out.print(F(" ("));

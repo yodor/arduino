@@ -27,6 +27,13 @@ constexpr uint32_t POWER_ON_SETTLE_MS = 3000;
 // after a key is pressed in standby ("Press POWER to switch on"), and the
 // backlight of the "Dim Clock" standby display.
 constexpr uint32_t POWER_POPUP_MS       = 2000;
+
+// Auto standby (Settings -> Power, off by default): the inputs count as
+// "playing" while the waveform's peak (DC removed, raw 12-bit ADC counts)
+// exceeds the Silence Level setting -- this is its default, comfortably
+// above the idle noise, far below music. Checked every AUTO_STANDBY_CHECK_MS.
+constexpr int16_t  AUTO_STANDBY_AUDIO_THRESHOLD = 24;
+constexpr uint32_t AUTO_STANDBY_CHECK_MS        = 250;
 constexpr uint8_t  STANDBY_DIM_PERCENT  = 15;
 
 // UART daughter board link (pins in Pins.hpp).
@@ -39,7 +46,7 @@ constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter 
 // Protocol revision this master is written for. A daughter reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 10;
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 12;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held -- each
 // command is a single discrete step on the daughter board.

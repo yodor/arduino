@@ -2,13 +2,13 @@
 #include "ThermalLog.hpp"
 #include "ThermalFit.hpp"
 #include "BusyHook.hpp"
-#include "CellTemps.hpp"
 #include "RailComp.hpp"
 #include "ThermalComp.hpp"
 #include "CalProgress.hpp"
 #include <string.h>
 #include <stdio.h>
 #include "Config.hpp"
+#include "AudioModel.hpp"
 #include "DualCalibration.hpp"
 #include "VolumeRamp.hpp"
 #include "BusyHook.hpp"
@@ -147,6 +147,8 @@ void MasterLink::serviceWhileBusy() {
       reportEnv();
     } else if (line == "LEARN") {
       reportLearn();
+    } else if (line == "MODEL") {
+      reportModel();
     } else {
       // Everything else must wait until STATUS reads IDLE -- but say so,
       // rather than leaving the master's command timing out.
@@ -169,14 +171,10 @@ void kv(Print &o, const __FlashStringHelper *key, float v, uint8_t dec, bool sig
 } // namespace
 
 void MasterLink::reportEnv() {
-  // OK ENV BLOCK= CELLL= CELLR= RAIL= COMP= OFFL= OFFR= KL= KR= DBLOCK= MATCH=
-  float cell[2];
-  CellTemps::cached(cell);
+  // OK ENV BLOCK= RAIL= COMP= OFFL= OFFR= KL= KR= DBLOCK= MATCH=   (protocol 11: no cells)
   const bool aL = ThermalComp::sideActive(0), aR = ThermalComp::sideActive(1);
   stream_.print(F("OK ENV"));
   kv(stream_, F("BLOCK"), ThermalComp::blockAverage(), 2);
-  kv(stream_, F("CELLL"), cell[0], 2);
-  kv(stream_, F("CELLR"), cell[1], 2);
   kv(stream_, F("RAIL"), RailComp::averageVolts(), 4);
   // COMP: ON (both sides compensated), PART (one side), LEARNING (on, fit not trusted yet), OFF
   stream_.print(F(" COMP="));
@@ -211,6 +209,18 @@ void MasterLink::reportLearn() {
   stream_.print(F(" MINN=3"));
   kv(stream_, F("MINSPREAD"), 0.5f, 2);
   kv(stream_, F("MINR2"), ThermalComp::MIN_R2, 2);
+  stream_.println();
+}
+
+void MasterLink::reportModel() {
+  // OK MODEL SRC= LOAD= SOLVED_SRC= SOLVED_LOAD=   (LOAD 0 = unloaded; SOLVED_* "--" if unknown)
+  float s = NAN, l = NAN;
+  DualCalibration::solvedModel(s, l);
+  stream_.print(F("OK MODEL"));
+  kv(stream_, F("SRC"), AudioModel::sourceOhms(), 0);
+  kv(stream_, F("LOAD"), AudioModel::loadOhms(), 0);
+  kv(stream_, F("SOLVED_SRC"), s, 0);
+  kv(stream_, F("SOLVED_LOAD"), l, 0);
   stream_.println();
 }
 
@@ -356,6 +366,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
   if (upper == "ENV") { reportEnv(); return; }
   if (upper == "PROGRESS") { reportProgress(); return; }
   if (upper == "LEARN") { reportLearn(); return; }
+  if (upper == "MODEL") { reportModel(); return; }
   // Protocol 10: no boot hold. Volume is refused until the attenuator is calibrated for
   // these cells (CAL=OK): the LDR mute stays on, so nothing plays uncalibrated.
   auto needCal = [&]() -> bool {
@@ -428,6 +439,25 @@ void MasterLink::handleStrictLine(const String &lineIn) {
 
   } else if (upper.startsWith("FORGET")) {
     stream_.println(F("ERR usage: FORGET CAL|COMP|ALL"));
+
+  } else if (upper.startsWith("SET SRC ") || upper.startsWith("SET LOAD ")) {
+    // Protocol 12: the audio model at runtime. A calibration solved for other values turns
+    // STALE (LDR mute on, volume refused) until CAL re-solves.
+    const bool src = upper.startsWith("SET SRC ");
+    const String arg = upper.substring(src ? 8 : 9);
+    char *end;
+    const float ohms = (float)strtod(arg.c_str(), &end);
+    if (end == arg.c_str()) { stream_.println(F("ERR usage: SET SRC <ohms> | SET LOAD <ohms>")); return; }
+    if (!(src ? AudioModel::setSource(ohms) : AudioModel::setLoad(ohms))) {
+      stream_.println(src ? F("ERR SRC range 0..100000") : F("ERR LOAD range 0 or 1000..100000000"));
+      return;
+    }
+    DualCalibration::onModelChanged(left_, right_);
+    stream_.println(F("OK"));
+
+  } else if (upper == "COMP ON" || upper == "COMP OFF") {
+    ThermalComp::setEnabled(upper == "COMP ON");   // not stored: boots ON
+    stream_.println(F("OK"));
 
   } else if (upper == "STATUS") {
     reportStatus();

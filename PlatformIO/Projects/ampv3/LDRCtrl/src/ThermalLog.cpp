@@ -1,7 +1,6 @@
 #include "ThermalLog.hpp"
 #include "ThermalFit.hpp"
 #include "Board.hpp"
-#include "CellTemps.hpp"
 #include <LittleFS.h>
 #include <stdlib.h>
 
@@ -38,6 +37,7 @@ uint8_t parseFloats(const char *s, float *out, uint8_t n) {
   return k;
 }
 
+// The state file: "block rail" (since 2026-10-25c); older files hold "block cellL cellR rail".
 bool loadState(ThermalLog::Env &e) {
   File f = LittleFS.open(STATE_PATH, "r");
   if (!f) return false;
@@ -46,20 +46,22 @@ bool loadState(ThermalLog::Env &e) {
   f.close();
   buf[n] = 0;
   float v[4];
-  if (parseFloats(buf, v, 4) != 4) return false;
-  e.block = v[0]; e.cell[0] = v[1]; e.cell[1] = v[2]; e.rail = v[3];
-  return true;
+  const uint8_t k = parseFloats(buf, v, 4);
+  if (k == 4) { e.block = v[0]; e.rail = v[3]; return true; }   // old format (with the cells)
+  if (k == 2) { e.block = v[0]; e.rail = v[1]; return true; }
+  return false;
 }
 
 void saveState(const ThermalLog::Env &e) {
   File f = LittleFS.open(STATE_PATH, "w");
   if (!f) return;
-  f.print(e.block, 3); f.print(' '); f.print(e.cell[0], 3); f.print(' ');
-  f.print(e.cell[1], 3); f.print(' '); f.print(e.rail, 4); f.println();
+  f.print(e.block, 3); f.print(' '); f.print(e.rail, 4); f.println();
   f.close();
 }
 
-// Read the log's entries (newest last). Each line: shiftL,shiftR,dBlock,dCellL,dCellR,dRail%,...
+// Read the log's entries (newest last). Two line formats, told apart by their field count:
+//   7 fields (since 2026-10-25c):  shiftL,shiftR,dBlock,dRail%,block,rail,uptime
+//  11 fields (before, with cells): shiftL,shiftR,dBlock,dCellL,dCellR,dRail%,block,cellL,cellR,rail,uptime
 uint8_t loadEntries(ThermalFit::Entry *e, uint8_t maxN) {
   File f = LittleFS.open(LOG_PATH, "r");
   if (!f) return 0;
@@ -67,11 +69,10 @@ uint8_t loadEntries(ThermalFit::Entry *e, uint8_t maxN) {
   char line[160]; size_t len = 0;
   auto take = [&]() {
     line[len] = 0;
-    float v[6];
-    if (len && parseFloats(line, v, 6) == 6) {
+    ThermalFit::Entry x;
+    if (len && ThermalFit::parseLogLine(line, x)) {
       if (n == maxN) { for (uint8_t i = 1; i < maxN; i++) e[i - 1] = e[i]; n--; } // keep the newest
-      ThermalFit::Entry &x = e[n++];
-      x.shift[0] = v[0]; x.shift[1] = v[1]; x.dBlock = v[2]; x.dCell[0] = v[3]; x.dCell[1] = v[4]; x.dRailPct = v[5];
+      e[n++] = x;
     }
     len = 0;
   };
@@ -114,8 +115,6 @@ Env snapshot() {
   Env e;
   e.block = Board::blockTempC();
   e.rail = Board::railVolts();
-  e.cell[0] = e.cell[1] = NAN;
-  if (CellTemps::count() > 0) CellTemps::read(e.cell);
   return e;
 }
 
@@ -124,25 +123,21 @@ void onCalibrated(bool resync, const float *shift, const Env &now, Stream &out) 
   const bool havePrev = loadState(prev);
   if (resync && havePrev && shift) {
     const float dB = diffOrNan(now.block, prev.block);
-    const float dL = diffOrNan(now.cell[0], prev.cell[0]), dR = diffOrNan(now.cell[1], prev.cell[1]);
     const float dRail = pctOrNan(now.rail, prev.rail);
     File f = LittleFS.open(LOG_PATH, "a");
-    if (f) {
+    if (f) {                       // 7 fields: shiftL,shiftR,dBlock,dRail%,block,rail,uptime
       f.print(shift[0], 3); f.print(','); f.print(shift[1], 3); f.print(',');
-      f.print(dB, 3); f.print(','); f.print(dL, 3); f.print(','); f.print(dR, 3); f.print(',');
-      f.print(dRail, 4); f.print(',');
-      f.print(now.block, 3); f.print(','); f.print(now.cell[0], 3); f.print(','); f.print(now.cell[1], 3); f.print(',');
-      f.print(now.rail, 4); f.print(','); f.print(Board::uptimeSeconds()); f.println();
+      f.print(dB, 3); f.print(','); f.print(dRail, 4); f.print(',');
+      f.print(now.block, 3); f.print(','); f.print(now.rail, 4); f.print(','); f.print(Board::uptimeSeconds()); f.println();
       f.close();
       rotateIfLarge();
     }
     out.print(F("  thermal log: knee shift L ")); printSigned(out, shift[0], 2);
     out.print(F(" R ")); printSigned(out, shift[1], 2);
     out.print(F(" counts | since the last calibration: block ")); printSigned(out, dB, 2);
-    out.print(F(" C, cells L ")); printSigned(out, dL, 2); out.print(F(" R ")); printSigned(out, dR, 2);
     out.print(F(" C, rail ")); printSigned(out, dRail, 2); out.println(F(" %"));
   } else if (resync) {
-    out.println(F("  thermal log: first calibration with sensors -- environment saved; the NEXT resync is logged"));
+    out.println(F("  thermal log: first calibration with an environment -- saved; the NEXT resync is logged"));
   } else {
     out.println(F("  thermal log: environment at this calibration saved (resyncs are logged against it)"));
   }
@@ -154,8 +149,6 @@ void printSince(Stream &out) {
   if (!loadState(prev)) { out.println(F("  since the last calibration: -- (no environment saved yet; the next CAL saves it)")); return; }
   const Env now = snapshot();
   out.print(F("  since the last calibration: block ")); printSigned(out, diffOrNan(now.block, prev.block), 2);
-  out.print(F(" C, cells L ")); printSigned(out, diffOrNan(now.cell[0], prev.cell[0]), 2);
-  out.print(F(" R ")); printSigned(out, diffOrNan(now.cell[1], prev.cell[1]), 2);
   out.print(F(" C, rail ")); printSigned(out, pctOrNan(now.rail, prev.rail), 2); out.println(F(" %"));
 }
 
@@ -163,20 +156,22 @@ void printLog(Stream &out) {
   static ThermalFit::Entry e[MAX_ENTRIES];
   const uint8_t n = loadEntries(e, MAX_ENTRIES);
   out.print(F("--- thermal learning log: ")); out.print(n); out.println(F(" resync(s) ---"));
-  if (n) out.println(F("   #  shift L   shift R  | d block  d cell L  d cell R  d rail%"));
+  if (n) out.println(F("   #  shift L   shift R  | d block  d rail%"));
   const uint8_t first = n > 20 ? (uint8_t)(n - 20) : 0;
   for (uint8_t i = first; i < n; i++) {
     out.print(F("  ")); if (i + 1 < 10) out.print(' '); out.print(i + 1); out.print(F("  "));
     printSigned(out, e[i].shift[0], 2); out.print(F("     ")); printSigned(out, e[i].shift[1], 2); out.print(F("   |  "));
-    printSigned(out, e[i].dBlock, 2); out.print(F("    ")); printSigned(out, e[i].dCell[0], 2); out.print(F("     "));
-    printSigned(out, e[i].dCell[1], 2); out.print(F("     ")); printSigned(out, e[i].dRailPct, 2); out.println();
+    printSigned(out, e[i].dBlock, 2); out.print(F("    ")); printSigned(out, e[i].dRailPct, 2);
+    if (ThermalFit::seekFailed(e[i])) out.print(F("   (failed seek: not used)"));
+    else if (i > 0 && ThermalFit::seekFailed(e[i - 1])) out.print(F("   (catch-up after a failure: not used)"));
+    out.println();
   }
-  static const char *what[3] = {"block", "cell ", "rail "};
-  static const char *unit[3] = {"C", "C", "%"};
-  static const float minSpread[3] = {0.5f, 0.5f, 0.2f};
+  static const char *what[2] = {"block", "rail "};
+  static const char *unit[2] = {"C", "%"};
+  static const float minSpread[2] = {0.5f, 0.2f};
   out.println(F("--- fit: knee shift = k x change (through zero), per channel ---"));
   for (uint8_t c = 0; c < 2; c++) {
-    for (uint8_t x = 0; x < 3; x++) {
+    for (uint8_t x = 0; x < 2; x++) {
       const ThermalFit::Slope s = ThermalFit::fit(e, n, c, x);
       out.print(c ? F("  R vs ") : F("  L vs ")); out.print(what[x]); out.print(F(": "));
       if (!ThermalFit::usable(s, minSpread[x])) {
@@ -191,7 +186,7 @@ void printLog(Stream &out) {
       out.print(unit[x]); out.println(')');
     }
   }
-  out.println(F("  The variable with the higher R2 explains the drift; stage 2 compensates with it."));
+  out.println(F("  The compensation uses the block fit once it is trusted (3+ resyncs, 0.5 C spread, R2 >= 0.6)."));
 }
 
 void clear() { LittleFS.remove(LOG_PATH); }

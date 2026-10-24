@@ -18,6 +18,7 @@
 #include "DisplayTestScreen.hpp"
 #include "PowerControl.hpp"
 #include "PowerOverlay.hpp"
+#include "AutoStandby.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
@@ -49,12 +50,13 @@ static AnalogVuScreen        g_analogVuScreen;
 static DigitalVuMeterScreen  g_digitalVuMeterScreen;
 static ClockScreen           g_clockScreen;
 
+// Order must match kScreenNames (ScreenRegistry.hpp).
 static Screen* g_screens[] = {
-    &g_spectrumScreen,
-    &g_waveformScreen,
-    &g_analogVuScreen,
-    &g_digitalVuMeterScreen,
     &g_clockScreen,
+    &g_waveformScreen,
+    &g_spectrumScreen,
+    &g_digitalVuMeterScreen,
+    &g_analogVuScreen,
 };
 constexpr size_t kNumScreens = sizeof(g_screens) / sizeof(g_screens[0]);
 
@@ -64,11 +66,6 @@ static_assert(kNumScreens == kScreenCount,
               "into g_screens[] but only know about it via kScreenNames[]/kScreenCount");
 
 static size_t g_currentScreenIdx = 0;
-
-// Screen and volume changes are remembered (the unit boots into the last
-// screen and volume step), but only written to flash once nothing has
-// changed for this long.
-static constexpr uint32_t kScreenSaveDelayMs = 10000;
 
 static MenuScreen g_menuScreen;
 
@@ -172,9 +169,6 @@ void setup() {
 
     bootInfo();
     
-    pinMode(DIAGNOSTIC_LED_PIN, OUTPUT);
-    digitalWrite(DIAGNOSTIC_LED_PIN, HIGH);
-
     Renderer::instance().init();
     Serial.println("[OK] Renderer initialized.");
 
@@ -194,8 +188,7 @@ void setup() {
     // g_currentScreenIdx picks up the starting screen just below.
     PersistentSettings::instance().loadAndApply();
 
-    g_currentScreenIdx = DisplaySettings::instance().getStartingScreenIndex();
-    if (g_currentScreenIdx >= kNumScreens) g_currentScreenIdx = 0; // safety clamp
+    g_currentScreenIdx = kDefaultScreenIndex; // always boots on the Clock
     g_screens[g_currentScreenIdx]->onEnter();
 
     MasterConsole::instance().begin();
@@ -224,12 +217,27 @@ static void closeMenu() {
     PersistentSettings::instance().saveIfDirty();
 }
 
+// Auto standby (Settings -> Power, see AutoStandby): when it says so, run
+// the normal standby sequence -- closing the menu / display test first.
+static void autoStandbyUpdate(bool keyActivity) {
+    if (!AutoStandby::instance().update(keyActivity)) return;
+    Serial.printf("[Power] Auto standby: no audio or input for %u min\n",
+                  DisplaySettings::instance().getAutoStandbyMinutes());
+    if (g_menuOpen) closeMenu();
+    g_displayTestOpen = false;
+    PowerControl::instance().toggle();
+}
+
 void loop() {
     uint32_t loopStartUs = micros();
 
     MasterConsole::instance().update(); // USB console + daughter pass-through
 
     UIEvent event = InputEngine::instance().pollEvents();
+
+    // Any key or remote press counts as activity for auto standby.
+    bool keyActivity = (event != UIEvent::NONE) ||
+                       InputEngine::instance().isVolUpHeld() || InputEngine::instance().isVolDownHeld();
 
     // --- Power / standby ---
     // The power key works everywhere. Switching off closes the menu and the
@@ -245,6 +253,7 @@ void loop() {
     }
     power.update();
     g_powerOverlay.update();
+    autoStandbyUpdate(keyActivity);
 
     // Not on (standby, or a power sequence running): nothing but the power
     // key does anything. In standby, any other key shows the
@@ -255,15 +264,6 @@ void loop() {
                       InputEngine::instance().volDownJustPressed();
         if (anyKey && power.isStandby()) g_powerOverlay.showHint();
         event = UIEvent::NONE;
-    }
-
-    // Deferred save for changes made outside the menu (the remembered screen,
-    // the volume step): only once nothing has changed for a while -- each
-    // flash write briefly pauses the audio core, so stepping through screens
-    // or volume shouldn't write once per step. (Menu changes save on close.)
-    if (PersistentSettings::instance().isDirty() && !g_menuOpen &&
-        PersistentSettings::instance().msSinceDirty() >= kScreenSaveDelayMs) {
-        PersistentSettings::instance().saveIfDirty();
     }
 
     if (g_displayTestOpen) {
@@ -356,11 +356,6 @@ void loop() {
             g_overlayShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
             Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
-
-            // Remembered as the screen to boot into; saved by loop() once the
-            // choice has settled (see kScreenSaveDelayMs).
-            DisplaySettings::instance().setStartingScreenIndex(static_cast<uint8_t>(g_currentScreenIdx));
-            PersistentSettings::instance().markDirty();
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
             g_volumeOverlay.poke();
@@ -547,10 +542,6 @@ void loop() {
             Serial.println();
         }
 
-        // Heartbeat: the diagnostic LED blinks once a second while loop() runs.
-
-        int led_state = digitalRead(DIAGNOSTIC_LED_PIN);
-        digitalWrite(DIAGNOSTIC_LED_PIN, !led_state);
 
         g_frameCount      = 0;
         g_renderTimeSumUs = 0;

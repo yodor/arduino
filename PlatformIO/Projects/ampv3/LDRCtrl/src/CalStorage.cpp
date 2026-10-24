@@ -1,4 +1,5 @@
 #include "CalStorage.hpp"
+#include "AudioModel.hpp"
 #include "LDRVolume.hpp" // full type needed here, not just the forward declaration
 #include <LittleFS.h>
 #include "DriverChannels.hpp" // DriverChannels::WRAP -- saved duties are only meaningful at the WRAP they were taken at
@@ -251,7 +252,7 @@ bool load(const char *path, LDRVolume &vol) {
   // the range is derived from. (R itself and the AUTO flag are kept as saved.)
   {
     using namespace Capabilities;
-    const DividerMath::Load load{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+    const DividerMath::Load load = AudioModel::load();
     ChannelCaps cc[1] = {measure(vol.seriesCurve(), vol.shuntCurve(), &vol.darkProfile())};
     const LdrCurve *ser[1] = {&vol.seriesCurve()};
     const RtotalChoice rc = chooseRtotal(cc, ser, 1, true, vol.rTotalOhms(), load,

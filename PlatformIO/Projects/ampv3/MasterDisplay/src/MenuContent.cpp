@@ -13,6 +13,7 @@
 #include "DaughterBoardLink.hpp"
 #include "RtcClock.hpp"
 #include "DisplayTestScreen.hpp"
+#include "AutoStandby.hpp"
 #include <Arduino.h>
 #include <cmath>
 #include <cstdarg>
@@ -46,92 +47,97 @@ void formatTenths(char* out, size_t outSize, float v) {
     snprintf(out, outSize, "%s%ld.%ld", sign, t / 10, t % 10);
 }
 
+// Appends `text` across as many lines as it needs at kInfoCols characters,
+// breaking at spaces where possible; the first line starts with `prefix`,
+// the rest are indented by two spaces.
+void addWrapped(char (*lines)[kInfoLineLen], size_t& n, size_t maxLines, const char* prefix, const char* text) {
+    const char* p = text;
+    bool first = true;
+    while (*p && n < maxLines) {
+        const char* lead = first ? prefix : "  ";
+        size_t room = kInfoCols - strlen(lead);
+        size_t len  = strlen(p);
+        if (len > room) {
+            len = room;
+            for (size_t i = room; i > room / 2; --i) {
+                if (p[i] == ' ') { len = i; break; }
+            }
+        }
+        char chunk[kInfoLineLen];
+        memcpy(chunk, p, len);
+        chunk[len] = '\0';
+        addLine(lines, n, maxLines, "%s%s", lead, chunk);
+        p += len;
+        while (*p == ' ') ++p;
+        first = false;
+    }
+}
+
 // Settings -> Calibration -> Status: everything the daughter reports in its
 // STATUS line, live (the menu re-fills this twice a second while it's open).
 size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
+    // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
     const DaughterBoardLink& link = DaughterBoardLink::instance();
     const DaughterStatus&    s    = link.status();
 
     if (link.isPassthrough()) {
-        addLine(lines, n, maxLines, "Console pass-through active");
+        addLine(lines, n, maxLines, "Console pass-through");
         return n;
     }
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "Link:    no reply from daughter");
+        addLine(lines, n, maxLines, "No reply from daughter");
         if (!s.valid) return n;
-        addLine(lines, n, maxLines, "(last known values below)");
+        addLine(lines, n, maxLines, "(last known values)");
     } else if (s.proto != DAUGHTER_PROTO_EXPECTED) {
-        addLine(lines, n, maxLines, "Link:    PROTO %u (expected %u)", s.proto, DAUGHTER_PROTO_EXPECTED);
+        addLine(lines, n, maxLines, "Protocol %u (need %u)", s.proto, DAUGHTER_PROTO_EXPECTED);
     } else {
-        addLine(lines, n, maxLines, "Link:    OK, protocol %u", s.proto);
+        addLine(lines, n, maxLines, "Link OK, protocol %u", s.proto);
     }
 
-    if (s.bootHold) {
-        addLine(lines, n, maxLines, "State:   boot hold, %lums left", static_cast<unsigned long>(s.bootHoldRemainingMs));
-    } else if (s.calibrating()) {
-        addLine(lines, n, maxLines, "State:   CALIBRATING...");
-    } else {
-        addLine(lines, n, maxLines, "State:   %s", s.busy ? "busy" : "idle");
-    }
-
-    const char* cal = calStateText(s.cal);
-    if (s.lastCal[0] && strcmp(s.lastCal, "NONE") != 0) {
-        addLine(lines, n, maxLines, "Cal:     %s (last: %s)", cal, s.lastCal);
-    } else {
-        addLine(lines, n, maxLines, "Cal:     %s", cal);
-    }
+    addLine(lines, n, maxLines, "State: %s", s.calibrating() ? "CALIBRATING" : (s.busy ? "busy" : "idle"));
+    addLine(lines, n, maxLines, "Cal: %s", calStateText(s.cal));
+    if (s.lastCal[0] && strcmp(s.lastCal, "NONE") != 0) addLine(lines, n, maxLines, "Last cal: %s", s.lastCal);
 
     char a[12], b[12];
     if (s.calibrating()) {
         // Per the protocol, every other field is transient during a run.
-        addLine(lines, n, maxLines, "Volume:  locked until it finishes");
+        addLine(lines, n, maxLines, "Volume locked");
     } else {
         if (s.vol < 0) {
-            addLine(lines, n, maxLines, "Volume:  not calibrated");
+            addLine(lines, n, maxLines, "Volume: --");
         } else {
             formatTenths(a, sizeof(a), s.db);
-            addLine(lines, n, maxLines, "Volume:  %d (%d-%d), %s dB", s.vol, s.volMin, s.volMax, a);
+            addLine(lines, n, maxLines, "Vol %d: %s dB", s.vol, a);
+            addLine(lines, n, maxLines, "Steps %d-%d", s.volMin, s.volMax);
         }
-        addLine(lines, n, maxLines, "Mute:    %s, amp %s", s.mute ? "ON" : "off", s.ampMute ? "ON" : "off");
+        addLine(lines, n, maxLines, "Mute %s, amp %s", s.mute ? "ON" : "off", s.ampMute ? "ON" : "off");
         formatTenths(a, sizeof(a), s.rangeDb);
-        addLine(lines, n, maxLines, "Range:   %s dB", a);
-        addLine(lines, n, maxLines, "R total: %lu ohm (%s)", static_cast<unsigned long>(s.rOhms), s.rAuto ? "AUTO" : "manual");
-        addLine(lines, n, maxLines, "R range: %lu - %lu ohm",
-                static_cast<unsigned long>(s.rMinOhms), static_cast<unsigned long>(s.rMaxOhms));
+        addLine(lines, n, maxLines, "Range %s dB", a);
+        addLine(lines, n, maxLines, "R %luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
+        addLine(lines, n, maxLines, "R range %luK-%luK",
+                static_cast<unsigned long>(s.rMinOhms / 1000), static_cast<unsigned long>(s.rMaxOhms / 1000));
     }
 
     formatTenths(b, sizeof(b), s.tempC);
-    addLine(lines, n, maxLines, "Temp:    %s C (MCU)", b);
+    addLine(lines, n, maxLines, "MCU %s C", b);
+    unsigned long up = s.upSeconds;
+    addLine(lines, n, maxLines, "Up %lud %02lu:%02lu:%02lu", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
 
-    // Revision 8 ENV: board temperatures, rail, thermal compensation and the
-    // last calibration's stereo match -- polled while this page is open.
+    // ENV (rev 8): temperatures, rail, compensation, last stereo match --
+    // polled while this page is open.
     DaughterBoardLink::instance().requestEnv();
     const DaughterEnv& e = link.env();
     if (e.valid) {
-        addLine(lines, n, maxLines, "Block:   %s C, cells L %s R %s", e.block, e.cellL, e.cellR);
-        addLine(lines, n, maxLines, "Rail:    %s V, comp %s", e.rail, e.comp);
-        addLine(lines, n, maxLines, "Comp:    off L %s R %s", e.offL, e.offR);
-        addLine(lines, n, maxLines, "Match:   %s dB, block %s C", e.match, e.dBlock);
+        addLine(lines, n, maxLines, "Block %s C", e.block);
+        addLine(lines, n, maxLines, "Rail %s V", e.rail);
+        addLine(lines, n, maxLines, "Comp %s", e.comp);
+        addLine(lines, n, maxLines, "Offs L%s R%s", e.offL, e.offR);
+        addLine(lines, n, maxLines, "Match %s dB", e.match);
+        addLine(lines, n, maxLines, "dBlock %s C", e.dBlock);
     }
-    unsigned long up = s.upSeconds;
-    addLine(lines, n, maxLines, "Uptime:  %lud %02lu:%02lu:%02lu", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
 
-    if (s.hasErr) {
-        // Free text from the daughter, wrapped across as many lines as needed.
-        const char* p = s.err;
-        const char* prefix = "Error:   ";
-        while (*p && n < maxLines) {
-            char chunk[kInfoLineLen];
-            size_t room = kInfoLineLen - 1 - strlen(prefix);
-            size_t len  = strlen(p) < room ? strlen(p) : room;
-            memcpy(chunk, p, len);
-            chunk[len] = '\0';
-            addLine(lines, n, maxLines, "%s%s", prefix, chunk);
-            p += len;
-            prefix = "         ";
-        }
-    }
+    if (s.hasErr) addWrapped(lines, n, maxLines, "Err: ", s.err);
     return n;
 }
 
@@ -191,14 +197,17 @@ const MenuEditor kDateEditor = { 3, {4, 2, 2}, '-', loadDate, limitsDate, saveDa
 
 // Clock screen options -- applied when the menu closes (the active screen is
 // re-entered, which re-lays the clock out).
-void menuSet_ClockDateOn()   { DisplaySettings::instance().setClockShowDate(true);     PersistentSettings::instance().markDirty(); }
-void menuSet_ClockDateOff()  { DisplaySettings::instance().setClockShowDate(false);    PersistentSettings::instance().markDirty(); }
-bool menuIsActive_ClockDateOn()  { return DisplaySettings::instance().getClockShowDate(); }
-bool menuIsActive_ClockDateOff() { return !DisplaySettings::instance().getClockShowDate(); }
-void menuSet_ClockSecOn()    { DisplaySettings::instance().setClockShowSeconds(true);  PersistentSettings::instance().markDirty(); }
-void menuSet_ClockSecOff()   { DisplaySettings::instance().setClockShowSeconds(false); PersistentSettings::instance().markDirty(); }
-bool menuIsActive_ClockSecOn()   { return DisplaySettings::instance().getClockShowSeconds(); }
-bool menuIsActive_ClockSecOff()  { return !DisplaySettings::instance().getClockShowSeconds(); }
+void menuSet_ClockOnly()    { DisplaySettings::instance().setClockMode(ClockMode::CLOCK_ONLY); PersistentSettings::instance().markDirty(); }
+void menuSet_ClockSeconds() { DisplaySettings::instance().setClockMode(ClockMode::SECONDS);    PersistentSettings::instance().markDirty(); }
+void menuSet_ClockDate()    { DisplaySettings::instance().setClockMode(ClockMode::DATE);       PersistentSettings::instance().markDirty(); }
+bool menuIsActive_ClockOnly()    { return DisplaySettings::instance().getClockMode() == ClockMode::CLOCK_ONLY; }
+bool menuIsActive_ClockSeconds() { return DisplaySettings::instance().getClockMode() == ClockMode::SECONDS; }
+bool menuIsActive_ClockDate()    { return DisplaySettings::instance().getClockMode() == ClockMode::DATE; }
+
+// Clock digit color (COLOR chooser).
+uint16_t clockColorGet()           { return DisplaySettings::instance().getClockColor(); }
+void     clockColorSet(uint16_t c) { DisplaySettings::instance().setClockColor(c); PersistentSettings::instance().markDirty(); }
+const MenuColor kClockColor = { clockColorGet, clockColorSet };
 void menuSet_Clock24h()      { DisplaySettings::instance().setClock24h(true);          PersistentSettings::instance().markDirty(); }
 void menuSet_Clock12h()      { DisplaySettings::instance().setClock24h(false);         PersistentSettings::instance().markDirty(); }
 bool menuIsActive_Clock24h()     { return DisplaySettings::instance().getClock24h(); }
@@ -404,24 +413,20 @@ const MenuValueOption kBrightnessOptions[] = {
 };
 
 // --- Settings -> Clock ---
-const MenuValueOption kClockDateOptions[] = {
-    { "On",  menuSet_ClockDateOn,  menuIsActive_ClockDateOn  },
-    { "Off", menuSet_ClockDateOff, menuIsActive_ClockDateOff },
-};
-const MenuValueOption kClockSecondsOptions[] = {
-    { "On",  menuSet_ClockSecOn,  menuIsActive_ClockSecOn  },
-    { "Off", menuSet_ClockSecOff, menuIsActive_ClockSecOff },
-};
-const MenuValueOption kClockFormatOptions[] = {
+const MenuValueOption kClockModeOptions[] = {
+    { "Clock only", menuSet_ClockOnly,    menuIsActive_ClockOnly    },
+    { "Seconds",    menuSet_ClockSeconds, menuIsActive_ClockSeconds },
+    { "Date",       menuSet_ClockDate,    menuIsActive_ClockDate    },
+};const MenuValueOption kClockFormatOptions[] = {
     { "24 hour", menuSet_Clock24h, menuIsActive_Clock24h },
     { "12 hour", menuSet_Clock12h, menuIsActive_Clock12h },
 };
 const MenuItem kClockSubmenuItems[] = {
     { "Set Time",     MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kTimeEditor },
     { "Set Date",     MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kDateEditor },
-    { "Show Date",    MenuItemType::VALUE_CHOICE, nullptr, kClockDateOptions,    2 },
-    { "Show Seconds", MenuItemType::VALUE_CHOICE, nullptr, kClockSecondsOptions, 2 },
-    { "Format",       MenuItemType::VALUE_CHOICE, nullptr, kClockFormatOptions,  2 },
+    { "Display",      MenuItemType::VALUE_CHOICE, nullptr, kClockModeOptions,   3 },
+    { "Format",       MenuItemType::VALUE_CHOICE, nullptr, kClockFormatOptions, 2 },
+    { "Color",        MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kClockColor },
 };
 constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kClockSubmenuItems[0]);
 
@@ -434,58 +439,50 @@ constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kC
 // decides how much work it needs), or "CAL R=AUTO" / "CAL R=<ohms>" when it
 // was changed (the daughter re-solves from its stored measurements).
 
-enum class RChoice : uint8_t { UNSET, AUTO, MANUAL };
-RChoice  g_rChoice     = RChoice::UNSET;
-uint32_t g_rManualOhms = 0;
+// The Rtotal picked in the selector, used by the Start right after it.
+bool     g_rSelAuto = true;
+uint32_t g_rSelOhms = 0;
 
-// The Start item's label names what it will do: "Start R=AUTO" or
+// The start option's label names what will run: "Start R=AUTO" or
 // "Start R=650K" (MenuScreen reads the label each time it draws).
 char g_startLabel[24] = "Start";
 
 void updateStartLabel() {
-    if (g_rChoice == RChoice::AUTO) {
-        snprintf(g_startLabel, sizeof(g_startLabel), "Start R=AUTO");
-    } else if (g_rChoice == RChoice::MANUAL) {
-        snprintf(g_startLabel, sizeof(g_startLabel), "Start R=%luK", static_cast<unsigned long>((g_rManualOhms + 500) / 1000));
-    } else {
-        snprintf(g_startLabel, sizeof(g_startLabel), "Start");
-    }
-}
-
-// Lazily adopts the daughter's current setting the first time it's needed.
-void syncRChoice() {
-    if (g_rChoice != RChoice::UNSET) return;
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (!s.valid || s.busy) return;
-    g_rChoice     = s.rAuto ? RChoice::AUTO : RChoice::MANUAL;
-    g_rManualOhms = s.rOhms;
-    updateStartLabel();
+    if (g_rSelAuto) snprintf(g_startLabel, sizeof(g_startLabel), "Start R=AUTO");
+    else            snprintf(g_startLabel, sizeof(g_startLabel), "Start R=%luK", static_cast<unsigned long>((g_rSelOhms + 500) / 1000));
 }
 
 // "Rtotal" selector: ONE field covering both modes -- index 0 is AUTO,
 // then RMIN..RMAX (the daughter's measured range) in kRStepOhms steps,
-// rounded inward. Up/Down step through them (wrapping); Right saves.
+// rounded inward. It opens on the daughter's current setting; Up/Down step
+// (wrapping), Right confirms, then Cancel / Start.
 constexpr uint32_t kRStepOhms = 5000;
-int16_t g_rLoadedIndex = -1; // what the selector opened on (unchanged = keep the exact value)
+int16_t g_rLoadedIndex = -1; // what the selector opened on (unchanged = the exact current value)
 
 uint32_t rFirstOhms() {
     uint32_t rmin = DaughterBoardLink::instance().status().rMinOhms;
     return ((rmin + kRStepOhms - 1) / kRStepOhms) * kRStepOhms;
 }
 int16_t rStepCount() {
-    uint32_t first = rFirstOhms(), last = (DaughterBoardLink::instance().status().rMaxOhms / kRStepOhms) * kRStepOhms;
+    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    if (s.rMinOhms == 0 || s.rMaxOhms == 0) return 0; // range not measured yet: AUTO only
+    uint32_t first = rFirstOhms(), last = (s.rMaxOhms / kRStepOhms) * kRStepOhms;
     return (last < first) ? 0 : static_cast<int16_t>((last - first) / kRStepOhms + 1);
 }
 uint32_t rIndexOhms(int16_t i) { return rFirstOhms() + static_cast<uint32_t>(i - 1) * kRStepOhms; }
 
+// Doesn't open while the daughter is busy or not answering -- the item then
+// shows the progress page instead (a calibration running is the usual case).
+// Before a full characterization has measured RMIN/RMAX (a fresh unit) it
+// offers AUTO only, so the first calibration can always be started.
 bool loadRTotal(int16_t* v) {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (!s.valid || s.busy || s.rMinOhms == 0 || s.rMaxOhms == 0 || rStepCount() == 0) return false;
-    syncRChoice();
-    if (g_rChoice != RChoice::MANUAL) {
+    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const DaughterStatus&    s    = link.status();
+    if (!link.isStatusFresh() || s.busy) return false;
+    if (s.rAuto || rStepCount() == 0) {
         v[0] = 0;
     } else {
-        int32_t i = 1 + (static_cast<int32_t>(g_rManualOhms) - static_cast<int32_t>(rFirstOhms()) + static_cast<int32_t>(kRStepOhms / 2)) / static_cast<int32_t>(kRStepOhms);
+        int32_t i = 1 + (static_cast<int32_t>(s.rOhms) - static_cast<int32_t>(rFirstOhms()) + static_cast<int32_t>(kRStepOhms / 2)) / static_cast<int32_t>(kRStepOhms);
         if (i < 1) i = 1;
         if (i > rStepCount()) i = rStepCount();
         v[0] = static_cast<int16_t>(i);
@@ -502,47 +499,57 @@ void formatRTotal(const int16_t* v, uint8_t, char* out, size_t outSize) {
     else           snprintf(out, outSize, "%3luK", static_cast<unsigned long>(rIndexOhms(v[0]) / 1000));
 }
 bool saveRTotal(const int16_t* v) {
-    if (v[0] == g_rLoadedIndex) return true; // unchanged: keep the exact current choice
-    if (v[0] == 0) {
-        g_rChoice = RChoice::AUTO;
-        Serial.println("[Menu] Rtotal for the next calibration: AUTO");
+    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    if (v[0] == g_rLoadedIndex) {          // unchanged: exactly what the daughter uses now
+        g_rSelAuto = s.rAuto;
+        g_rSelOhms = s.rOhms;
+    } else if (v[0] == 0) {
+        g_rSelAuto = true;
     } else {
-        g_rChoice     = RChoice::MANUAL;
-        g_rManualOhms = rIndexOhms(v[0]);
-        Serial.printf("[Menu] Rtotal for the next calibration: %lu ohm\n", static_cast<unsigned long>(g_rManualOhms));
+        g_rSelAuto = false;
+        g_rSelOhms = rIndexOhms(v[0]);
     }
     updateStartLabel();
     return true;
 }
-const MenuEditor kRTotalEditor = { 1, {4}, ' ', loadRTotal, limitsRTotal, saveRTotal, formatRTotal };
+// Under the item in the list: the daughter's current Rtotal, e.g. "650K (auto)".
+void describeRTotal(char* out, size_t outSize) {
+    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const DaughterStatus&    s    = link.status();
+    if (!link.isStatusFresh() || s.rOhms == 0) { snprintf(out, outSize, "--"); return; }
+    snprintf(out, outSize, "%luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
+}
+const MenuEditor kRTotalEditor = { 1, {4}, ' ', loadRTotal, limitsRTotal, saveRTotal, formatRTotal, describeRTotal };
 
-// Start: plain CAL if the choice matches the daughter's current setting.
+// Start: plain CAL if the selection equals what the daughter uses now (it
+// then decides how much work it needs), otherwise CAL R=AUTO / R=<ohms>.
 void menuAction_StartCalibration() {
-    syncRChoice();
     const DaughterStatus& s = DaughterBoardLink::instance().status();
     VolumeControl& vc = VolumeControl::instance();
-    if (g_rChoice == RChoice::AUTO && !(s.valid && s.rAuto)) {
-        vc.calibrate(VolumeControl::CalR::AUTO_R);
-        Serial.println("[Menu] Calibration requested, Rtotal AUTO");
-    } else if (g_rChoice == RChoice::MANUAL && g_rManualOhms && !(s.valid && !s.rAuto && s.rOhms == g_rManualOhms)) {
-        vc.calibrate(VolumeControl::CalR::SET_R, g_rManualOhms);
-        Serial.printf("[Menu] Calibration requested, Rtotal %lu ohm\n", static_cast<unsigned long>(g_rManualOhms));
-    } else {
+    bool same = s.valid && (g_rSelAuto ? s.rAuto : (!s.rAuto && s.rOhms == g_rSelOhms));
+    if (same) {
         vc.calibrate(VolumeControl::CalR::KEEP_R);
         Serial.println("[Menu] Calibration requested");
+    } else if (g_rSelAuto) {
+        vc.calibrate(VolumeControl::CalR::AUTO_R);
+        Serial.println("[Menu] Calibration requested, Rtotal AUTO");
+    } else {
+        vc.calibrate(VolumeControl::CalR::SET_R, g_rSelOhms);
+        Serial.printf("[Menu] Calibration requested, Rtotal %lu ohm\n", static_cast<unsigned long>(g_rSelOhms));
     }
 }
 
 // Progress page labels for each PROGRESS phase.
 const char* phaseLabel(const char* phase) {
+    // Short enough to fit a large info line together with side and step.
     if (!strcmp(phase, "CHECK"))        return "Checking cells";
-    if (!strcmp(phase, "SWEEP_SERIES")) return "Measuring series cells";
-    if (!strcmp(phase, "SWEEP_SHUNT"))  return "Measuring shunt cells";
-    if (!strcmp(phase, "WALK"))         return "Mapping the dark end";
-    if (!strcmp(phase, "SOLVE"))        return "Computing volume steps";
+    if (!strcmp(phase, "SWEEP_SERIES")) return "Series sweep";
+    if (!strcmp(phase, "SWEEP_SHUNT"))  return "Shunt sweep";
+    if (!strcmp(phase, "WALK"))         return "Dark-end walk";
+    if (!strcmp(phase, "SOLVE"))        return "Solving steps";
     if (!strcmp(phase, "TRIM"))         return "Trimming";
     if (!strcmp(phase, "HOLD"))         return "Settling";
-    if (!strcmp(phase, "SEEK"))         return "Stereo matching";
+    if (!strcmp(phase, "SEEK"))         return "Stereo match";
     if (!strcmp(phase, "SAVE"))         return "Saving";
     if (!strcmp(phase, "DONE"))         return "Done";
     return "Starting";
@@ -551,6 +558,7 @@ const char* phaseLabel(const char* phase) {
 // Settings -> Calibration -> Start -> "Start now" lands here: live progress
 // while it runs (from PROGRESS, polled every second), the result afterwards.
 size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
+    // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
     DaughterBoardLink& link = DaughterBoardLink::instance();
     const DaughterStatus&   s  = link.status();
@@ -558,33 +566,33 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     link.requestEnv();
 
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "No reply from the daughter board");
+        addLine(lines, n, maxLines, "No reply from daughter");
         return n;
     }
 
     if (s.calibrating()) {
         bool known = pr.valid && pr.kind[0] && strcmp(pr.kind, "NONE") != 0;
-        addLine(lines, n, maxLines, "Calibrating%s%s%s", known ? " (" : "", known ? pr.kind : "", known ? ")" : "");
+        if (known) addLine(lines, n, maxLines, "Calibrating %s", pr.kind);
+        else       addLine(lines, n, maxLines, "Calibrating");
         if (pr.valid) {
-            if (pr.side[0] && pr.step[0])  addLine(lines, n, maxLines, "%s %s, step %s", phaseLabel(pr.phase), pr.side, pr.step);
-            else if (pr.step[0])           addLine(lines, n, maxLines, "%s %s", phaseLabel(pr.phase), pr.step);
-            else                           addLine(lines, n, maxLines, "%s", phaseLabel(pr.phase));
+            addLine(lines, n, maxLines, "%s%s%s%s%s", phaseLabel(pr.phase),
+                    pr.side[0] ? " " : "", pr.side, pr.step[0] ? " " : "", pr.step);
             int pct = (pr.pct < 0) ? 0 : (pr.pct > 100 ? 100 : pr.pct);
+            constexpr int kBarW = 14;
             char bar[kInfoLineLen];
-            constexpr int kBarW = 26;
             int filled = pct * kBarW / 100;
             bar[0] = '[';
             for (int i = 0; i < kBarW; ++i) bar[1 + i] = (i < filled) ? '#' : '-';
             snprintf(bar + 1 + kBarW, sizeof(bar) - 1 - kBarW, "] %d%%", pct);
             addLine(lines, n, maxLines, "%s", bar);
-            if (pr.etaS >= 0) addLine(lines, n, maxLines, "About %ld min %02ld s left", static_cast<long>(pr.etaS / 60), static_cast<long>(pr.etaS % 60));
+            if (pr.etaS >= 0) addLine(lines, n, maxLines, "%ld min %02ld s left", static_cast<long>(pr.etaS / 60), static_cast<long>(pr.etaS % 60));
         } else {
-            addLine(lines, n, maxLines, "Waiting for progress...");
+            addLine(lines, n, maxLines, "Waiting for progress");
         }
         char t[12];
         formatTenths(t, sizeof(t), s.tempC);
-        addLine(lines, n, maxLines, "Temp %s C, block %s C", t, link.env().valid ? link.env().block : "--");
-        addLine(lines, n, maxLines, "Amp muted while it runs");
+        addLine(lines, n, maxLines, "MCU %s, block %s C", t, link.env().valid ? link.env().block : "--");
+        addLine(lines, n, maxLines, "Amp muted meanwhile");
         return n;
     }
 
@@ -594,31 +602,19 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     }
     if (link.calStart() == DaughterCalStart::REJECTED) {
         addLine(lines, n, maxLines, "Did not start:");
-        const char* p = link.getCalStartError();
-        while (*p && n < maxLines) {
-            char chunk[kInfoLineLen];
-            size_t len = strlen(p) < kInfoLineLen - 3 ? strlen(p) : kInfoLineLen - 3;
-            memcpy(chunk, p, len); chunk[len] = '\0';
-            addLine(lines, n, maxLines, "  %s", chunk);
-            p += len;
-        }
+        addWrapped(lines, n, maxLines, "  ", link.getCalStartError());
         return n;
     }
 
     // Idle: the result of the last calibration.
-    const char* result = calStateText(s.cal);
-    addLine(lines, n, maxLines, "Result:  %s (last: %s)", result, s.lastCal[0] ? s.lastCal : "--");
-    if (s.cal == DaughterCalState::ERR && s.hasErr) {
-        char chunk[kInfoLineLen];
-        size_t len = strlen(s.err) < kInfoLineLen - 3 ? strlen(s.err) : kInfoLineLen - 3;
-        memcpy(chunk, s.err, len); chunk[len] = '\0';
-        addLine(lines, n, maxLines, "  %s", chunk);
-    }
-    if (link.env().valid) addLine(lines, n, maxLines, "Stereo match: %s dB", link.env().match);
+    addLine(lines, n, maxLines, "Result: %s", calStateText(s.cal));
+    if (s.lastCal[0]) addLine(lines, n, maxLines, "Last: %s", s.lastCal);
+    if (s.cal == DaughterCalState::ERR && s.hasErr) addWrapped(lines, n, maxLines, "  ", s.err);
+    if (link.env().valid) addLine(lines, n, maxLines, "Match %s dB", link.env().match);
     char a[12];
     formatTenths(a, sizeof(a), s.rangeDb);
-    addLine(lines, n, maxLines, "Rtotal:  %lu ohm (%s)", static_cast<unsigned long>(s.rOhms), s.rAuto ? "AUTO" : "manual");
-    addLine(lines, n, maxLines, "Range:   %s dB, steps %d-%d", a, s.volMin, s.volMax);
+    addLine(lines, n, maxLines, "R %luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
+    addLine(lines, n, maxLines, "Range %s dB", a);
     return n;
 }
 
@@ -626,25 +622,27 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
 // (rev 9 LEARN) -- how many resyncs it has, how far the block temperature
 // has varied, and the per-side fit against the bar it must clear.
 size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
+    // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.requestLearn();
     const DaughterLearn& l = link.learn();
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "No reply from the daughter board");
+        addLine(lines, n, maxLines, "No reply from daughter");
         return n;
     }
     if (!l.valid) {
         addLine(lines, n, maxLines, "Waiting for data...");
         return n;
     }
-    addLine(lines, n, maxLines, "Compensation: %s", l.comp);
-    addLine(lines, n, maxLines, "Resyncs:  %s (needs %s)", l.n, l.minN);
-    addLine(lines, n, maxLines, "Spread:   %s C (needs %s)", l.spread, l.minSpread);
-    addLine(lines, n, maxLines, "Left:     k %s, R2 %s", l.kL, l.r2L);
-    addLine(lines, n, maxLines, "Right:    k %s, R2 %s", l.kR, l.r2R);
-    addLine(lines, n, maxLines, "Fit used from R2 %s", l.minR2);
-    addLine(lines, n, maxLines, "(k = PWM counts per C of block)");
+    addLine(lines, n, maxLines, "Compensation %s", l.comp);
+    addLine(lines, n, maxLines, "Resyncs %s (need %s)", l.n, l.minN);
+    addLine(lines, n, maxLines, "Spread %s C", l.spread);
+    addLine(lines, n, maxLines, "  (need %s C)", l.minSpread);
+    addLine(lines, n, maxLines, "L: k %s R2 %s", l.kL, l.r2L);
+    addLine(lines, n, maxLines, "R: k %s R2 %s", l.kR, l.r2R);
+    addLine(lines, n, maxLines, "Used from R2 %s", l.minR2);
+    addLine(lines, n, maxLines, "k: counts per C block");
     return n;
 }
 
@@ -662,29 +660,125 @@ const MenuValueOption kForgetOptions[] = {
     { "Everything",  menuAction_ForgetAll,  nullptr },
 };
 
-// "Start" is a two-option confirmation (Cancel is focused by default), since
-// a run takes minutes and holds the amp muted; "Start now" then shows the
-// progress page.
-const MenuValueOption kCalStartOptions[] = {
-    { "Cancel",    nullptr,                     nullptr },
-    { "Start now", menuAction_StartCalibration, nullptr },
-};
-// Settings -> Calibration -> Start: pick Rtotal, then the start item --
-// labelled with the choice -- asks for confirmation and shows the progress.
-const MenuItem kStartSubmenuItems[] = {
-    { "Rtotal",    MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kRTotalEditor },
-    { g_startLabel, MenuItemType::VALUE_CHOICE, nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress },
-};
-constexpr size_t kStartSubmenuItemCount = sizeof(kStartSubmenuItems) / sizeof(kStartSubmenuItems[0]);
+// --- Digit-by-digit number editors ---------------------------------------------
+// One editor field per decimal digit (most significant first): Up/Down change
+// the focused digit, Right moves on -- quick even for six-digit values.
+void splitDigits(uint32_t v, int16_t* f, uint8_t n) {
+    for (int8_t i = static_cast<int8_t>(n) - 1; i >= 0; --i) { f[i] = static_cast<int16_t>(v % 10); v /= 10; }
+}
+uint32_t joinDigits(const int16_t* f, uint8_t n) {
+    uint32_t v = 0;
+    for (uint8_t i = 0; i < n; ++i) v = v * 10 + static_cast<uint32_t>(f[i]);
+    return v;
+}
+void limitsDigit(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) { *lo = 0; *hi = 9; }
 
-const MenuItem kCalibrationSubmenuItems[] = {
-    { "Start",       MenuItemType::SUBMENU,      nullptr, nullptr, 0, kStartSubmenuItems, kStartSubmenuItemCount },
-    { "Progress",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
-    { "Status",      MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
-    { "Learning",    MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
-    { "Forget",      MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
+// --- Settings -> Calibration -> Model (rev 12) ------------------------------------
+// The audio model the steps are solved for: the source's output impedance
+// (the splitter -- about 300 ohm for the JFET splitter, 47 for an op-amp one)
+// and the load after the attenuator (the amplifier input; 0 = unloaded).
+// Each editor opens on the daughter's MODEL value; confirming offers Cancel /
+// Apply, since applying a different value makes the daughter CAL=STALE
+// (volume muted) until a calibration re-solves -- quick, no full scan.
+
+uint32_t g_editSrc  = 0;
+uint32_t g_editLoad = 0;
+
+void describeOhms(char* out, size_t outSize, int32_t ohms, bool zeroIsUnloaded) {
+    DaughterBoardLink::instance().requestModel();
+    if (ohms < 0)                         snprintf(out, outSize, "--");
+    else if (ohms == 0 && zeroIsUnloaded) snprintf(out, outSize, "unloaded");
+    else                                  snprintf(out, outSize, "%ld ohm", static_cast<long>(ohms));
+}
+
+bool loadSrc(int16_t* v) {
+    const DaughterModel& m = DaughterBoardLink::instance().model();
+    DaughterBoardLink::instance().requestModel();
+    if (!m.valid || m.src < 0 || DaughterBoardLink::instance().status().busy) return false;
+    splitDigits(static_cast<uint32_t>(m.src > 9999 ? 9999 : m.src), v, 4);
+    return true;
+}
+bool saveSrc(const int16_t* v) { g_editSrc = joinDigits(v, 4); return true; }
+void describeSrc(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink::instance().model().src, false); }
+
+bool loadLoad(int16_t* v) {
+    const DaughterModel& m = DaughterBoardLink::instance().model();
+    DaughterBoardLink::instance().requestModel();
+    if (!m.valid || m.load < 0 || DaughterBoardLink::instance().status().busy) return false;
+    splitDigits(static_cast<uint32_t>(m.load > 999999 ? 999999 : m.load), v, 6);
+    return true;
+}
+bool saveLoad(const int16_t* v) {
+    g_editLoad = joinDigits(v, 6);
+    if (g_editLoad > 0 && g_editLoad < 1000) g_editLoad = 1000; // the daughter takes 0 (unloaded) or 1000 and up
+    return true;
+}
+void describeLoad(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink::instance().model().load, true); }
+
+void menuAction_ApplySrc() {
+    if (static_cast<int32_t>(g_editSrc) == DaughterBoardLink::instance().model().src) return; // unchanged
+    VolumeControl::instance().setModelSource(g_editSrc);
+    Serial.printf("[Menu] Source impedance -> %lu ohm\n", static_cast<unsigned long>(g_editSrc));
+}
+void menuAction_ApplyLoad() {
+    if (static_cast<int32_t>(g_editLoad) == DaughterBoardLink::instance().model().load) return;
+    VolumeControl::instance().setModelLoad(g_editLoad);
+    Serial.printf("[Menu] Load impedance -> %lu ohm\n", static_cast<unsigned long>(g_editLoad));
+}
+
+const MenuEditor kSrcEditor  = { 4, {1, 1, 1, 1},       '\0', loadSrc,  limitsDigit, saveSrc,  nullptr, describeSrc  };
+const MenuEditor kLoadEditor = { 6, {1, 1, 1, 1, 1, 1}, '\0', loadLoad, limitsDigit, saveLoad, nullptr, describeLoad };
+
+const MenuValueOption kApplySrcOptions[]  = { { "Cancel", nullptr, nullptr }, { "Apply", menuAction_ApplySrc,  nullptr } };
+const MenuValueOption kApplyLoadOptions[] = { { "Cancel", nullptr, nullptr }, { "Apply", menuAction_ApplyLoad, nullptr } };
+
+// Model -> Overview: in use vs solved, and whether a re-solve is needed.
+size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.requestModel();
+    const DaughterModel&  m = link.model();
+    const DaughterStatus& s = link.status();
+    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!m.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
+    auto ohms = [](char* b, size_t sz, int32_t v, bool unl) {
+        if (v < 0) snprintf(b, sz, "--"); else if (v == 0 && unl) snprintf(b, sz, "unloaded"); else snprintf(b, sz, "%ld", static_cast<long>(v));
+    };
+    char a[16], b[16];
+    ohms(a, sizeof a, m.src, false);  addLine(lines, n, maxLines, "Source %s ohm", a);
+    ohms(a, sizeof a, m.load, true);  addLine(lines, n, maxLines, m.load == 0 ? "Load %s" : "Load %s ohm", a);
+    ohms(a, sizeof a, m.solvedSrc, false); ohms(b, sizeof b, m.solvedLoad, true);
+    addLine(lines, n, maxLines, "Solved: src %s", a);
+    addLine(lines, n, maxLines, "  load %s", b);
+    addLine(lines, n, maxLines, "Cal: %s", calStateText(s.cal));
+    if (s.cal == DaughterCalState::STALE) addLine(lines, n, maxLines, "Calibrate to re-solve");
+    return n;
+}
+
+const MenuItem kModelSubmenuItems[] = {
+    { "Source",   MenuItemType::EDITOR, nullptr, kApplySrcOptions,  2, nullptr, 0, fillModelInfo, &kSrcEditor  },
+    { "Load",     MenuItemType::EDITOR, nullptr, kApplyLoadOptions, 2, nullptr, 0, fillModelInfo, &kLoadEditor },
+    { "Overview", MenuItemType::INFO,   nullptr, nullptr, 0, nullptr, 0, fillModelInfo },
 };
-constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
+constexpr size_t kModelSubmenuItemCount = sizeof(kModelSubmenuItems) / sizeof(kModelSubmenuItems[0]);
+
+// Offered right after the Rtotal selector is confirmed: Cancel (focused)
+// or start -- the second label names the Rtotal, then the progress page.
+const MenuValueOption kCalStartOptions[] = {
+    { "Cancel",     nullptr,                     nullptr },
+    { g_startLabel, menuAction_StartCalibration, nullptr },
+};
+// Settings -> Calibration. "Rtotal" shows the daughter's current Rtotal;
+// entering it opens the selector on that value, confirming offers Cancel /
+// Start R=..., and Start shows the progress page.
+const MenuItem kCalibrationSubmenuItems[] = {
+    { "Rtotal",   MenuItemType::EDITOR,       nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress, &kRTotalEditor },
+    { "Model",    MenuItemType::SUBMENU,      nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount },
+    { "Progress", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
+    { "Status",   MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
+    { "Learning", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
+    { "Forget",   MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
+};constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
 
 // --- Settings -> Diagnostics ---
 // The action only raises a request; main.cpp closes the menu and runs the
@@ -692,8 +786,34 @@ constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems)
 // screen state).
 void menuAction_DisplayTest() { DisplayTestScreen::requestStart(); }
 
+// Amp Mute: the daughter's AMP_MUTE, by hand. The power sequence drives it
+// too (muted in standby, released at the end of power-on), so this is for
+// checks while the unit is on.
+void menuSet_AmpMuteOn()  { VolumeControl::instance().ampMuteOn();  Serial.println("[Menu] AMP_MUTE ON"); }
+void menuSet_AmpMuteOff() { VolumeControl::instance().ampMuteOff(); Serial.println("[Menu] AMP_MUTE OFF"); }
+bool menuIsActive_AmpMuteOn()  { return VolumeControl::instance().isAmpMuted(); }
+bool menuIsActive_AmpMuteOff() { return !VolumeControl::instance().isAmpMuted(); }
+const MenuValueOption kAmpMuteOptions[] = {
+    { "On",  menuSet_AmpMuteOn,  menuIsActive_AmpMuteOn  },
+    { "Off", menuSet_AmpMuteOff, menuIsActive_AmpMuteOff },
+};
+
+// Compensation: the daughter's thermal compensation (COMP ON/OFF), e.g. for
+// an A/B listen. The daughter doesn't store it -- it boots ON. Shown from
+// ENV's COMP (ON / PART / LEARNING count as on), polled while the menu reads it.
+void menuSet_CompOn()  { VolumeControl::instance().setCompensation(true);  Serial.println("[Menu] COMP ON"); }
+void menuSet_CompOff() { VolumeControl::instance().setCompensation(false); Serial.println("[Menu] COMP OFF"); }
+bool menuIsActive_CompOn()  { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 1; }
+bool menuIsActive_CompOff() { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 0; }
+const MenuValueOption kCompOptions[] = {
+    { "On",  menuSet_CompOn,  menuIsActive_CompOn  },
+    { "Off", menuSet_CompOff, menuIsActive_CompOff },
+};
+
 const MenuItem kDiagnosticsSubmenuItems[] = {
-    { "Display Test", MenuItemType::ACTION, menuAction_DisplayTest, nullptr, 0 },
+    { "Amp Mute",     MenuItemType::VALUE_CHOICE, nullptr, kAmpMuteOptions, 2 },
+    { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2 },
+    { "Display Test", MenuItemType::ACTION,       menuAction_DisplayTest, nullptr, 0 },
 };
 constexpr size_t kDiagnosticsSubmenuItemCount = sizeof(kDiagnosticsSubmenuItems) / sizeof(kDiagnosticsSubmenuItems[0]);
 
@@ -710,8 +830,67 @@ const MenuValueOption kStandbyDisplayOptions[] = {
     { "Dim Clock", menuSet_StandbyDim,   menuIsActive_StandbyDim   },
     { "Off",       menuSet_StandbyOff,   menuIsActive_StandbyOff   },
 };
+// Auto standby: minutes of silence (nothing on the audio inputs) before the
+// unit switches to standby by itself; 0 = off. One editor field, OFF then
+// 1..60 minutes.
+bool loadAutoStandby(int16_t* v) { v[0] = DisplaySettings::instance().getAutoStandbyMinutes(); return true; }
+void limitsAutoStandby(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) { *lo = 0; *hi = 60; }
+void formatAutoStandby(const int16_t* v, uint8_t, char* out, size_t outSize) {
+    if (v[0] == 0) snprintf(out, outSize, "   OFF");
+    else           snprintf(out, outSize, "%2d min", static_cast<int>(v[0]));
+}
+bool saveAutoStandby(const int16_t* v) {
+    DisplaySettings::instance().setAutoStandbyMinutes(static_cast<uint8_t>(v[0]));
+    PersistentSettings::instance().markDirty();
+    if (v[0]) Serial.printf("[Menu] Auto standby after %d min of silence\n", static_cast<int>(v[0]));
+    else      Serial.println("[Menu] Auto standby off");
+    return true;
+}
+const MenuEditor kAutoStandbyEditor = { 1, {6}, ' ', loadAutoStandby, limitsAutoStandby, saveAutoStandby, formatAutoStandby };
+
+// Silence Level: the input peak (ADC counts, 12-bit, DC removed) above which
+// the inputs count as playing. Three digits; 1 count is about 0.8 mV at the ADC.
+bool loadSilence(int16_t* v) { splitDigits(DisplaySettings::instance().getAutoStandbyThreshold(), v, 3); return true; }
+bool saveSilence(const int16_t* v) {
+    uint32_t t = joinDigits(v, 3);
+    if (t < 1) t = 1;
+    DisplaySettings::instance().setAutoStandbyThreshold(static_cast<uint16_t>(t));
+    PersistentSettings::instance().markDirty();
+    Serial.printf("[Menu] Silence level %lu counts\n", static_cast<unsigned long>(t));
+    return true;
+}
+void describeSilence(char* out, size_t n) {
+    uint16_t t = DisplaySettings::instance().getAutoStandbyThreshold();
+    snprintf(out, n, "%u (%u mV)", t, static_cast<unsigned>((t * 3300u + 2048u) / 4096u));
+}
+const MenuEditor kSilenceEditor = { 3, {1, 1, 1}, '\0', loadSilence, limitsDigit, saveSilence, nullptr, describeSilence };
+
+// Input Level: the live input peak against the threshold, and the timer --
+// for setting the Silence Level by watching it.
+size_t fillInputLevel(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    const AutoStandby& as = AutoStandby::instance();
+    uint16_t t = DisplaySettings::instance().getAutoStandbyThreshold();
+    addLine(lines, n, maxLines, "Peak now  %d", as.peak());
+    addLine(lines, n, maxLines, "Threshold %u", t);
+    addLine(lines, n, maxLines, "Input: %s", as.playing() ? "PLAYING" : "silent");
+    uint8_t minutes = DisplaySettings::instance().getAutoStandbyMinutes();
+    if (minutes == 0) {
+        addLine(lines, n, maxLines, "Auto standby off");
+    } else if (as.counting()) {
+        uint32_t left = static_cast<uint32_t>(minutes) * 60u - as.idleMs() / 1000u;
+        addLine(lines, n, maxLines, "Standby in %lu:%02lu", static_cast<unsigned long>(left / 60), static_cast<unsigned long>(left % 60));
+    } else {
+        addLine(lines, n, maxLines, "Timer reset (active)");
+    }
+    return n;
+}
+
 const MenuItem kPowerSubmenuItems[] = {
     { "Standby Display", MenuItemType::VALUE_CHOICE, nullptr, kStandbyDisplayOptions, 3 },
+    { "Auto Standby",    MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kAutoStandbyEditor },
+    { "Silence Level",   MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kSilenceEditor },
+    { "Input Level",     MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillInputLevel },
 };
 constexpr size_t kPowerSubmenuItemCount = sizeof(kPowerSubmenuItems) / sizeof(kPowerSubmenuItems[0]);
 

@@ -1,6 +1,5 @@
 #include "ClockScreen.hpp"
 #include "Renderer.hpp"
-#include "ColorTheme.hpp"
 #include "DisplaySettings.hpp"
 #include <cstdio>
 #include <cstring>
@@ -15,11 +14,12 @@ constexpr uint8_t kDigitMask[10] = {
 constexpr uint8_t kMaskBlank = 0x00;
 constexpr uint8_t kMaskDash  = 0x40; // just the middle segment
 
-constexpr int16_t  kMargin    = 8;
+constexpr int16_t  kMargin    = 8;   // left/right
+constexpr int16_t  kMarginV   = 4;   // top/bottom -- the digits use (nearly) the full height
+constexpr int16_t  kDateGap   = 12;  // between the digits and the date column
 constexpr uint8_t  kSmallSize = 2;   // date line / AM-PM text: 12x16 px characters
 constexpr int16_t  kSmallH    = 16;
 constexpr int16_t  kAmPmW     = 2 * 6 * kSmallSize + 4;
-constexpr uint16_t kColorDate = 0x8410; // gray
 
 const char* const kWeekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 const char* const kMonths[]   = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -37,27 +37,48 @@ uint16_t dim565(uint16_t c) {
 
 void ClockScreen::layout() {
     const DisplaySettings& ds = DisplaySettings::instance();
-    m_showDate    = ds.getClockShowDate();
-    m_showSeconds = ds.getClockShowSeconds();
-    m_24h         = ds.getClock24h();
+    m_mode = ds.getClockMode();
+    m_24h  = ds.getClock24h();
 
-    m_digitCount = m_showSeconds ? 6 : 4;
-    m_colonCount = m_showSeconds ? 2 : 1;
+    bool seconds = (m_mode == ClockMode::SECONDS);
+    m_digitCount = seconds ? 6 : 4;
+    m_colonCount = seconds ? 2 : 1;
     uint8_t pairs = m_digitCount / 2;
 
-    int16_t dateBand = m_showDate ? (kSmallH + kMargin) : 0;
-    int16_t availH   = SCREEN_HEIGHT - 2 * kMargin - dateBand;
-    int16_t maxW     = SCREEN_WIDTH - 2 * kMargin - (m_24h ? 0 : kAmPmW);
-
-    // Proportions of a classic LED digit, then shrunk to fit if too wide.
-    float h = static_cast<float>(availH);
-    auto totalWidth = [&](float hh) {
+    // The digits always get the full height; only the width is shared.
+    const int16_t availH = SCREEN_HEIGHT - 2 * kMarginV;
+    auto widthFor = [&](float hh) {
         float w = hh * 0.52f, seg = w * 0.17f, gap = w * 0.16f;
         return m_digitCount * w + pairs * gap + m_colonCount * seg * 3.0f;
     };
-    float tw = totalWidth(h);
-    if (tw > maxW) h *= static_cast<float>(maxW) / tw;
+    auto heightFitting = [&](int16_t maxW) {
+        float h  = static_cast<float>(availH);
+        float tw = widthFor(h);
+        if (tw > maxW) h *= static_cast<float>(maxW) / tw;
+        return h;
+    };
 
+    int16_t ampm   = m_24h ? 0 : kAmPmW;
+    int16_t maxW   = SCREEN_WIDTH - 2 * kMargin - ampm;
+    m_dateSize = 0;
+    m_dateW    = 0;
+    if (m_mode == ClockMode::DATE) {
+        // Biggest date text (4 characters wide, 4 rows tall) that leaves the
+        // digits at least ~85% of the full height.
+        for (uint8_t sz = 4; sz >= 2; --sz) {
+            int16_t colW = 4 * 6 * sz;
+            if (4 * 8 * sz > availH) continue;
+            float h = heightFitting(maxW - colW - kDateGap);
+            if (h >= availH * 0.85f || sz == 2) {
+                m_dateSize = sz;
+                m_dateW    = colW;
+                break;
+            }
+        }
+        maxW -= m_dateW + kDateGap;
+    }
+
+    float h  = heightFitting(maxW);
     m_digitH = static_cast<int16_t>(h);
     m_digitW = static_cast<int16_t>(h * 0.52f);
     m_seg    = static_cast<int16_t>(m_digitW * 0.17f);
@@ -66,8 +87,10 @@ void ClockScreen::layout() {
     int16_t colonW = m_seg * 3;
     int16_t total  = m_digitCount * m_digitW + pairs * gap + m_colonCount * colonW;
 
-    int16_t x = (SCREEN_WIDTH - total - (m_24h ? 0 : kAmPmW)) / 2;
-    m_digitY  = kMargin + (availH - m_digitH) / 2;
+    // Digits centred in what's left of the width (and AM/PM after them).
+    int16_t areaW = SCREEN_WIDTH - 2 * kMargin - (m_dateW ? m_dateW + kDateGap : 0);
+    int16_t x     = kMargin + (areaW - total - ampm) / 2;
+    m_digitY      = kMarginV + (availH - m_digitH) / 2;
 
     for (uint8_t p = 0; p < pairs; ++p) {
         m_digitX[2 * p] = x;
@@ -79,9 +102,14 @@ void ClockScreen::layout() {
             x += colonW;
         }
     }
-    m_dateY = SCREEN_HEIGHT - kMargin - kSmallH;
 
-    m_onColor    = ColorTheme::instance().lowColor();
+    if (m_dateW) {
+        m_dateX    = SCREEN_WIDTH - kMargin - m_dateW;
+        m_dateRowH = static_cast<int16_t>(availH / 4);
+        m_dateTop  = kMarginV + (availH - 4 * m_dateRowH) / 2;
+    }
+
+    m_onColor    = ds.getClockColor();
     m_ghostColor = dim565(m_onColor);
 }
 
@@ -148,22 +176,28 @@ void ClockScreen::drawColons(bool on, bool force) {
     m_drawnColon = static_cast<int8_t>(on);
 }
 
-void ClockScreen::drawDateLine(const RtcDateTime& t) {
+// DATE mode: weekday, day, month and year stacked in the right-hand column.
+void ClockScreen::drawDateColumn(const RtcDateTime& t) {
     uint16_t key = static_cast<uint16_t>(t.day | (t.month << 5) | ((t.year - 2000) << 9));
     if (key == m_drawnDateKey) return;
     m_drawnDateKey = key;
 
-    char line[24];
-    snprintf(line, sizeof(line), "%s %u %s %u", kWeekdays[RtcClock::weekday(t)],
-             static_cast<unsigned>(t.day), kMonths[(t.month - 1) % 12], static_cast<unsigned>(t.year));
+    char rows[4][8];
+    snprintf(rows[0], sizeof(rows[0]), "%s", kWeekdays[RtcClock::weekday(t)]);
+    snprintf(rows[1], sizeof(rows[1]), "%u", static_cast<unsigned>(t.day));
+    snprintf(rows[2], sizeof(rows[2]), "%s", kMonths[(t.month - 1) % 12]);
+    snprintf(rows[3], sizeof(rows[3]), "%u", static_cast<unsigned>(t.year));
 
     Arduino_GFX* gfx = Renderer::instance().gfx();
-    gfx->fillRect(0, m_dateY, SCREEN_WIDTH, kSmallH, COLOR_BLACK);
-    int16_t w = static_cast<int16_t>(strlen(line)) * 6 * kSmallSize;
-    gfx->setTextSize(kSmallSize);
-    gfx->setTextColor(kColorDate, COLOR_BLACK);
-    gfx->setCursor((SCREEN_WIDTH - w) / 2, m_dateY);
-    gfx->print(line);
+    gfx->fillRect(m_dateX, m_dateTop, m_dateW, 4 * m_dateRowH, COLOR_BLACK);
+    gfx->setTextSize(m_dateSize);
+    gfx->setTextColor(m_onColor, COLOR_BLACK);
+    int16_t textH = 8 * m_dateSize;
+    for (uint8_t r = 0; r < 4; ++r) {
+        int16_t w = static_cast<int16_t>(strlen(rows[r])) * 6 * m_dateSize;
+        gfx->setCursor(m_dateX + (m_dateW - w) / 2, m_dateTop + r * m_dateRowH + (m_dateRowH - textH) / 2);
+        gfx->print(rows[r]);
+    }
 }
 
 void ClockScreen::onEnter() {
@@ -203,7 +237,7 @@ void ClockScreen::render() {
             int16_t w = static_cast<int16_t>(strlen(msg)) * 6 * kSmallSize;
             gfx->setTextSize(kSmallSize);
             gfx->setTextColor(COLOR_RED, COLOR_BLACK);
-            gfx->setCursor((SCREEN_WIDTH - w) / 2, m_dateY);
+            gfx->setCursor((SCREEN_WIDTH - w) / 2, SCREEN_HEIGHT - kSmallH - 2);
             gfx->print(msg);
             m_noClockShown = true;
             m_drawnDateKey = 0xFFFF;
@@ -233,7 +267,7 @@ void ClockScreen::render() {
     for (uint8_t i = 0; i < m_digitCount; ++i) drawDigit(i, masks[i], false);
 
     // Colon steady with seconds shown; blinking (on for even seconds) without.
-    drawColons(m_showSeconds || (m_now.second % 2 == 0), false);
+    drawColons(m_mode == ClockMode::SECONDS || (m_now.second % 2 == 0), false);
 
     if (!m_24h && static_cast<int8_t>(pm) != m_drawnPm) {
         m_drawnPm = static_cast<int8_t>(pm);
@@ -244,5 +278,5 @@ void ClockScreen::render() {
         gfx->print(pm ? "PM" : "AM");
     }
 
-    if (m_showDate) drawDateLine(m_now);
+    if (m_dateW) drawDateColumn(m_now);
 }

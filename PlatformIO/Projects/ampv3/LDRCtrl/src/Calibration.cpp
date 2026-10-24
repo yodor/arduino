@@ -1,4 +1,5 @@
 #include "Calibration.hpp"
+#include "AudioModel.hpp"
 #include "Config.hpp"
 #include "DividerMath.hpp"
 #include <math.h>
@@ -98,7 +99,7 @@ uint8_t VolumeLut::solve(const LdrCurve &seriesCurve, const LdrCurve &shuntCurve
   if (numSteps > MAX_STEPS) numSteps = MAX_STEPS;
   numSteps_ = numSteps;
   uint8_t validCount = 0;
-  const DividerMath::Load kLoad{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+  const DividerMath::Load kLoad = AudioModel::load();
 
   for (uint8_t i = 0; i < numSteps; i++) {
     float attenDb = (numSteps <= 1)
@@ -158,7 +159,7 @@ void VolumeLut::setTransparentTop(const LdrCurve &seriesCurve) {
     rs = seriesCurve.point(lo).ohms;
     fine = (uint32_t)seriesCurve.point(lo).duty * PWM_DITHER_LEVELS;
   }
-  const DividerMath::Load kLoad{AUDIO_SOURCE_OHMS, AMP_INPUT_LOAD_OHMS};
+  const DividerMath::Load kLoad = AudioModel::load();
   Entry &e = entries_[numSteps_ - 1];
   e.seriesFine = fine;
   e.shuntFine = 0;                  // shunt LED off

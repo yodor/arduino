@@ -26,7 +26,7 @@ inline uint16_t nominal(Kind k, Phase p) {
   switch (k) {
     case Kind::FULL:
       switch (p) { case Phase::SWEEP_SERIES: return 80; case Phase::SWEEP_SHUNT: return 80;
-                   case Phase::WALK: return 60; case Phase::SOLVE: return 3; case Phase::TRIM: return 45;
+                   case Phase::WALK: return 60; case Phase::SOLVE: return 3; case Phase::TRIM: return 25;
                    case Phase::HOLD: return 40; case Phase::SEEK: return 30; case Phase::SAVE: return 5;
                    default: return 0; }
     case Kind::RESOLVE:
@@ -34,7 +34,7 @@ inline uint16_t nominal(Kind k, Phase p) {
       // fall through: otherwise a resync
     case Kind::RESYNC:
     case Kind::NONE:
-      switch (p) { case Phase::CHECK: return 8; case Phase::TRIM: return 40; case Phase::HOLD: return 40;
+      switch (p) { case Phase::CHECK: return 8; case Phase::TRIM: return 22; case Phase::HOLD: return 40;
                    case Phase::SEEK: return 25; case Phase::SAVE: return 4; default: return 0; }
   }
   return 0;

@@ -93,4 +93,9 @@ void forgetCompensation();
 enum class CalNeed : uint8_t { NONE, NO_CAL, CHANGED, STALE };
 CalNeed calNeed();
 const char *calNeedName();               // "OK", "NONE", "CHANGED", "STALE"
+// SET SRC / SET LOAD changed the audio model: mark a calibration solved for other values
+// STALE (LDR mute on, volume refused until CAL); setting the solved values back undoes it.
+void onModelChanged(LDRVolume &left, LDRVolume &right);
+// The model the stored calibration was solved with ("/model.txt"); false if unknown.
+bool solvedModel(float &src, float &load);
 } // namespace DualCalibration

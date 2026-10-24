@@ -5,6 +5,7 @@
 #include "Relay.hpp"
 #include "LdrSensor.hpp"
 #include "Calibration.hpp"
+#include "QuietSeek.hpp"
 #include "DarkProfile.hpp"
 #include "CellCheck.hpp"
 #include "CalStorage.hpp"
@@ -193,6 +194,61 @@ public:
   void refreshTransparentTop() { cal_.refreshTransparentTop(); }
   // See VolumeLut::applyQuietSeek; the settled part starts at this cell's shallowest
   // settled dark-end point.
+  // Shunt guard: the shunt's target resistance RISES from step to step, so no step's shunt
+  // duty may be BRIGHTER (higher) than the previous step's. A trim that ended brighter (a
+  // lagging reading in the cell's steep dark region) is held at the previous step's duty.
+  // Only this direction: a shunt slightly too dark at the loud end is masked by the amp's
+  // input, one too bright costs dB. Returns how many steps were corrected; prints each.
+  uint8_t guardShunt(Stream &out, char label) {
+    if (!hasLut()) return 0;
+    constexpr uint8_t MAXS = 64;
+    const uint8_t n = numSteps() < MAXS ? numSteps() : MAXS;
+    uint32_t sh[MAXS]; bool use[MAXS];
+    for (uint8_t i = 0; i < n; i++) {
+      const VolumeLut::Entry &e = lut().step(i);
+      use[i] = e.valid && !lut().isTransparent(i);
+      sh[i] = e.shuntFine;
+    }
+    const uint8_t fixed = QuietSeek::guardShunt(sh, use, n);
+    const float L = (float)DriverChannels::FINE_PER_COUNT;
+    for (uint8_t i = 0; i < n; i++) {
+      const VolumeLut::Entry &e = lut().step(i);
+      if (!use[i] || sh[i] == e.shuntFine) continue;
+      out.print(F("  guard ")); out.print(label); out.print(F(" step ")); out.print(i);
+      out.print(F(": shuntDuty ")); out.print(e.shuntFine / L, 2);
+      out.print(F(" brighter than the step below -> ")); out.println(sh[i] / L, 2);
+      cal_.setLutStepDuty(i, e.seriesFine, sh[i]);
+    }
+    return fixed;
+  }
+
+  // Series guard (QuietSeek::guardSeries): no step's series darker than the step below it; a
+  // violating step gets curve + the step below's offset from the curve. Prints each change.
+  uint8_t guardSeries(Stream &out, char label) {
+    if (!hasLut()) return 0;
+    constexpr uint8_t MAXS = 64;
+    const uint8_t n = numSteps() < MAXS ? numSteps() : MAXS;
+    uint32_t se[MAXS], cv[MAXS]; bool use[MAXS];
+    for (uint8_t i = 0; i < n; i++) {
+      const VolumeLut::Entry &e = lut().step(i);
+      use[i] = e.valid && !lut().isTransparent(i);
+      se[i] = e.seriesFine;
+      uint32_t f = 0;
+      cv[i] = (use[i] && cal_.seriesCurve().dutyForResistanceFine(e.targetRs, f)) ? f : 0;
+    }
+    const uint8_t fixed = QuietSeek::guardSeries(se, use, cv, n);
+    const float L = (float)DriverChannels::FINE_PER_COUNT;
+    for (uint8_t i = 0; i < n; i++) {
+      const VolumeLut::Entry &e = lut().step(i);
+      if (!use[i] || se[i] == e.seriesFine) continue;
+      out.print(F("  guard ")); out.print(label); out.print(F(" step ")); out.print(i);
+      out.print(F(": seriesDuty ")); out.print(e.seriesFine / L, 2);
+      out.print(F(" darker than the step below -> ")); out.println(se[i] / L, 2);
+      cal_.setLutStepDuty(i, se[i], e.shuntFine);
+    }
+    return fixed;
+  }
+
   uint8_t applyQuietSeek(uint32_t oldFine, uint32_t newFine) {
     const float from = profile_.okCount() ? profile_.shallowestOkOhms() : 1e30f;
     return cal_.applyQuietSeek(oldFine, newFine, from);
@@ -214,10 +270,12 @@ public:
   float computeMaxRangeDb(float marginDb) const;
 
 
-  // The trim loop on its own: ASSUMES the relay is already energized and
-  // never touches it. Updates the LUT in RAM only (no save); DualCalibration
-  // (characterize / touchUp) handles the relay and the save.
-  void trimLoop(Stream &out);
+  // The trim of every step, for all the given channels IN LOCKSTEP: they share every wait
+  // (the pre-settle, and each search probe's convergence polling) while each keeps its own
+  // search, tolerance and probe limit. ASSUMES the relays are already energized and never
+  // touches them. Updates the LUTs in RAM only (no save); DualCalibration handles the relay
+  // and the save. labels[c] names channel c in the log (may be null).
+  static void trimLoopBoth(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels);
 
   // Puts this channel's PWM on its current step (or on the lowest valid
   // step if the current one isn't valid) -- or, if the LDR mute is engaged,
@@ -297,22 +355,6 @@ private:
 
   void applyDuties(uint32_t seriesFine, uint32_t shuntFine);   // FINE units
 
-  // Polls adcRead() until two consecutive readings of the channel being
-  // swept (series if wantSeries, else shunt) agree within 1%, or
-  // timeoutMs elapses. Returns the last reading (>0), or -1.0f if no
-  // valid reading was ever obtained. elapsedOut reports how long it took.
-  float convergeRead(bool wantSeries, unsigned long timeoutMs, unsigned long &elapsedOut);
-
-  // One resistor's verify+trim: a secant search on LIVE measurements --
-  // it never consults the characterized curve (a sparse curve can be
-  // wildly wrong between its points, and trusting it is exactly how a
-  // nudge once overshot by ~100 counts). Probes dutyGuess, then uses the
-  // measured slope between successive probes to aim at the target,
-  // stopping within toleranceFrac or after maxProbes. Always returns the
-  // BEST duty seen, never merely the last one tried (dutyGuess if
-  // nothing was ever readable).
-  // One step's trim: secant search in FINE units (TrimSearch.hpp) seeded with the
-  // curve's own local slope, driving the PWM between counts via the dither engine.
-  uint32_t trimFine(bool wantSeries, float targetOhms, uint32_t guessFine,
-                    uint8_t maxProbes, float toleranceFrac);
+  // One reading of the series (wantSeries) or shunt resistance; false if unreadable.
+  bool readElement(bool wantSeries, float &ohms);
 };

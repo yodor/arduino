@@ -19,16 +19,31 @@ enum class MenuItemType : uint8_t {
     VALUE_CHOICE, // drilling in shows `options`; selecting one applies it and returns to the current list
     SUBMENU,      // drilling in shows `submenuItems`, a whole separate MenuItem list one level deeper
     INFO,         // drilling in shows a read-only text page filled by `fillInfo`, refreshed live while open
-    EDITOR        // drilling in shows a row of numeric fields (`editor`) to adjust and save, e.g. a date or a time
+    EDITOR,       // drilling in shows a row of numeric fields (`editor`) to adjust and save, e.g. a date or a time;
+                  // if the item also has `options`, they're offered right after the save (e.g. Cancel / Start),
+                  // and an option with an action then opens `fillInfo`'s page, as for VALUE_CHOICE
+    COLOR         // drilling in shows the color chooser (`color`): a spectrum bar to pick from, Right sets it
 };
 
-// INFO pages: up to kInfoMaxLines lines of up to kInfoLineLen-1 characters
-// (35 fit across the panel at the info page's text size). fillInfo writes
+// COLOR items: the chooser offers kMenuPaletteSize colors -- the hue circle at
+// full brightness, then white -- across the panel; it opens on the palette
+// color nearest the current one.
+constexpr uint8_t kMenuPaletteSize = 61;
+uint16_t menuPaletteColor(uint8_t index);           // RGB565 of a palette entry (MenuScreen.cpp)
+struct MenuColor {
+    uint16_t (*get)();          // the current color (RGB565)
+    void     (*set)(uint16_t);  // apply the chosen one
+};
+
+// INFO pages: up to kInfoMaxLines lines of up to kInfoLineLen-1 characters.
+// They're shown large (3 rows at a time), where only kInfoCols characters fit
+// across the panel -- longer lines are clipped, so keep them to that. fillInfo writes
 // the lines and returns how many it used; it's called again every
 // kInfoRefreshMs while the page is open, and the page only redraws when the
 // text actually changed.
-constexpr size_t   kInfoMaxLines  = 16;
+constexpr size_t   kInfoMaxLines  = 24;
 constexpr size_t   kInfoLineLen   = 36;
+constexpr size_t   kInfoCols      = 23;
 constexpr uint32_t kInfoRefreshMs = 500;
 using MenuInfoFill = size_t (*)(char (*lines)[kInfoLineLen], size_t maxLines);
 
@@ -41,7 +56,7 @@ constexpr uint8_t kEditorMaxFields = 6;
 struct MenuEditor {
     uint8_t fieldCount;
     uint8_t digits[kEditorMaxFields];
-    char    separator;
+    char    separator;  // drawn between fields; '\0' = none (e.g. a number edited one digit per field)
     // Fills the starting values; false = nothing to edit (the page won't open).
     bool (*load)(int16_t* values);
     // Valid range of one field -- may depend on the others (day vs. month).
@@ -52,6 +67,9 @@ struct MenuEditor {
     // "AUTO" / "650K"). Must always produce exactly digits[field] characters
     // so the row keeps its layout; nullptr = plain number.
     void (*format)(const int16_t* values, uint8_t field, char* out, size_t outSize) = nullptr;
+    // Optional: the text under the item in the list (default: the current
+    // value as the editor would show it).
+    void (*describe)(char* out, size_t outSize) = nullptr;
 };
 
 struct MenuValueOption {
@@ -72,7 +90,10 @@ struct MenuItem {
     const MenuItem* submenuItems = nullptr; // SUBMENU only
     size_t          submenuCount = 0;       // SUBMENU only
 
-    MenuInfoFill    fillInfo     = nullptr; // INFO; or a VALUE_CHOICE's page shown after an option with an action is picked
+    MenuInfoFill    fillInfo     = nullptr; // INFO; or the page shown after a VALUE_CHOICE/EDITOR option with an action
+                                            // is picked -- and, for an EDITOR, instead of the editor when it can't open
 
     const MenuEditor* editor     = nullptr; // EDITOR only
+
+    const MenuColor*  color      = nullptr; // COLOR only
 };
