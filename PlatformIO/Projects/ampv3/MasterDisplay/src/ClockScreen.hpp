@@ -6,8 +6,8 @@
 
 // Big seven-segment clock from the DS3231 (RtcClock), laid out in onEnter()
 // from Settings -> Clock: Display = Clock only (HH:MM), Seconds (HH:MM:SS) or
-// Date (HH:MM plus a four-row date column on the right: weekday, day, month,
-// year, in the largest text that fits). The digits always use (nearly) the
+// Date (HH:MM plus a date column on the right: the weekday over the day of
+// the month, large and bold in white -- set apart from the clock colour). The digits always use (nearly) the
 // full panel height; 12-hour mode adds AM/PM after them.
 //
 // Unlit segments are drawn as a faint "ghost" of the lit color, like a real
@@ -37,10 +37,11 @@ private:
     int16_t m_digitY = 0, m_digitW = 0, m_digitH = 0, m_seg = 0;
     int16_t m_colonX[2] = {};
     uint8_t m_colonCount = 1;
-    // Date column (DATE mode): four rows -- weekday, day, month, year -- in
-    // the largest text size that still leaves the digits nearly full height.
-    int16_t m_dateX = 0, m_dateW = 0, m_dateTop = 0, m_dateRowH = 0;
-    uint8_t m_dateSize = 0;
+    // Date column (DATE mode): the weekday ("SAT") over the day of the month
+    // ("25"), in the largest sizes that still leave the digits nearly full
+    // height.
+    int16_t m_dateX = 0, m_dateW = 0, m_dateTop = 0, m_dayY = 0;
+    uint8_t m_wdaySize = 0, m_daySize = 0; // weekday and day-number text sizes
 
     uint16_t m_onColor    = 0;
     uint16_t m_ghostColor = 0;

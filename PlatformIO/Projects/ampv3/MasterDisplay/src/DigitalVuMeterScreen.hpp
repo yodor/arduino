@@ -1,4 +1,5 @@
 #pragma once
+#include <climits>
 #include "Screen.hpp"
 #include "Config.hpp"
 #include "BarPhysics.hpp"
@@ -27,6 +28,17 @@ private:
     void processAndDrawBar(BarPhysicsState& state, float val, uint16_t y, uint16_t barHeight, uint16_t maxBarWidth);
 
     static void resetBarState(BarPhysicsState& state);
+
+    // The dB readout at the right of a bar: its smoothed level in dBFS,
+    // refreshed a few times a second so it can be read.
+    struct DbReadout {
+        int32_t  drawnTenths = INT32_MIN;
+        uint32_t lastMs      = 0;
+    };
+    void drawDb(DbReadout& r, const BarPhysicsState& state, uint16_t y, uint16_t barHeight);
+    void drawChannelLetter(const char* letter, uint16_t y, uint16_t barHeight);
+
+    DbReadout m_dbL, m_dbR, m_dbM;
 
     BarPhysicsState m_left;
     BarPhysicsState m_right;

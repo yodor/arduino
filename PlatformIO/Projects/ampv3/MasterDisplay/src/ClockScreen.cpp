@@ -3,6 +3,7 @@
 #include "DisplaySettings.hpp"
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 
 namespace {
 // Segment bits: a=top, b=top-right, c=bottom-right, d=bottom, e=bottom-left,
@@ -17,13 +18,13 @@ constexpr uint8_t kMaskDash  = 0x40; // just the middle segment
 constexpr int16_t  kMargin    = 8;   // left/right
 constexpr int16_t  kMarginV   = 4;   // top/bottom -- the digits use (nearly) the full height
 constexpr int16_t  kDateGap   = 12;  // between the digits and the date column
+constexpr int16_t  kDateRowGap = 8;  // between the weekday and the day number
+constexpr uint16_t kColorWeekday = 0xC618; // light gray
 constexpr uint8_t  kSmallSize = 2;   // date line / AM-PM text: 12x16 px characters
 constexpr int16_t  kSmallH    = 16;
 constexpr int16_t  kAmPmW     = 2 * 6 * kSmallSize + 4;
 
 const char* const kWeekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-const char* const kMonths[]   = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
 // The same hue at about 1/6 brightness -- the unlit "ghost" segments.
 uint16_t dim565(uint16_t c) {
@@ -60,17 +61,22 @@ void ClockScreen::layout() {
 
     int16_t ampm   = m_24h ? 0 : kAmPmW;
     int16_t maxW   = SCREEN_WIDTH - 2 * kMargin - ampm;
-    m_dateSize = 0;
+    m_wdaySize = m_daySize = 0;
     m_dateW    = 0;
     if (m_mode == ClockMode::DATE) {
-        // Biggest date text (4 characters wide, 4 rows tall) that leaves the
-        // digits at least ~85% of the full height.
-        for (uint8_t sz = 4; sz >= 2; --sz) {
-            int16_t colW = 4 * 6 * sz;
-            if (4 * 8 * sz > availH) continue;
+        // The biggest weekday text (3 characters) whose column still leaves
+        // the digits ~85% of the full height; the day number (2 characters)
+        // as big as that column and the remaining height allow. +1 px: the
+        // bold second pass.
+        for (uint8_t sw = 5; sw >= 2; --sw) {
+            int16_t colW = 3 * 6 * sw + 1;
             float h = heightFitting(maxW - colW - kDateGap);
-            if (h >= availH * 0.85f || sz == 2) {
-                m_dateSize = sz;
+            if (h >= availH * 0.85f || sw == 2) {
+                uint8_t byWidth  = static_cast<uint8_t>((colW - 1) / 12);
+                uint8_t byHeight = static_cast<uint8_t>((availH - 8 * sw - kDateRowGap) / 8);
+                m_wdaySize = sw;
+                m_daySize  = byWidth < byHeight ? byWidth : byHeight;
+                if (m_daySize > 8) m_daySize = 8;
                 m_dateW    = colW;
                 break;
             }
@@ -104,9 +110,10 @@ void ClockScreen::layout() {
     }
 
     if (m_dateW) {
-        m_dateX    = SCREEN_WIDTH - kMargin - m_dateW;
-        m_dateRowH = static_cast<int16_t>(availH / 4);
-        m_dateTop  = kMarginV + (availH - 4 * m_dateRowH) / 2;
+        int16_t blockH = 8 * m_wdaySize + kDateRowGap + 8 * m_daySize;
+        m_dateX   = SCREEN_WIDTH - kMargin - m_dateW;
+        m_dateTop = kMarginV + (availH - blockH) / 2;
+        m_dayY    = m_dateTop + 8 * m_wdaySize + kDateRowGap;
     }
 
     m_onColor    = ds.getClockColor();
@@ -176,28 +183,34 @@ void ClockScreen::drawColons(bool on, bool force) {
     m_drawnColon = static_cast<int8_t>(on);
 }
 
-// DATE mode: weekday, day, month and year stacked in the right-hand column.
+// DATE mode: the weekday over the day of the month in the right-hand
+// column, in white (set apart from the clock colour) and bold -- each line is
+// printed twice, the second pass one pixel to the right.
 void ClockScreen::drawDateColumn(const RtcDateTime& t) {
     uint16_t key = static_cast<uint16_t>(t.day | (t.month << 5) | ((t.year - 2000) << 9));
     if (key == m_drawnDateKey) return;
     m_drawnDateKey = key;
 
-    char rows[4][8];
-    snprintf(rows[0], sizeof(rows[0]), "%s", kWeekdays[RtcClock::weekday(t)]);
-    snprintf(rows[1], sizeof(rows[1]), "%u", static_cast<unsigned>(t.day));
-    snprintf(rows[2], sizeof(rows[2]), "%s", kMonths[(t.month - 1) % 12]);
-    snprintf(rows[3], sizeof(rows[3]), "%u", static_cast<unsigned>(t.year));
+    char wday[4], day[4];
+    const char* w = kWeekdays[RtcClock::weekday(t)];
+    for (int i = 0; i < 3; ++i) wday[i] = static_cast<char>(toupper(static_cast<unsigned char>(w[i])));
+    wday[3] = '\0';
+    snprintf(day, sizeof(day), "%u", static_cast<unsigned>(t.day));
 
     Arduino_GFX* gfx = Renderer::instance().gfx();
-    gfx->fillRect(m_dateX, m_dateTop, m_dateW, 4 * m_dateRowH, COLOR_BLACK);
-    gfx->setTextSize(m_dateSize);
-    gfx->setTextColor(m_onColor, COLOR_BLACK);
-    int16_t textH = 8 * m_dateSize;
-    for (uint8_t r = 0; r < 4; ++r) {
-        int16_t w = static_cast<int16_t>(strlen(rows[r])) * 6 * m_dateSize;
-        gfx->setCursor(m_dateX + (m_dateW - w) / 2, m_dateTop + r * m_dateRowH + (m_dateRowH - textH) / 2);
-        gfx->print(rows[r]);
-    }
+    gfx->fillRect(m_dateX, m_dateTop, m_dateW, m_dayY + 8 * m_daySize - m_dateTop, COLOR_BLACK);
+    auto boldCentered = [&](const char* text, uint8_t size, int16_t y, uint16_t color) {
+        int16_t tw = static_cast<int16_t>(strlen(text)) * 6 * size;
+        int16_t x  = m_dateX + (m_dateW - 1 - tw) / 2;
+        gfx->setTextSize(size);
+        gfx->setTextColor(color);
+        gfx->setCursor(x, y);
+        gfx->print(text);
+        gfx->setCursor(x + 1, y); // second pass, transparent: bold
+        gfx->print(text);
+    };
+    boldCentered(wday, m_wdaySize, m_dateTop, kColorWeekday);
+    boldCentered(day,  m_daySize,  m_dayY,    COLOR_WHITE);
 }
 
 void ClockScreen::onEnter() {

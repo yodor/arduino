@@ -1,4 +1,7 @@
 #include "DigitalVuMeterScreen.hpp"
+#include <climits>
+#include <cmath>
+#include <cstdio>
 #include "Renderer.hpp"
 #include "AudioEngine.hpp"
 #include "DisplaySettings.hpp"
@@ -7,8 +10,16 @@
 #include "BarPhysics.hpp"
 
 namespace {
-constexpr uint16_t kBarX        = 2;
-constexpr uint16_t kMaxBarWidth = SCREEN_WIDTH - 2 * kBarX;
+// Layout across the panel: channel letter | bar | dB readout.
+constexpr uint8_t  kTextSize    = 2;   // letters and dB readout: 12x16 px characters
+constexpr int16_t  kLetterX     = 4;
+constexpr uint16_t kBarX        = 22;  // bars start after the letter column
+constexpr uint8_t  kDbChars     = 5;   // "-23.5"
+constexpr int16_t  kDbX         = SCREEN_WIDTH - 2 - kDbChars * 6 * kTextSize;
+constexpr uint16_t kMaxBarWidth = static_cast<uint16_t>(kDbX - 6 - kBarX); // the peak marker's farthest spot stays clear of the readout
+constexpr float    kFloorDb     = -50.0f; // AudioLevel::dbNormalize(): -50 dB -> 0, 0 dB -> 1
+constexpr uint32_t kDbRefreshMs = 200;
+constexpr uint16_t kTextColor   = 0xC618; // light gray
 }
 
 void DigitalVuMeterScreen::resetBarState(BarPhysicsState& state) {
@@ -24,6 +35,49 @@ void DigitalVuMeterScreen::onEnter() {
     resetBarState(m_left);
     resetBarState(m_right);
     resetBarState(m_mono);
+    m_dbL = m_dbR = m_dbM = DbReadout{};
+    if (DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO) {
+        drawChannelLetter("L", 10, 55);
+        drawChannelLetter("R", SCREEN_HEIGHT - 10 - 55, 55);
+    }
+}
+
+// "L" / "R" in the left column, centred on the bar.
+void DigitalVuMeterScreen::drawChannelLetter(const char* letter, uint16_t y, uint16_t barHeight) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    gfx->setTextSize(kTextSize);
+    gfx->setTextColor(kTextColor, COLOR_BLACK);
+    gfx->setCursor(kLetterX, y + (barHeight - 8 * kTextSize) / 2);
+    gfx->print(letter);
+}
+
+// The bar's smoothed level in dBFS at the right, e.g. "-23.5"; "---" at the
+// floor (silence). Fixed width, right-aligned, printed over its own background.
+void DigitalVuMeterScreen::drawDb(DbReadout& r, const BarPhysicsState& state, uint16_t y, uint16_t barHeight) {
+    uint32_t now = millis();
+    if (r.drawnTenths != INT32_MIN && now - r.lastMs < kDbRefreshMs) return;
+    r.lastMs = now;
+
+    float   db     = kFloorDb * (1.0f - state.decay);
+    int32_t tenths = (state.decay < 0.005f) ? INT32_MIN + 1 : static_cast<int32_t>(lroundf(db * 10.0f));
+    if (tenths == r.drawnTenths) return;
+    r.drawnTenths = tenths;
+
+    char text[8];
+    if (tenths == INT32_MIN + 1) {
+        snprintf(text, sizeof(text), "  ---");
+    } else {
+        int32_t a = tenths < 0 ? -tenths : tenths;
+        snprintf(text, sizeof(text), "%5s", "");
+        char num[8];
+        snprintf(num, sizeof(num), "%s%ld.%ld", tenths < 0 ? "-" : "", static_cast<long>(a / 10), static_cast<long>(a % 10));
+        snprintf(text, sizeof(text), "%5s", num);
+    }
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    gfx->setTextSize(kTextSize);
+    gfx->setTextColor(kTextColor, COLOR_BLACK);
+    gfx->setCursor(kDbX, y + (barHeight - 8 * kTextSize) / 2);
+    gfx->print(text);
 }
 
 void DigitalVuMeterScreen::render() {
@@ -44,6 +98,8 @@ void DigitalVuMeterScreen::render() {
 
         processAndDrawBar(m_left,  levelL, topY,    barHeight, kMaxBarWidth);
         processAndDrawBar(m_right, levelR, bottomY, barHeight, kMaxBarWidth);
+        drawDb(m_dbL, m_left,  topY,    barHeight);
+        drawDb(m_dbR, m_right, bottomY, barHeight);
     } else {
         int16_t monoWave[WAVEFORM_SAMPLES];
         for (size_t i = 0; i < WAVEFORM_SAMPLES; ++i) {
@@ -59,6 +115,7 @@ void DigitalVuMeterScreen::render() {
         constexpr uint16_t y         = 10;
 
         processAndDrawBar(m_mono, levelMono, y, barHeight, kMaxBarWidth);
+        drawDb(m_dbM, m_mono, y, barHeight);
     }
 }
 

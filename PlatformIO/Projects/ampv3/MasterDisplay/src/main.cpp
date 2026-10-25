@@ -23,7 +23,7 @@
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
-#include "VolumeOverlay.hpp"
+#include "InfoScreen.hpp"
 #include "RtcClock.hpp"
 #include "MasterConsole.hpp"
 #include "DaughterBoardLink.hpp"
@@ -50,9 +50,11 @@ static WaveformScreen        g_waveformScreen;
 static AnalogVuScreen        g_analogVuScreen;
 static DigitalVuMeterScreen  g_digitalVuMeterScreen;
 static ClockScreen           g_clockScreen;
+static InfoScreen            g_infoScreen;   // also the volume popup over the other screens
 
 // Order must match kScreenNames (ScreenRegistry.hpp).
 static Screen* g_screens[] = {
+    &g_infoScreen,
     &g_clockScreen,
     &g_waveformScreen,
     &g_spectrumScreen,
@@ -70,7 +72,8 @@ static size_t g_currentScreenIdx = 0;
 
 static MenuScreen g_menuScreen;
 
-// Transient volume readout (see VolumeOverlay.hpp). g_overlayShown tracks
+// The info screen (InfoScreen.hpp) -- the first screen, and also the popup
+// over the others when the volume/mute changes. g_overlayShown tracks
 // whether it currently owns the panel, so the transitions in and out can
 // trigger the right full redraws.
 // Settings -> Diagnostics -> Display Test: an exclusive mode like the menu
@@ -84,7 +87,6 @@ enum class PowerView : uint8_t { NONE, POPUP, STANDBY_CLOCK, STANDBY_DARK };
 static PowerOverlay g_powerOverlay;
 static PowerView    g_powerView = PowerView::NONE;
 
-static VolumeOverlay g_volumeOverlay;
 static bool          g_overlayShown = false;
 
 // Notices from the daughter (resync advised, NTC fault) -- see
@@ -194,7 +196,7 @@ void setup() {
     // g_currentScreenIdx picks up the starting screen just below.
     PersistentSettings::instance().loadAndApply();
 
-    g_currentScreenIdx = kDefaultScreenIndex; // always boots on the Clock
+    g_currentScreenIdx = kDefaultScreenIndex; // always boots on the first screen (Info)
     g_screens[g_currentScreenIdx]->onEnter();
 
     MasterConsole::instance().begin();
@@ -411,7 +413,7 @@ void loop() {
             // resync start (Settings > Calibration > Rtotal, Cancel / Start).
             g_menuOpen = true;
             g_noticeOverlay.dismiss();
-            g_volumeOverlay.dismiss();
+            g_infoScreen.dismiss();
             g_overlayShown = false;
             g_noticeShown  = false;
             g_screenIdxBeforeMenu = g_currentScreenIdx;
@@ -423,19 +425,19 @@ void loop() {
                                       ? (g_currentScreenIdx + 1) % kNumScreens
                                       : (g_currentScreenIdx + kNumScreens - 1) % kNumScreens;
 
-            g_volumeOverlay.dismiss();
+            g_infoScreen.dismiss();
             g_overlayShown = false;
             g_noticeShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
             Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
-            g_volumeOverlay.poke();
+            g_infoScreen.poke();
             Serial.printf("[Volume] Mute toggled -> %s\n",
                            VolumeControl::instance().isMuted() ? "MUTED" : "UNMUTED");
         } else if (event == UIEvent::CHANNEL_MODE_TOGGLE) {
             DisplaySettings::instance().toggleChannelMode();
-            g_volumeOverlay.dismiss();
+            g_infoScreen.dismiss();
             g_overlayShown = false;
             g_noticeShown = false;
             // Channel mode changes a screen's whole layout (bar count/
@@ -447,7 +449,7 @@ void loop() {
                            DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO ? "STEREO" : "MONO");
         } else if (event == UIEvent::MENU_TOGGLE) {
             g_menuOpen = true;
-            g_volumeOverlay.dismiss();
+            g_infoScreen.dismiss();
             g_overlayShown = false;
             g_noticeShown = false;
             g_screenIdxBeforeMenu = g_currentScreenIdx;
@@ -470,7 +472,7 @@ void loop() {
     // The Display Test menu action fires inside the menu's enter() above.
     if (DisplayTestScreen::consumeStartRequest()) {
         if (g_menuOpen) closeMenu();
-        g_volumeOverlay.dismiss();
+        g_infoScreen.dismiss();
         g_overlayShown    = false;
         g_noticeShown = false;
         g_displayTestOpen = true;
@@ -486,14 +488,30 @@ void loop() {
         wantVolDown = InputEngine::instance().isVolDownHeld()
                         || (nowMsForVolume - g_lastGainDownMs < IR_VOLUME_HOLD_MS);
     }
+    // The first volume press is passive: if the info isn't on the panel yet
+    // (neither the info screen nor its popup), it only brings the popup up --
+    // the volume changes from the next press, while the info is visible. A
+    // press that's still held (or an IR key still repeating) stays passive
+    // until it's released.
+    bool onInfoScreen = (g_screens[g_currentScreenIdx] == &g_infoScreen);
+    static bool s_volPressPassive = false;
+    if (wantVolUp || wantVolDown) {
+        if (!s_volPressPassive && !onInfoScreen && !g_infoScreen.isActive()) s_volPressPassive = true;
+    } else {
+        s_volPressPassive = false;
+    }
+    bool showInfo = wantVolUp || wantVolDown;
+    if (s_volPressPassive) { wantVolUp = wantVolDown = false; }
     VolumeControl::instance().update(wantVolUp, wantVolDown);
 
-    // Volume overlay: any held volume input keeps it up (the daughter's own
-    // VOL/DB arrive a few ms later via STATUS and update the readout);
-    // update() also pops it for changes seen in STATUS and expires it.
-    if (wantVolUp || wantVolDown) g_volumeOverlay.poke();
-    g_volumeOverlay.update();
-    if (g_menuOpen || g_displayTestOpen) g_volumeOverlay.dismiss();
+    // Info popup: any volume input keeps it up (the daughter's own VOL/DB
+    // arrive a few ms later via STATUS and update the readout); update() also
+    // pops it for changes seen in STATUS and expires it. Not needed while the
+    // info screen itself is showing.
+    if (showInfo) g_infoScreen.poke();
+    g_infoScreen.update();
+    if (onInfoScreen) g_infoScreen.dismiss();
+    if (g_menuOpen || g_displayTestOpen) g_infoScreen.dismiss();
 
     // What the power layer wants on the panel: its popup (sequence or hint),
     // the standby display, or nothing (normal operation).
@@ -507,7 +525,7 @@ void loop() {
     if (wantPower != PowerView::NONE) {
         // The power layer owns the panel: the volume overlay just stops (no
         // re-entering the screen underneath, which isn't shown).
-        g_volumeOverlay.dismiss();
+        g_infoScreen.dismiss();
         g_overlayShown = false;
         g_noticeShown = false;
     }
@@ -540,11 +558,11 @@ void loop() {
     if (g_powerView == PowerView::NONE) {
         // The volume overlay wins over a notice; a notice waits while the
         // menu or the display test is open (and is dropped if it runs out).
-        bool wantOverlay = g_volumeOverlay.isActive();
+        bool wantOverlay = g_infoScreen.isActive();
         bool wantNotice  = !wantOverlay && g_noticeOverlay.isActive() && !g_menuOpen && !g_displayTestOpen;
         bool wasShowing  = g_overlayShown || g_noticeShown;
         if (wantOverlay && !g_overlayShown) {
-            g_volumeOverlay.onEnter();
+            g_infoScreen.onEnter();
         } else if (wantNotice && !g_noticeShown) {
             g_noticeOverlay.onEnter();
         } else if (!wantOverlay && !wantNotice && wasShowing && !g_menuOpen && !g_displayTestOpen) {
@@ -570,7 +588,7 @@ void loop() {
     } else if (g_menuOpen) {
         g_menuScreen.render();
     } else if (g_overlayShown) {
-        g_volumeOverlay.render();
+        g_infoScreen.render();
     } else if (g_noticeShown) {
         g_noticeOverlay.render();
     } else {
@@ -614,7 +632,7 @@ void loop() {
                          : g_powerView == PowerView::STANDBY_DARK ? "STANDBY (display off)"
                          : g_displayTestOpen ? g_displayTest.name()
                          : g_menuOpen ? g_menuScreen.name()
-                         : g_overlayShown ? g_volumeOverlay.name()
+                         : g_overlayShown ? g_infoScreen.name()
                          : g_noticeShown ? g_noticeOverlay.name()
                          : g_screens[g_currentScreenIdx]->name());
 

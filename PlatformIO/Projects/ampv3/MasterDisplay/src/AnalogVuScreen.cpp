@@ -7,7 +7,7 @@
 #include <cstring>
 
 namespace {
-constexpr float kPhiMax  = 50.0f * static_cast<float>(M_PI) / 180.0f; // half the scale's sweep, in ellipse parameter
+constexpr float kPivotBelow = 6.0f; // the pivot sits at least this far below the meter's bottom edge
 constexpr float kFloorDb = -50.0f; // must match AudioLevel::dbNormalize(): -50 dB -> 0, 0 dB -> 1
 constexpr float kRedFromDb = -6.0f;
 
@@ -37,29 +37,36 @@ void AnalogVuScreen::VuBallistics::update(float target, uint32_t now) {
     value += alpha * (target - value);
 }
 
-// Fits the scale ellipse to the area: the arc's ends at the area's left and
-// right edges (less a margin), its top just below the labels, its ends at
-// about 60% of the height -- which puts the pivot below the area.
+// Fits the scale circle to the area: a chord spanning the width (less a
+// margin), the arc's top just below the labels and its ends at about 3/4 of
+// the height. If that circle's centre (the pivot) would land inside the
+// area, the radius grows until it sits just below the bottom edge -- a
+// flatter arc, but the needle still comes up from below.
 void AnalogVuScreen::layoutGauge(Gauge& g, int16_t x, int16_t y, int16_t w, int16_t h, bool compact) {
     g.x = x; g.y = y; g.w = w; g.h = h;
     g.compact = compact;
     float margin = compact ? 12.0f : 18.0f;
-    float yTop   = y + (compact ? 22.0f : 30.0f); // room for the labels above the arc
-    float yEnd   = y + h * 0.6f;
-    g.a      = (w / 2.0f - margin) / sinf(kPhiMax);
-    g.b      = (yEnd - yTop) / (1.0f - cosf(kPhiMax));
+    float yTop   = y + (compact ? 22.0f : 30.0f);  // room for the labels above the arc
+    float c      = w / 2.0f - margin;               // half the chord
+    float sag    = y + h * 0.75f - yTop;            // arc depth wanted: ends at ~3/4 of the height
+    float r      = (c * c + sag * sag) / (2.0f * sag);
+    float rMin   = (y + h + kPivotBelow) - yTop;    // keeps the pivot below the area
+    if (r < rMin) r = rMin;
+    g.r      = r;
+    g.phiMax = asinf(c / r);
     g.pivotX = x + w / 2.0f;
-    g.pivotY = yTop + g.b;
+    g.pivotY = yTop + r;
     g.needleDrawn = false;
     g.ballistics  = VuBallistics{};
 }
 
 // A point on (or, with inset > 0, inside / with inset < 0, outside) the
-// scale arc at scale position pos (0 = left end, 1 = right end).
+// scale circle at scale position pos (0 = left end, 1 = right end); inset
+// runs along the radius, i.e. square to the scale.
 void AnalogVuScreen::arcPoint(const Gauge& g, float pos, float inset, float& px, float& py) const {
-    float phi = (-1.0f + 2.0f * pos) * kPhiMax;
-    px = g.pivotX + (g.a - inset) * sinf(phi);
-    py = g.pivotY - (g.b - inset) * cosf(phi);
+    float theta = (-1.0f + 2.0f * pos) * g.phiMax;
+    px = g.pivotX + (g.r - inset) * sinf(theta);
+    py = g.pivotY - (g.r - inset) * cosf(theta);
 }
 
 void AnalogVuScreen::drawScale(const Gauge& g, const char* channelLabel) {

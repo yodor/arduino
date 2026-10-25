@@ -2,10 +2,11 @@
 #include "Screen.hpp"
 #include "Config.hpp"
 
-// Analog VU meter(s), drawn to use the whole panel: the scale is a wide,
-// flat elliptical arc spanning the meter's full width, with the needle's
-// pivot BELOW the bottom edge -- only the upper part of the needle is seen,
-// like looking through a real meter's window. Mono: one meter across the
+// Analog VU meter(s), drawn to use the whole panel: the scale is a wide arc
+// of a CIRCLE spanning the meter's full width, with the needle's pivot -- the
+// circle's centre -- BELOW the bottom edge: only the upper part of the needle
+// is seen, like looking through a real meter's window. Being a true radius,
+// the needle always stands square to the scale and its ticks. Mono: one meter across the
 // whole panel; stereo: two side by side (L, R).
 //
 // The scale reads dBFS (RMS), matching AudioLevel::dbNormalize(): -50 at the
@@ -31,9 +32,9 @@ private:
         // area on the panel
         int16_t x = 0, y = 0, w = 0, h = 0;
         bool    compact = false;   // stereo: smaller labels and margins
-        // the scale ellipse: arc point at parameter phi is
-        // (pivotX + a*sin(phi), pivotY - b*cos(phi)), phi in [-phiMax, +phiMax]
-        float   pivotX = 0, pivotY = 0, a = 0, b = 0;
+        // the scale circle: arc point at angle theta (from straight up) is
+        // (pivotX + r*sin(theta), pivotY - r*cos(theta)), theta in [-phiMax, +phiMax]
+        float   pivotX = 0, pivotY = 0, r = 0, phiMax = 0;
         // the needle as last drawn (clipped to the area), for erasing
         int16_t nx0 = 0, ny0 = 0, nx1 = 0, ny1 = 0;
         bool    needleDrawn = false;

@@ -5,6 +5,7 @@
 // count MUST match main.cpp's g_screens[] array (a static_assert there checks
 // the count).
 constexpr const char* kScreenNames[] = {
+    "Info",
     "Clock",
     "Waveform",
     "Spectrum",
@@ -13,12 +14,12 @@ constexpr const char* kScreenNames[] = {
 };
 constexpr size_t kScreenCount = sizeof(kScreenNames) / sizeof(kScreenNames[0]);
 
-// The unit always boots on the first screen, the Clock. The current screen
-// isn't saved (no flash writes for screen changes).
-constexpr uint8_t kDefaultScreenIndex = 0; // "Clock"
+// The unit always boots on the first screen, the Info screen. The current
+// screen isn't saved (no flash writes for screen changes).
+constexpr uint8_t kDefaultScreenIndex = 0; // "Info"
 
 constexpr bool screenNameIs(const char* a, const char* b) {
     return (*a == *b) && (*a == '\0' || screenNameIs(a + 1, b + 1));
 }
-static_assert(screenNameIs(kScreenNames[kDefaultScreenIndex], "Clock"),
-              "kDefaultScreenIndex must point at the Clock screen -- update it if the screen order changes");
+static_assert(screenNameIs(kScreenNames[kDefaultScreenIndex], "Info"),
+              "kDefaultScreenIndex must point at the Info screen -- update it if the screen order changes");
