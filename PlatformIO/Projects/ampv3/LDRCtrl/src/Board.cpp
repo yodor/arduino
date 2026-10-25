@@ -232,6 +232,7 @@ float adcAverage(uint8_t pin) {
 } // namespace
 
 float Board::blockTempC() { return BoardSensors::ntcCelsius(adcAverage(ADC_NTC_PIN)); }
+BoardSensors::NtcState Board::ntcState() { return BoardSensors::ntcState(adcAverage(ADC_NTC_PIN)); }
 float Board::railVolts()  { return BoardSensors::railVolts(adcAverage(ADC_REF_PIN)); }
 
 uint32_t Board::uptimeSeconds() { return millis() / 1000UL; }
@@ -244,7 +245,8 @@ void Board::reportDieTemp(Stream &out, const __FlashStringHelper *label, uint32_
   out.print(dieTempC(), 1);
   out.print(F(" C (RP2040 die)  block "));
   const float tb = blockTempC(), vr = railVolts();
-  if (isnan(tb)) out.print(F("--")); else out.print(tb, 2);
+  if (isnan(tb)) { out.print(F("-- (NTC ")); out.print(BoardSensors::ntcStateName(ntcState())); out.print(')'); }
+  else out.print(tb, 2);
   out.print(F(" C (NTC)  rail "));
   if (isnan(vr)) out.print(F("--")); else out.print(vr, 3);
   out.print(F(" V (TL431)  "));

@@ -1,10 +1,13 @@
-LDR daughter board firmware -- 2026-10-26b (thermal compensation range 45 counts: covers a cold start)  (driver v1b, 2nd-edition LDR boards)
+LDR daughter board firmware -- 2026-10-26d (resync hint: ENV RESYNC= WHY=, TEMP/DIAG)  (driver v1b, 2nd-edition LDR boards)
 
-Cold start fix: the thermal compensation was capped at +-15 counts -- only ~2.8 C at the learned
-~5.4 counts/C. After a complete power-off, the block starts 5-8 C below a warm calibration and
-needs 27-43 counts, so the middle steps played quiet until a resync. The cap is now +-45 counts
-(~8 C). TEMP / DIAG say "AT THE SAFETY LIMIT" if it is ever reached. A broken NTC still gives
-no offset at all. Everything from 2026-10-26a (SET SRC / SET LOAD, MODEL, COMP) included.
+Resync hint (protocol 14): ENV ends with RESYNC=0|1 WHY=SPAN|LIMIT|NOCOMP|SEEK|-
+  SPAN    the block is further from the calibration temperature than the compensation has
+          learned (and > 1.5 C): it extrapolates; a resync makes it exact and teaches the range
+  LIMIT   30 C or more from the calibration temperature
+  NOCOMP  the compensation is not active (learning / switched off) and the block moved > 1 C
+  SEEK    the last calibration's quiet-point seek did not converge
+Based on the block's 1-minute average (no flicker). TEMP / DIAG show it as a sentence.
+Appended at the end of ENV: existing master parsing keeps working.
 
 firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
 No recalibration needed.

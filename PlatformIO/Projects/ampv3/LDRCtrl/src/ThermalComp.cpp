@@ -3,6 +3,8 @@
 #include "RailComp.hpp"
 #include "DriverChannels.hpp"
 #include "Board.hpp"
+#include "DualCalibration.hpp"
+#include "BoardSensors.hpp"
 
 namespace {
 constexpr uint32_t TICK_MS = 3000;
@@ -13,12 +15,14 @@ float gRef = NAN;                 // block temperature at the last calibration
 float gEma = NAN;                 // block, 1-minute average
 float gApplied[2] = {0.0f, 0.0f}; // offsets currently in the driver, counts
 bool gFrozen = false, gEnabled = true;
+float gSpanC = 0.0f;              // the largest block change the fit learned from
 uint32_t gLastMs = 0;
 
 void refit() {
   bool usable[2];
   ThermalLog::blockSlopes(gK, gR2, usable);
-  for (uint8_t c = 0; c < 2; c++) gUse[c] = ThermalComp::trusted(usable[c], gR2[c]);
+  for (uint8_t c = 0; c < 2; c++) gUse[c] = ThermalComp::trusted(usable[c], gR2[c], gK[c]);
+  gSpanC = ThermalLog::learnedSpanC();
   float t;
   gRef = ThermalLog::savedBlock(t) ? t : NAN;
 }
@@ -55,7 +59,15 @@ void begin(DriverChannels &driver) {
 void tick() {
   if (gFrozen || millis() - gLastMs < TICK_MS) return;
   gLastMs = millis();
-  gEma = RailComp::emaStep(gEma, Board::blockTempC());
+  const float t = Board::blockTempC();             // NAN unless the NTC is OK
+  if (isnan(t)) {
+    // A faulty NTC: no offset at once (never keep applying a stale average), fresh start later.
+    const bool had = !isnan(gEma);
+    gEma = NAN;
+    if (had) apply(true);
+    return;
+  }
+  gEma = isnan(gEma) ? t : RailComp::emaStep(gEma, t);
   apply(false);
 }
 
@@ -73,7 +85,27 @@ void refresh() { refit(); apply(true); }
 
 float blockAverage() { return gEma; }
 float blockAtCalibration() { return gRef; }
-bool sideActive(uint8_t side) { return side < 2 && gEnabled && !gFrozen && gUse[side]; }
+bool sideActive(uint8_t side) { return side < 2 && gEnabled && !gFrozen && gUse[side] && !isnan(gEma); }
+bool ntcOk() { return Board::ntcState() == BoardSensors::NtcState::OK; }
+
+Hint hint() {
+  const float dT = (isnan(gEma) || isnan(gRef)) ? NAN : gEma - gRef;
+  const bool compOn = sideActive(0) && sideActive(1);
+  return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed());
+}
+
+void printHint(Print &out) {
+  const Hint h = hint();
+  if (h == Hint::NONE) return;
+  out.print(F("  resync recommended: "));
+  switch (h) {
+    case Hint::SPAN:   out.println(F("the block is outside the range the compensation has learned -- a CAL makes it exact and teaches it this range")); break;
+    case Hint::LIMIT:  out.println(F("the block is 30 C or more from the calibration temperature, beyond the compensation's range")); break;
+    case Hint::NOCOMP: out.println(F("the block has moved since the last calibration and the compensation is not active")); break;
+    case Hint::SEEK:   out.println(F("the last calibration's quiet-point seek did not converge")); break;
+    default: break;
+  }
+}
 float sideOffsetCounts(uint8_t side) { return side < 2 ? gApplied[side] : 0.0f; }
 float sideSlope(uint8_t side) { return side < 2 ? gK[side] : NAN; }
 
@@ -83,6 +115,15 @@ bool enabled() { return gEnabled; }
 void report(Stream &out) {
   out.print(F("  thermal compensation: "));
   if (!gEnabled) { out.println(F("OFF (COMP ON to enable)")); return; }
+  const BoardSensors::NtcState ns = Board::ntcState();
+  if (ns != BoardSensors::NtcState::OK) {
+    out.print(F("OFF -- block NTC "));
+    out.print(BoardSensors::ntcStateName(ns));
+    out.println(ns == BoardSensors::NtcState::OPEN ? F(" (missing or broken wire): no offsets until it reads again")
+              : ns == BoardSensors::NtcState::SHORT ? F(" (shorted): no offsets until it reads again")
+              : F(" (implausible reading): no offsets until it reads again"));
+    return;
+  }
   if (!gUse[0] && !gUse[1]) {
     out.println(F("not active yet -- needs a trusted fit vs the block (LEARN: 3+ resyncs, 0.5 C spread, R2 >= 0.6)"));
     return;
@@ -96,10 +137,17 @@ void report(Stream &out) {
     out.print(gK[c], 2); out.print(F(" counts/C (R2 ")); out.print(gR2[c], 2);
     out.print(F(") -> offset ")); if (gApplied[c] >= 0) out.print('+'); out.print(gApplied[c], 2);
     out.print(F(" counts"));
-    if (fabsf(gApplied[c]) >= ThermalComp::MAX_COUNTS - 0.01f)
-      out.print(F("  (AT THE SAFETY LIMIT: the block is far from the calibration temperature -- a CAL resyncs)"));
     out.println();
   }
+  const float dT = (isnan(gEma) || isnan(gRef)) ? 0.0f : gEma - gRef;
+  if (fabsf(dT) >= ThermalComp::MAX_SPAN_C)
+    out.println(F("    AT THE RANGE LIMIT (30 C from the calibration temperature)"));
+  else if (gSpanC > 0.0f && fabsf(dT) > gSpanC) {
+    out.print(F("    extrapolating: the block is ")); out.print(fabsf(dT), 1);
+    out.print(F(" C from calibration, the fit learned up to ")); out.print(gSpanC, 1);
+    out.println(F(" C"));
+  }
+  printHint(out);
 }
 
 } // namespace ThermalComp

@@ -20,5 +20,6 @@ bool savedBlock(float &t);                               // block temperature at
 void blockSlopes(float k[2], float r2[2], bool usable[2]);
 // For the master's LEARN query: resyncs in the log and the RMS block-temperature spread.
 void fitCounts(uint8_t &n, float &spread);
+float learnedSpanC();                                    // largest block change in the fit, C
 void forgetEnvironment();                                // FORGET CAL: the calibration it described is gone
 } // namespace ThermalLog

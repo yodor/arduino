@@ -1,4 +1,5 @@
 #include "MasterLink.hpp"
+#include "BoardSensors.hpp"
 #include "ThermalLog.hpp"
 #include "ThermalFit.hpp"
 #include "BusyHook.hpp"
@@ -178,7 +179,8 @@ void MasterLink::reportEnv() {
   kv(stream_, F("RAIL"), RailComp::averageVolts(), 4);
   // COMP: ON (both sides compensated), PART (one side), LEARNING (on, fit not trusted yet), OFF
   stream_.print(F(" COMP="));
-  stream_.print(!ThermalComp::enabled() ? F("OFF") : (aL && aR) ? F("ON") : (aL || aR) ? F("PART") : F("LEARNING"));
+  stream_.print(!ThermalComp::enabled() ? F("OFF") : !ThermalComp::ntcOk() ? F("NONTC")
+               : (aL && aR) ? F("ON") : (aL || aR) ? F("PART") : F("LEARNING"));
   kv(stream_, F("OFFL"), aL ? ThermalComp::sideOffsetCounts(0) : NAN, 2, true);
   kv(stream_, F("OFFR"), aR ? ThermalComp::sideOffsetCounts(1) : NAN, 2, true);
   kv(stream_, F("KL"), ThermalComp::sideSlope(0), 2, true);
@@ -186,6 +188,10 @@ void MasterLink::reportEnv() {
   const float b = ThermalComp::blockAverage(), b0 = ThermalComp::blockAtCalibration();
   kv(stream_, F("DBLOCK"), (isnan(b) || isnan(b0)) ? NAN : b - b0, 2, true);
   kv(stream_, F("MATCH"), DualCalibration::lastQuietMatchDb(), 2, true);
+  stream_.print(F(" NTC=")); stream_.print(BoardSensors::ntcStateName(Board::ntcState()));   // protocol 13
+  const ThermalComp::Hint h = ThermalComp::hint();                                           // protocol 14
+  stream_.print(F(" RESYNC=")); stream_.print(h == ThermalComp::Hint::NONE ? '0' : '1');
+  stream_.print(F(" WHY=")); stream_.print(ThermalComp::hintName(h));
   stream_.println();
 }
 

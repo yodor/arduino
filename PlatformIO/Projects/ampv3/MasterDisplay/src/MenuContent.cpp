@@ -1,4 +1,5 @@
 #include "MenuContent.hpp"
+#include "MenuScreen.hpp"
 #include "Version.hpp"
 #include "ScreenRegistry.hpp"
 #include "VolumeControl.hpp"
@@ -135,6 +136,9 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
         addLine(lines, n, maxLines, "Offs L%s R%s", e.offL, e.offR);
         addLine(lines, n, maxLines, "Match %s dB", e.match);
         addLine(lines, n, maxLines, "dBlock %s C", e.dBlock);
+        addLine(lines, n, maxLines, "NTC %s", e.ntc);
+        if (e.resync >= 0) addLine(lines, n, maxLines, "Resync %s%s%s", e.resync ? "advised" : "not needed",
+                                   e.resync ? " " : "", e.resync ? e.why : "");
     }
 
     if (s.hasErr) addWrapped(lines, n, maxLines, "Err: ", s.err);
@@ -618,6 +622,39 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
+// Settings -> Calibration -> Temperature: the driver block's NTC (the
+// temperature the thermal compensation works from), the change since the
+// last calibration, and whether the daughter recommends a resync (rev 13/14).
+size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.requestEnv();
+    const DaughterEnv&    e = link.env();
+    const DaughterStatus& s = link.status();
+    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!e.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
+
+    if (e.ntcOk()) addLine(lines, n, maxLines, "Block %s C", e.block);
+    else           addLine(lines, n, maxLines, "Block NTC %s!", e.ntc);
+    char t[12];
+    formatTenths(t, sizeof(t), s.tempC);
+    addLine(lines, n, maxLines, "MCU %s C", t);
+    addLine(lines, n, maxLines, "Since cal %s C", e.dBlock);
+    addLine(lines, n, maxLines, "Comp %s", e.comp);
+    if (e.resync == 1) {
+        const char* why = !strcmp(e.why, "SPAN")   ? "beyond learned range"
+                        : !strcmp(e.why, "LIMIT")  ? "30 C from cal temp"
+                        : !strcmp(e.why, "NOCOMP") ? "no comp, moved >1 C"
+                        : !strcmp(e.why, "SEEK")   ? "seek didn't settle"
+                                                   : e.why;
+        addLine(lines, n, maxLines, "Resync ADVISED");
+        addLine(lines, n, maxLines, "  %s", why);
+    } else if (e.resync == 0) {
+        addLine(lines, n, maxLines, "Resync not needed");
+    }
+    return n;
+}
+
 // Settings -> Calibration -> Learning: the daughter's thermal learning
 // (rev 9 LEARN) -- how many resyncs it has, how far the block temperature
 // has varied, and the per-side fit against the bar it must clear.
@@ -776,6 +813,7 @@ const MenuItem kCalibrationSubmenuItems[] = {
     { "Model",    MenuItemType::SUBMENU,      nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount },
     { "Progress", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
     { "Status",   MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
+    { "Temperature", MenuItemType::INFO,      nullptr, nullptr, 0, nullptr, 0, fillTemperature },
     { "Learning", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
     { "Forget",   MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
 };constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
@@ -916,3 +954,41 @@ constexpr size_t kRootMenuItemCount = sizeof(kRootMenuItems) / sizeof(kRootMenuI
 
 const MenuItem* getRootMenuItems() { return kRootMenuItems; }
 size_t getRootMenuItemCount() { return kRootMenuItemCount; }
+
+namespace {
+// Position of the item whose submenu is `target` in a list (or -1).
+int indexOfSubmenu(const MenuItem* items, size_t count, const MenuItem* target) {
+    for (size_t i = 0; i < count; ++i) if (items[i].submenuItems == target) return static_cast<int>(i);
+    return -1;
+}
+int indexOfInfo(const MenuItem* items, size_t count, MenuInfoFill fill, MenuItemType type) {
+    for (size_t i = 0; i < count; ++i) if (items[i].type == type && items[i].fillInfo == fill) return static_cast<int>(i);
+    return -1;
+}
+} // namespace
+
+void menuOpenResyncStart(MenuScreen& menu) {
+    int settings    = indexOfSubmenu(kRootMenuItems, sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]), kSettingsSubmenuItems);
+    int calibration = indexOfSubmenu(kSettingsSubmenuItems, kSettingsSubmenuItemCount, kCalibrationSubmenuItems);
+    if (settings < 0 || calibration < 0) return;
+    menu.focus(static_cast<size_t>(settings));
+    menu.enter();
+    menu.focus(static_cast<size_t>(calibration));
+    menu.enter();
+
+    constexpr size_t kCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
+    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    if (s.busy) {
+        int progress = indexOfInfo(kCalibrationSubmenuItems, kCount, fillCalibrationProgress, MenuItemType::INFO);
+        if (progress >= 0) { menu.focus(static_cast<size_t>(progress)); menu.enter(); }
+        return;
+    }
+    int rtotal = indexOfInfo(kCalibrationSubmenuItems, kCount, fillCalibrationProgress, MenuItemType::EDITOR);
+    if (rtotal < 0) return;
+    // A resync keeps Rtotal: select exactly what the daughter uses now.
+    g_rSelAuto = s.rAuto;
+    g_rSelOhms = s.rOhms;
+    updateStartLabel();
+    menu.focus(static_cast<size_t>(rtotal));
+    menu.openOptions();
+}

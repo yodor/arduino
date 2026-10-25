@@ -171,6 +171,20 @@ void MenuScreen::moveFocus(int delta) {
     m_dirty = true;
 }
 
+void MenuScreen::focus(size_t index) {
+    StackFrame& frame = m_stack[m_stackDepth - 1];
+    if (index < frame.itemCount) frame.focusedIdx = index;
+    m_dirty = true;
+}
+
+void MenuScreen::openOptions() {
+    const MenuItem& item = focusedItem();
+    if (!item.options || item.optionCount == 0) return;
+    m_inValueChoice = true;
+    m_optionIdx     = 0; // the first option -- "Cancel" in the confirmations
+    m_dirty         = true;
+}
+
 void MenuScreen::enter() {
     StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) return;

@@ -1,5 +1,6 @@
 #pragma once
 #include "Config.hpp"
+#include <cstring>
 
 // Result of the most recently completed (or in-flight) command.
 enum class DaughterCmdStatus : uint8_t {
@@ -88,6 +89,11 @@ struct DaughterEnv {
     uint32_t receivedMs = 0;
     char block[8] = "--", rail[8] = "--", comp[10] = "--"; // rev 11 dropped CELLL/CELLR
     char offL[8] = "--", offR[8] = "--", kL[8] = "--", kR[8] = "--", dBlock[8] = "--", match[8] = "--";
+    char ntc[8]  = "--";   // rev 13: OK | OPEN | SHORT | BAD (anything but OK: compensation off, COMP=NONTC)
+    int8_t resync = -1;    // rev 14: 1 = a resync (CAL) is recommended, 0 = not needed, -1 = unknown
+    char why[10] = "-";    // rev 14: SPAN | LIMIT | NOCOMP | SEEK | -
+
+    bool ntcOk() const { return !strcmp(ntc, "OK") || !strcmp(ntc, "--"); } // "--" = not reported (older daughter)
 };
 
 // Revision 8 PROGRESS reply -- what a running calibration is doing.

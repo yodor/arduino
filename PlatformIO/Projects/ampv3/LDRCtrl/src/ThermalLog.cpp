@@ -200,6 +200,12 @@ void fitCounts(uint8_t &n, float &spread) {
 
 void forgetEnvironment() { LittleFS.remove(STATE_PATH); }
 
+float learnedSpanC() {
+  static ThermalFit::Entry e[MAX_ENTRIES];
+  const uint8_t n = loadEntries(e, MAX_ENTRIES);
+  return ThermalFit::fit(e, n, 0, 0).maxAbs;
+}
+
 bool savedBlock(float &t) {
   Env e;
   if (!loadState(e) || isnan(e.block)) return false;

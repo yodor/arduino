@@ -1,6 +1,7 @@
 #pragma once
 #include "AmpHold.hpp"
 #include <Arduino.h>
+#include "BoardSensors.hpp"
 #include <stdio.h>
 
 // ============================================================================
@@ -79,6 +80,7 @@ public:
   // v1b driver board sensors (BoardSensors.hpp): the aluminium block's NTC in C, and the
   // 3.3 V rail via the TL431, in volts. NAN when the sensor is missing or implausible.
   static float blockTempC();
+  static BoardSensors::NtcState ntcState();   // OK / OPEN / SHORT / BAD
   static float railVolts();
 
   // Whole seconds since power-up or reset (millis()/1000). There is no wall

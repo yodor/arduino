@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 12
+# Master Board <-> Daughter Board UART Protocol — revision 14
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=12`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=14`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`, revision 13 the NTC state in `ENV`, revision 14 the resync hint in `ENV`) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=12
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14
 ```
 
 | Key | Meaning |
@@ -136,18 +136,21 @@ values read `--`.
 
 ```
 ENV
-OK ENV BLOCK=22.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.40 KR=-5.21 DBLOCK=+0.17 MATCH=+0.05
+OK ENV BLOCK=22.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.40 KR=-5.21 DBLOCK=+0.17 MATCH=+0.05 NTC=OK RESYNC=0 WHY=-
 ```
 
 | Key | Meaning |
 |---|---|
 | `BLOCK` | driver block temperature (NTC on the aluminium block), C, 1-minute average |
 | `RAIL` | 3.3 V rail via the TL431, V, 1-minute average (the value the rail correction uses) |
-| `COMP` | thermal compensation: `ON` (both sides), `PART` (one side), `LEARNING` (enabled, fit not trusted yet), `OFF` (switched off) |
+| `COMP` | thermal compensation: `ON` (both sides), `PART` (one side), `LEARNING` (enabled, fit not trusted yet), `NONTC` (the block NTC is faulty: no offsets, see `NTC`), `OFF` (switched off) |
 | `OFFL`, `OFFR` | the offset each side's drive gets right now, PWM counts (`--` when not applied) |
 | `KL`, `KR` | the learned slope, counts per C of block temperature (`--` before any fit) |
 | `DBLOCK` | block temperature change since the last calibration, C |
 | `MATCH` | L/R balance the last calibration reached at the quiet point, dB (`+` = R quieter) |
+| `NTC` | revision 13: the block NTC's state: `OK`, `OPEN` (missing or broken wire), `SHORT`, `BAD` (implausible reading, outside -20..+100 C). Anything but `OK` switches the compensation off (`COMP=NONTC`, no offsets) until it reads again. Appended at the end: masters parsing the older keys are unaffected |
+| `RESYNC` | revision 14: `1` = a resync (`CAL`) is recommended now, `0` = not needed |
+| `WHY` | the reason: `SPAN` (the block is further from the calibration temperature than the compensation has learned, and more than 1.5 C: it is extrapolating; a resync makes it exact and teaches the new range), `LIMIT` (30 C or more from the calibration temperature), `NOCOMP` (the compensation is not active -- learning, or switched off -- and the block moved more than 1 C), `SEEK` (the last calibration's quiet-point seek did not converge), `-` (none). Based on the block's 1-minute average, so it does not flicker. A faulty NTC gives no hint (`NTC=` reports it) |
 
 The reply is instant: everything comes from running averages. **Revision 11 removed `CELLL` and `CELLR`** (the DS18B20 cell sensors are no longer supported: the drift follows the driver block). A master that parsed them must drop them; every other key keeps its order.
 

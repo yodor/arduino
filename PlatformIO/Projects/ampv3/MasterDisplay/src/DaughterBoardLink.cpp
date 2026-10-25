@@ -295,6 +295,9 @@ bool DaughterBoardLink::parseEnvLine(const char* line) {
         else if (!strcmp(k, "KR"))     copyField(e.kR, v);
         else if (!strcmp(k, "DBLOCK")) copyField(e.dBlock, v);
         else if (!strcmp(k, "MATCH"))  copyField(e.match, v);
+        else if (!strcmp(k, "NTC"))    copyField(e.ntc, v);
+        else if (!strcmp(k, "RESYNC")) e.resync = (v[0] == '1') ? 1 : (v[0] == '0' ? 0 : -1);
+        else if (!strcmp(k, "WHY"))    copyField(e.why, v);
     });
     e.valid      = true;
     e.receivedMs = millis();
@@ -517,8 +520,11 @@ void DaughterBoardLink::update() {
     if (m_status != DaughterCmdStatus::PENDING && !m_holdPolls) {
         bool statusDue   = m_statusRefreshRequested || (now - m_lastStatusSentMs >= currentPollIntervalMs());
         bool progressDue = calibrating && (now - m_lastProgressSentMs >= DAUGHTER_PROGRESS_POLL_MS);
-        bool envDue      = static_cast<int32_t>(m_envWantedUntilMs - now) > 0 &&
+        bool envWanted   = static_cast<int32_t>(m_envWantedUntilMs - now) > 0 &&
                            (m_lastEnvSentMs == 0 || now - m_lastEnvSentMs >= DAUGHTER_ENV_POLL_MS);
+        bool envBackground = m_statusData.valid && !m_statusData.busy && isStatusFresh() &&
+                             (m_lastEnvSentMs == 0 || now - m_lastEnvSentMs >= DAUGHTER_ENV_BACKGROUND_POLL_MS);
+        bool envDue      = envWanted || envBackground;
         bool learnDue    = static_cast<int32_t>(m_learnWantedUntilMs - now) > 0 &&
                            (m_lastLearnSentMs == 0 || now - m_lastLearnSentMs >= DAUGHTER_ENV_POLL_MS);
         bool modelDue    = static_cast<int32_t>(m_modelWantedUntilMs - now) > 0 &&

@@ -98,4 +98,6 @@ const char *calNeedName();               // "OK", "NONE", "CHANGED", "STALE"
 void onModelChanged(LDRVolume &left, LDRVolume &right);
 // The model the stored calibration was solved with ("/model.txt"); false if unknown.
 bool solvedModel(float &src, float &load);
+// The last quiet-point seek (this session) did not converge: a resync is recommended.
+bool lastSeekFailed();
 } // namespace DualCalibration

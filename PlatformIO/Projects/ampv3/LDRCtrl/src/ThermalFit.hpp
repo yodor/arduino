@@ -23,6 +23,7 @@ struct Slope {
   float k = NAN;    // counts per unit (C or %)
   float r2 = NAN;   // fraction of the shift explained (through-origin fit)
   float spread = 0; // RMS of the variable's change -- a fit needs it to have moved
+  float maxAbs = 0; // the largest change it learned from: beyond that the fit extrapolates
 };
 
 // shift[c] against x through the origin. xSel: 0 = block, 1 = rail.
@@ -48,6 +49,7 @@ inline Slope fit(const Entry *e, uint8_t n, uint8_t c, uint8_t xSel) {
     const float x = xSel == 0 ? e[i].dBlock : e[i].dRailPct;
     if (!isfinite(x) || !isfinite(y)) continue;   // NaN, or inf from NaN arithmetic on the RP2040
     sxy += (double)x * y; sxx += (double)x * x; syy += (double)y * y;
+    if (fabsf(x) > s.maxAbs) s.maxAbs = fabsf(x);
     s.n++;
   }
   if (s.n == 0) return s;

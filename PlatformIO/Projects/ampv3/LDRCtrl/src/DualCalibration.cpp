@@ -543,8 +543,10 @@ float lastQuietMatchDb() {
 }
 
 float gKneeShiftLR[2] = {NAN, NAN};
+bool gLastSeekFailed = false;    // the last quiet-point seek did not converge (resync hint)
 
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
+  bool seekFailedNow = false;
   gKneeShiftLR[0] = gKneeShiftLR[1] = NAN;
   const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
   constexpr uint8_t MAX_PROBES = 8;
@@ -657,6 +659,8 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     out.print(F("k, ")); out.print(probes[c]); out.print(F(" settled probes)"));
     // Only a CONVERGED seek is a measured knee shift; anything else is "unknown" to the learning.
     gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0] = ok[c] ? ((float)f[c] - (float)oldF[c]) / Lc : NAN;
+    if (!ok[c]) seekFailedNow = true;
+    gLastSeekFailed = seekFailedNow;
     const uint8_t shifted = ch[c]->applyQuietSeek(oldF[c], f[c]);
     if (shifted) {
       out.print(F("; knee shift "));
@@ -1161,5 +1165,7 @@ void onModelChanged(LDRVolume &left, LDRVolume &right) {
 }
 
 bool solvedModel(float &src, float &load) { return readSolvedModel(src, load); }
+
+bool lastSeekFailed() { return gLastSeekFailed; }
 
 } // namespace DualCalibration

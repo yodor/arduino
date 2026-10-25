@@ -14,19 +14,47 @@ namespace ThermalComp {
 
 // ---- pure arithmetic (host-tested) ----
 constexpr float MIN_R2 = 0.6f;            // the fit must explain most of the drift
-// Safety bound on the offset. At the learned ~5.4 counts/C, 15 covered only ~2.8 C: a cold
-// start after a warm calibration (block 5-8 C cooler) needed 27-43 counts and the middle steps
-// played quiet until a resync. 45 covers ~8 C; a broken NTC still gives no offset at all.
-constexpr float MAX_COUNTS = 45.0f;
+// The range: the full correction within MAX_SPAN_C of the calibration temperature (a room at
+// 18..40 C puts the block anywhere from ~18 to ~50 C: from any calibration point inside that,
+// 30 C covers it). The guard against a bad fit is the slope: only physically plausible slopes
+// are used (the driver's drift measured ~5.4 counts/C). Count caps of 15 and then 45 cut a cold
+// start short. A faulty NTC (OPEN / SHORT / BAD) gives no offset at all.
+constexpr float MAX_SPAN_C = 30.0f;
+constexpr float MAX_SLOPE = 15.0f;                       // counts per C
+constexpr float MAX_COUNTS = MAX_SLOPE * MAX_SPAN_C;     // the implied backstop
 constexpr float DEADBAND_COUNTS = 0.05f;  // re-apply only when the offset moves this much
 inline float offsetCounts(float k, float tNow, float tRef) {
   if (isnan(k) || isnan(tNow) || isnan(tRef)) return 0.0f;
-  float o = k * (tNow - tRef);
+  float dT = tNow - tRef;
+  if (dT > MAX_SPAN_C) dT = MAX_SPAN_C;
+  if (dT < -MAX_SPAN_C) dT = -MAX_SPAN_C;
+  float o = k * dT;
   if (o > MAX_COUNTS) o = MAX_COUNTS;
   if (o < -MAX_COUNTS) o = -MAX_COUNTS;
   return o;
 }
-inline bool trusted(bool usable, float r2) { return usable && !isnan(r2) && r2 >= MIN_R2; }
+inline bool trusted(bool usable, float r2, float k = 0.0f) {
+  return usable && !isnan(r2) && r2 >= MIN_R2 && !isnan(k) && fabsf(k) <= MAX_SLOPE;
+}
+
+// When a resync would help (protocol 14: ENV RESYNC= WHY=; TEMP/DIAG). dT = block now minus at
+// the last calibration (NAN if unknown, e.g. a faulty NTC -- ENV NTC= reports that itself);
+// spanC = the largest change the fit learned from; compOn = the compensation is applying offsets.
+enum class Hint : uint8_t { NONE, SPAN, LIMIT, NOCOMP, SEEK };
+constexpr float HINT_NOCOMP_C = 1.0f;   // moved this much with nothing correcting it
+constexpr float HINT_MIN_SPAN_C = 1.5f; // below this the learned span is too small to judge by
+inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed) {
+  if (seekFailed) return Hint::SEEK;
+  if (isnan(dT)) return Hint::NONE;
+  const float a = fabsf(dT);
+  if (a >= MAX_SPAN_C) return Hint::LIMIT;
+  if (!compOn) return a > HINT_NOCOMP_C ? Hint::NOCOMP : Hint::NONE;
+  const float span = spanC > HINT_MIN_SPAN_C ? spanC : HINT_MIN_SPAN_C;
+  return a > span ? Hint::SPAN : Hint::NONE;
+}
+inline const char *hintName(Hint h) {
+  return h == Hint::SPAN ? "SPAN" : h == Hint::LIMIT ? "LIMIT" : h == Hint::NOCOMP ? "NOCOMP" : h == Hint::SEEK ? "SEEK" : "-";
+}
 
 // ---- runtime ----
 void begin(DriverChannels &driver);   // after LittleFS, RailComp
@@ -44,5 +72,8 @@ float blockAtCalibration();           // the reference, C
 bool sideActive(uint8_t side);        // 0 = L, 1 = R: a trusted fit is being applied
 float sideOffsetCounts(uint8_t side); // the offset in the driver now
 float sideSlope(uint8_t side);        // counts per C (NAN if no fit)
+bool ntcOk();                         // the block NTC reads (not OPEN / SHORT / BAD)
+Hint hint();                          // whether a resync is recommended now, and why
+void printHint(Print &out);           // the same as a sentence (TEMP / DIAG)
 
 } // namespace ThermalComp

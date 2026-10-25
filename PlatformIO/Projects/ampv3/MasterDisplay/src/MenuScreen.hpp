@@ -28,6 +28,12 @@ public:
     const char* name() const override { return "MENU"; }
 
     void moveFocus(int delta); // -1 = up, +1 = down; in an editor: up = increase the focused field
+
+    // For jumping straight to a place in the menu (e.g. from a notice):
+    // focus item `index` of the current list, and open the focused item's
+    // option list directly (an EDITOR's follow-up choice, without the editor).
+    void focus(size_t index);
+    void openOptions();
     void enter();              // RIGHT: open / select / next field (save on the last one)
 
     // LEFT: backs out one level (closing an open option list / page / editor,

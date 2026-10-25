@@ -8,3 +8,10 @@
 // where the specific items/callbacks/labels for THIS project's menu live.
 const MenuItem* getRootMenuItems();
 size_t getRootMenuItemCount();
+
+// From the "CALIBRATION ADVISED" notice: opens the (freshly entered) menu at
+// Settings -> Calibration -> Rtotal with "Cancel / Start R=<current>" showing
+// -- Start runs the resync and shows the progress page. If a calibration is
+// already running, the progress page instead.
+class MenuScreen;
+void menuOpenResyncStart(MenuScreen& menu);

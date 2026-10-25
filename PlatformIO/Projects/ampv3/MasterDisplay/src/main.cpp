@@ -19,6 +19,7 @@
 #include "PowerControl.hpp"
 #include "PowerOverlay.hpp"
 #include "AutoStandby.hpp"
+#include "NoticeOverlay.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
@@ -85,6 +86,11 @@ static PowerView    g_powerView = PowerView::NONE;
 
 static VolumeOverlay g_volumeOverlay;
 static bool          g_overlayShown = false;
+
+// Notices from the daughter (resync advised, NTC fault) -- see
+// daughterNotices(). Shown like the volume overlay, when nothing else is.
+static NoticeOverlay g_noticeOverlay;
+static bool          g_noticeShown = false;
 static bool       g_menuOpen = false;
 static size_t     g_screenIdxBeforeMenu = 0;
 
@@ -217,6 +223,57 @@ static void closeMenu() {
     PersistentSettings::instance().saveIfDirty();
 }
 
+// Revision 13/14 ENV: while the daughter recommends a resync (RESYNC=1), the
+// notice (with its reason) pops up again with each background ENV reading --
+// every DAUGHTER_ENV_BACKGROUND_POLL_MS, at most -- until a calibration
+// clears it: not intrusive, but insistent. Also once when the block NTC
+// develops a fault (which turns the thermal compensation off).
+static void daughterNotices() {
+    const DaughterEnv& e = DaughterBoardLink::instance().env();
+    PowerControl& power  = PowerControl::instance();
+    static uint32_t s_envSeenMs  = 0;
+    static bool     s_lastNtcOk  = true;
+    static bool     s_wasOn      = false;
+    static uint32_t s_resyncShownMs = 0;
+    static bool     s_resyncShown   = false;
+
+    auto showResync = [&]() {
+        const char* why = !strcmp(e.why, "SPAN")   ? "temperature beyond learned range"
+                        : !strcmp(e.why, "LIMIT")  ? "30 C or more from calibration temp"
+                        : !strcmp(e.why, "NOCOMP") ? "block moved >1 C, no compensation"
+                        : !strcmp(e.why, "SEEK")   ? "last quiet-point seek didn't settle"
+                                                   : "temperature changed";
+        g_noticeOverlay.show("CALIBRATION ADVISED", why, "press RIGHT to calibrate", COLOR_YELLOW, true);
+        if (!s_resyncShown) Serial.printf("[Daughter] Resync recommended (WHY=%s)\n", e.why);
+        s_resyncShown   = true;
+        s_resyncShownMs = millis();
+    };
+
+    bool on = power.isOn();
+    if (on && !s_wasOn && e.valid && e.resync == 1) showResync(); // switched on with the hint still up
+    s_wasOn = on;
+
+    if (!e.valid || e.receivedMs == s_envSeenMs) return;
+    s_envSeenMs = e.receivedMs;
+
+    // Each fresh reading with the hint up shows it again -- but no more often
+    // than the background poll (a calibration page polls ENV every 5 s).
+    if (e.resync == 1 && on &&
+        (!s_resyncShown || millis() - s_resyncShownMs >= DAUGHTER_ENV_BACKGROUND_POLL_MS - 1000)) {
+        showResync();
+    }
+    if (e.resync == 0) s_resyncShown = false; // cleared (a calibration ran): log it afresh next time
+
+    bool ntcOk = e.ntcOk();
+    if (!ntcOk && s_lastNtcOk) {
+        char line[40];
+        snprintf(line, sizeof(line), "block NTC %s: compensation off", e.ntc);
+        if (on) g_noticeOverlay.show("SENSOR FAULT", line, "check the NTC on the driver block", COLOR_RED);
+        Serial.printf("[Daughter] Block NTC fault: NTC=%s -- thermal compensation off\n", e.ntc);
+    }
+    s_lastNtcOk = ntcOk;
+}
+
 // Auto standby (Settings -> Power, see AutoStandby): when it says so, run
 // the normal standby sequence -- closing the menu / display test first.
 static void autoStandbyUpdate(bool keyActivity) {
@@ -254,6 +311,8 @@ void loop() {
     power.update();
     g_powerOverlay.update();
     autoStandbyUpdate(keyActivity);
+    daughterNotices();
+    g_noticeOverlay.update();
 
     // Not on (standby, or a power sequence running): nothing but the power
     // key does anything. In standby, any other key shows the
@@ -347,13 +406,26 @@ void loop() {
             s_lastRepeatMs = nowMsMenu;
         }
     } else {
-        if (event == UIEvent::MODE_NEXT || event == UIEvent::MODE_PREV) {
+        if (event == UIEvent::MODE_NEXT && g_noticeShown && g_noticeOverlay.isResyncNotice()) {
+            // RIGHT on the "CALIBRATION ADVISED" notice: straight to the
+            // resync start (Settings > Calibration > Rtotal, Cancel / Start).
+            g_menuOpen = true;
+            g_noticeOverlay.dismiss();
+            g_volumeOverlay.dismiss();
+            g_overlayShown = false;
+            g_noticeShown  = false;
+            g_screenIdxBeforeMenu = g_currentScreenIdx;
+            g_menuScreen.onEnter();
+            menuOpenResyncStart(g_menuScreen);
+            Serial.println("[Menu] Opened at the calibration start (from the notice)");
+        } else if (event == UIEvent::MODE_NEXT || event == UIEvent::MODE_PREV) {
             g_currentScreenIdx = (event == UIEvent::MODE_NEXT)
                                       ? (g_currentScreenIdx + 1) % kNumScreens
                                       : (g_currentScreenIdx + kNumScreens - 1) % kNumScreens;
 
             g_volumeOverlay.dismiss();
             g_overlayShown = false;
+            g_noticeShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
             Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
         } else if (event == UIEvent::MUTE_TOGGLE) {
@@ -365,6 +437,7 @@ void loop() {
             DisplaySettings::instance().toggleChannelMode();
             g_volumeOverlay.dismiss();
             g_overlayShown = false;
+            g_noticeShown = false;
             // Channel mode changes a screen's whole layout (bar count/
             // width, trace split), so force the current screen to
             // re-enter and rebuild its geometry rather than continuing
@@ -376,6 +449,7 @@ void loop() {
             g_menuOpen = true;
             g_volumeOverlay.dismiss();
             g_overlayShown = false;
+            g_noticeShown = false;
             g_screenIdxBeforeMenu = g_currentScreenIdx;
             g_menuScreen.onEnter();
             Serial.println("[Menu] Opened");
@@ -398,6 +472,7 @@ void loop() {
         if (g_menuOpen) closeMenu();
         g_volumeOverlay.dismiss();
         g_overlayShown    = false;
+        g_noticeShown = false;
         g_displayTestOpen = true;
         g_displayTest.onEnter();
         Serial.println("[Diag] Display test opened");
@@ -434,6 +509,7 @@ void loop() {
         // re-entering the screen underneath, which isn't shown).
         g_volumeOverlay.dismiss();
         g_overlayShown = false;
+        g_noticeShown = false;
     }
     if (wantPower != g_powerView) {
         uint8_t brightness = DisplaySettings::instance().getBrightnessPercent();
@@ -462,15 +538,23 @@ void loop() {
     }
 
     if (g_powerView == PowerView::NONE) {
+        // The volume overlay wins over a notice; a notice waits while the
+        // menu or the display test is open (and is dropped if it runs out).
         bool wantOverlay = g_volumeOverlay.isActive();
+        bool wantNotice  = !wantOverlay && g_noticeOverlay.isActive() && !g_menuOpen && !g_displayTestOpen;
+        bool wasShowing  = g_overlayShown || g_noticeShown;
         if (wantOverlay && !g_overlayShown) {
             g_volumeOverlay.onEnter();
-        } else if (!wantOverlay && g_overlayShown) {
+        } else if (wantNotice && !g_noticeShown) {
+            g_noticeOverlay.onEnter();
+        } else if (!wantOverlay && !wantNotice && wasShowing && !g_menuOpen && !g_displayTestOpen) {
             // The overlay painted over the whole panel -- let the screen
             // rebuild from scratch rather than trust its delta-redraw state.
             g_screens[g_currentScreenIdx]->onEnter();
         }
+        if (wantOverlay && g_noticeShown) g_noticeOverlay.dismiss(); // the volume readout takes over
         g_overlayShown = wantOverlay;
+        g_noticeShown  = wantNotice;
     }
 
     uint32_t renderStartUs = micros();
@@ -487,6 +571,8 @@ void loop() {
         g_menuScreen.render();
     } else if (g_overlayShown) {
         g_volumeOverlay.render();
+    } else if (g_noticeShown) {
+        g_noticeOverlay.render();
     } else {
         g_screens[g_currentScreenIdx]->render();
     }
@@ -529,6 +615,7 @@ void loop() {
                          : g_displayTestOpen ? g_displayTest.name()
                          : g_menuOpen ? g_menuScreen.name()
                          : g_overlayShown ? g_volumeOverlay.name()
+                         : g_noticeShown ? g_noticeOverlay.name()
                          : g_screens[g_currentScreenIdx]->name());
 
             // RTC time -- one short I2C read, once a second.

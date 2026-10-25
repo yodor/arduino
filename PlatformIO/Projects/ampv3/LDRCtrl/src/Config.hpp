@@ -69,7 +69,7 @@ constexpr uint32_t PWM_DITHER_LEVELS = 16;
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
 // DIAG, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
-#define FW_VERSION "2026-10-26b (thermal compensation range 45 counts: covers a cold start)"
+#define FW_VERSION "2026-10-26d (resync hint: ENV RESYNC= WHY=, TEMP/DIAG)"
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
@@ -281,4 +281,4 @@ constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 // keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 12; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: master-controlled power-up; 11: ENV without CELLL/CELLR; 12: SET SRC/LOAD, MODEL, COMP
+constexpr uint8_t PROTO_VERSION = 14; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: master-controlled power-up; 11: ENV without CELLL/CELLR; 12: SET SRC/LOAD, MODEL, COMP; 13: ENV NTC=, COMP=NONTC; 14: ENV RESYNC= WHY=
