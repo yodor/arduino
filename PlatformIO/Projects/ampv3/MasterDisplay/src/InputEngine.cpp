@@ -83,6 +83,27 @@ UIEvent InputEngine::pollEvents() {
         if (!consumed) push(UIEvent::MODE_NEXT);
     }
 
+    // DOWN gestures: double-click = mute, single tap = one step down (after
+    // the double-click window), hold = repeat (isVolDownHeld()).
+    if (m_downGestures) {
+        if (m_btnVolDown.justReleased) {
+            bool tap = (now - m_btnVolDown.pressedSinceMs) < DOWN_HOLD_MS;
+            if (tap && m_downTapPending && now - m_downTapMs <= DOUBLE_CLICK_MS) {
+                m_downTapPending = false;
+                push(UIEvent::MUTE_TOGGLE);
+            } else if (tap) {
+                m_downTapPending = true;
+                m_downTapMs      = now;
+            } else {
+                m_downTapPending = false; // that was a hold; it already stepped the volume
+            }
+        }
+        if (m_downTapPending && !m_btnVolDown.isHeld() && now - m_downTapMs > DOUBLE_CLICK_MS) {
+            m_downTapPending = false;
+            push(UIEvent::GAIN_DOWN);
+        }
+    }
+
     // IR Signal Receiver
     if (m_irPin != 255 && IrReceiver.decode()) {
         uint16_t cmd = IrReceiver.decodedIRData.command;

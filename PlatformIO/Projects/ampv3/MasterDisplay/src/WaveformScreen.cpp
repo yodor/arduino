@@ -1,9 +1,18 @@
 #include "WaveformScreen.hpp"
+#include "ColorTheme.hpp"
 #include "Renderer.hpp"
 #include "AudioEngine.hpp"
 #include "DisplaySettings.hpp"
 
 void WaveformScreen::onEnter() {
+    // Trace colours from the active theme: its first colour for the top
+    // (left) trace, its last for the bottom (right), the middle mix for mono.
+    // (A theme change happens in the menu, and closing it re-enters here.)
+    ColorTheme& theme = ColorTheme::instance();
+    m_colorTop    = theme.lowColor();
+    m_colorBottom = theme.highColor();
+    m_colorMono   = theme.interpolatedColor(0.5f);
+
     Renderer::instance().clear();
     m_waveTraceValid = false; // next render() call must redraw gridlines fresh
 }
@@ -97,8 +106,8 @@ void WaveformScreen::renderStereo(const int16_t* leftWave, const int16_t* rightW
         // segment, which this chunk's erase may have nicked where the two
         // chunks meet.
         size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
-        drawWavePolylineRange(m_curWaveYL, sampleCount, drawFrom, chunkEnd, COLOR_CYAN);
-        drawWavePolylineRange(m_curWaveYR, sampleCount, drawFrom, chunkEnd, COLOR_YELLOW);
+        drawWavePolylineRange(m_curWaveYL, sampleCount, drawFrom, chunkEnd, m_colorTop);
+        drawWavePolylineRange(m_curWaveYR, sampleCount, drawFrom, chunkEnd, m_colorBottom);
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {
@@ -138,7 +147,7 @@ void WaveformScreen::renderMono(const int16_t* leftWave, const int16_t* rightWav
         }
 
         size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
-        drawWavePolylineRange(m_curWaveYMono, sampleCount, drawFrom, chunkEnd, COLOR_CYAN);
+        drawWavePolylineRange(m_curWaveYMono, sampleCount, drawFrom, chunkEnd, m_colorMono);
     }
 
     for (size_t i = 0; i < sampleCount; ++i) {

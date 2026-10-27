@@ -5,11 +5,13 @@
 // by bar-style meters (SpectrumScreen, DigitalVuMeterScreen). Other
 // screens' colors (waveform trace, analog VU needle/scale) aren't themed
 // yet -- extending them the same way later is straightforward.
+// The numbers are what the settings store: SUNSET and AURORA took the slots
+// of the retired OCEAN and COLORFUL themes, so an old save maps to them.
 enum class ColorPreset : uint8_t {
-    CLASSIC,  // green -> yellow -> red, flat zones (the original, default look)
-    OCEAN,    // cyan -> blue -> magenta, flat zones
-    COLORFUL, // blue -> purple -> red, smooth gradient based on a bar's LEVEL (height)
-    NASTYFFT  // blue -> purple -> red, ONE flat color per bar based on its FREQUENCY position (bar index), independent of level
+    CLASSIC  = 0, // green -> yellow -> red, flat zones (the original, default look)
+    SUNSET   = 1, // magenta -> orange -> yellow, one colour per bar by its frequency (as NASTYFFT)
+    AURORA   = 2, // green -> cyan -> violet, one colour per bar by its frequency (as NASTYFFT)
+    NASTYFFT = 3  // blue -> purple -> red, ONE flat color per bar based on its FREQUENCY position (bar index), independent of level
 };
 
 // How a preset's low/mid/high colors get applied:

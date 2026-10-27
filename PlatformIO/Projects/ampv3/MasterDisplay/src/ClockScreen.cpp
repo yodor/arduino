@@ -1,4 +1,5 @@
 #include "ClockScreen.hpp"
+#include "ColorTheme.hpp"
 #include "Renderer.hpp"
 #include "DisplaySettings.hpp"
 #include <cstdio>
@@ -116,7 +117,9 @@ void ClockScreen::layout() {
         m_dayY    = m_dateTop + 8 * m_wdaySize + kDateRowGap;
     }
 
-    m_onColor    = ds.getClockColor();
+    // Settings > Clock > Color: the theme's middle mix (as the mono
+    // waveform), or the custom colour.
+    m_onColor    = ds.getClockFollowTheme() ? ColorTheme::instance().interpolatedColor(0.5f) : ds.getClockColor();
     m_ghostColor = dim565(m_onColor);
 }
 

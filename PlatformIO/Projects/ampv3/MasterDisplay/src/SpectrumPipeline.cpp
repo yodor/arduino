@@ -108,6 +108,28 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
         m_barsL[band] = (valueL > SPECTRUM_NOISE_GATE) ? valueL : 0.0f;
         m_barsR[band] = (valueR > SPECTRUM_NOISE_GATE) ? valueR : 0.0f;
     }
+
+    // The Info screen's small mono spectrum: doubling bands (1, 2, 4... bins
+    // from bin 0), mono = the mean of L and R per bin, same energy mode.
+    size_t start = 0;
+    for (size_t band = 0; band < DOUBLING_BAND_COUNT; ++band) {
+        size_t end = start + (static_cast<size_t>(1) << band);
+        if (end > binCount) end = binCount;
+        float value = 0.0f, sumSq = 0.0f;
+        for (size_t b = start; b < end; ++b) {
+            float m = 0.5f * (binsL[b] + binsR[b]);
+            if (energyMode == EnergyMode::PEAK) { if (m > value) value = m; }
+            else                                sumSq += m * m;
+        }
+        if (energyMode != EnergyMode::PEAK) value = sqrtf(sumSq);
+        m_miniBars[band] = (value > SPECTRUM_NOISE_GATE) ? value : 0.0f;
+        start = end;
+    }
+}
+
+size_t SpectrumPipeline::getMiniBars(float* out) const {
+    for (size_t i = 0; i < DOUBLING_BAND_COUNT; ++i) out[i] = m_miniBars[i];
+    return DOUBLING_BAND_COUNT;
 }
 
 void SpectrumPipeline::getBars(float* leftBars, float* rightBars) const {

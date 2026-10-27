@@ -22,6 +22,10 @@ public:
     // trigger: start at a rising zero crossing (oscilloscope trigger) -- see
     // WaveformPipeline::getWaveform(). The meters use the plain full window.
     void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
+    // Triggered mono trace of a fixed span -- see WaveformPipeline::getScopeMono().
+    void getScopeMono(int16_t* out, size_t count, size_t spanSamples) const;
+    // Mono doubling-band bars -- see SpectrumPipeline::getMiniBars().
+    size_t getMiniBars(float* out) const;
 
     // Menu-facing forwarders -- set from core0, applied on core1 inside
     // SpectrumPipeline::pushChunk() (see that class's comment for why this

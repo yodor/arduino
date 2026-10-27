@@ -4,7 +4,9 @@
 #include "DaughterBoardLink.hpp"
 #include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
-#include "RtcClock.hpp"
+#include "BeatDetector.hpp"
+#include "AudioEngine.hpp"
+#include "AudioLevel.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -23,8 +25,8 @@ constexpr int16_t  kValueY     = 32;
 constexpr uint8_t  kValueSize  = 5;    // the big dB number
 constexpr uint8_t  kUnitSize   = 3;
 constexpr uint8_t  kStepSize   = 3;
-constexpr int16_t  kRY         = kValueY;           // Rtotal, right column, top...
-constexpr int16_t  kStepY      = kValueY + 18;      // ...the step number under it (bottoms aligned with the dB)
+constexpr uint8_t  kRightSize  = 3;                 // the middle-right readout (BPM)
+constexpr int16_t  kRightY     = kValueY + 8;       // bottom-aligned with the big dB digits
 constexpr int16_t  kBarY       = 88;
 constexpr int16_t  kBarH       = 42;
 constexpr int16_t  kBarGap     = 2;
@@ -35,6 +37,7 @@ constexpr uint16_t kColorMutedLit = 0x630C; // mid gray -- level shown, but mute
 constexpr uint16_t kColorSubtle   = 0x8410; // gray
 constexpr uint16_t kColorOff      = 0x4208; // dim gray -- a tag that's "off"
 constexpr uint16_t kColorMatch    = 0x07FF; // cyan
+constexpr uint16_t kColorRtotal   = 0xC618; // light gray
 
 // Header slots: start column (characters from the margin) and width.
 struct Slot { uint8_t col, width; };
@@ -43,7 +46,7 @@ constexpr Slot kSlot[5] = {
     { 5, 7 },   // L/R match, e.g. "+0.05dB"
     { 13, 6 },  // block temperature, e.g. "24.3C"
     { 20, 6 },  // alert: MUTE / RESYNC (alternating each second if both)
-    { 27, 7 },  // time, right-aligned, e.g. "21:47" / "9:47PM"
+    { 27, 7 },  // Rtotal value, right-aligned, e.g. "95K" / "1431K"
 };
 
 int16_t textWidth(const char* text, uint8_t size) {
@@ -160,27 +163,133 @@ void InfoScreen::drawStaticForView(View v) {
 }
 
 
-// Middle, right column, top: the Rtotal the volume steps are solved for --
-// "R=95K (auto)" -- above the step number.
-void InfoScreen::drawRTag() {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&    s    = link.status();
+// Middle, right: the view stepped with the Options key -- the detected tempo
+// ("124 BPM", "--- BPM" with no usable beat), the small scope or the small
+// spectrum.
+void InfoScreen::drawRightInfo() {
+    if (m_rightInfo == RightInfo::SCOPE || m_rightInfo == RightInfo::SPECTRUM) {
+        const char* tag = (m_rightInfo == RightInfo::SCOPE) ? "\x01scope" : "\x01spectrum";
+        if (strcmp(m_drawnRight, tag)) {
+            // Coming from another view: clear the area once, then the
+            // graphic keeps it up to date itself.
+            strcpy(m_drawnRight, tag);
+            constexpr int16_t kAreaW = 15 * kCharW * kRowSize;
+            Renderer::instance().gfx()->fillRect(SCREEN_WIDTH - kMargin - kAreaW, kValueY, kAreaW, kCharH * kValueSize, COLOR_BLACK);
+            m_scopeDrawn = false;
+            m_miniDrawn  = false;
+        }
+        if (m_rightInfo == RightInfo::SCOPE) drawScope();
+        else                                 drawMiniSpectrum();
+        return;
+    }
 
     char text[24];
-    uint32_t ohms = link.isStatusFresh() ? s.rOhms : 0;
-    if (ohms == 0) snprintf(text, sizeof(text), "R=--");
-    else snprintf(text, sizeof(text), "R=%luK (%s)", static_cast<unsigned long>((ohms + 500) / 1000), s.rAuto ? "auto" : "manual");
-    if (!strcmp(text, m_drawnR)) return;
-    strcpy(m_drawnR, text);
+    const uint8_t size = kRightSize;
+    float bpm = BeatDetector::instance().bpm();
+    if (bpm > 0.0f) snprintf(text, sizeof(text), "%d BPM", static_cast<int>(lroundf(bpm)));
+    else            snprintf(text, sizeof(text), "--- BPM");
+    if (!strcmp(text, m_drawnRight)) return;
+    strcpy(m_drawnRight, text);
 
+    // The readout's area: from the end of the widest dB text to the margin.
     Arduino_GFX* gfx = Renderer::instance().gfx();
-    constexpr int16_t kSlotChars = 15;
-    int16_t slotW = kSlotChars * kCharW * kRowSize;
-    gfx->fillRect(SCREEN_WIDTH - kMargin - slotW, kRY, slotW, kCharH * kRowSize, COLOR_BLACK);
-    gfx->setTextSize(kRowSize);
+    constexpr int16_t kAreaW = 15 * kCharW * kRowSize; // 180 px
+    gfx->fillRect(SCREEN_WIDTH - kMargin - kAreaW, kValueY, kAreaW, kCharH * kValueSize, COLOR_BLACK);
+    gfx->setTextSize(size);
     gfx->setTextColor(kColorSubtle, COLOR_BLACK);
-    gfx->setCursor(SCREEN_WIDTH - kMargin - textWidth(text, kRowSize), kRY);
+    gfx->setCursor(SCREEN_WIDTH - kMargin - textWidth(text, size), kValueY + kCharH * (kValueSize - size)); // bottom-aligned with the dB
     gfx->print(text);
+}
+
+// The small scope: a triggered mono (L+R) trace of ~9 ms -- the
+// oscilloscope timescale whatever the Wave screen's window setting -- with
+// automatic gain, in a fixed gray (kColorMutedLit). Each column is a
+// vertical stroke from one point to the next; a column only erases the part
+// of its old stroke the new one doesn't cover, so the trace never flickers.
+void InfoScreen::drawScope() {
+    uint32_t now = millis();
+    if (m_scopeDrawn && now - m_scopeLastMs < 25) return; // ~40 fps
+    m_scopeLastMs = now;
+
+    constexpr int16_t kH  = kCharH * kValueSize;                // 40 px: the height of the big dB digits
+    constexpr int16_t kX0 = SCREEN_WIDTH - kMargin - kScopeW;
+    constexpr int16_t kY0 = kValueY;
+    constexpr size_t  kSpanSamples = 384;                       // ~8.7 ms at 44.1 kHz
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+
+    int16_t v[kScopeW + 1];
+    AudioEngine::instance().getScopeMono(v, kScopeW + 1, kSpanSamples);
+
+    // Auto-gain: follow the peak up at once, let it fall slowly; never
+    // below 48 counts full scale, so idle noise stays a flat line.
+    float peak = 0.0f;
+    for (int16_t i = 0; i <= kScopeW; ++i) { float a = fabsf(static_cast<float>(v[i])); if (a > peak) peak = a; }
+    m_scopePeak = (peak > m_scopePeak) ? peak : m_scopePeak * 0.97f;
+    float fullScale = (m_scopePeak > 48.0f) ? m_scopePeak : 48.0f;
+    float half = (kH - 2) / 2.0f;
+    auto yOf = [&](int16_t s) {
+        int16_t y = static_cast<int16_t>(lroundf(kY0 + kH / 2.0f - s * half / fullScale));
+        return y < kY0 ? kY0 : (y > kY0 + kH - 1 ? static_cast<int16_t>(kY0 + kH - 1) : y);
+    };
+
+    bool full = !m_scopeDrawn;
+    if (full) gfx->fillRect(kX0, kY0, kScopeW, kH, COLOR_BLACK);
+
+    int16_t yPrev = yOf(v[0]);
+    for (int16_t x = 0; x < kScopeW; ++x) {
+        int16_t yNext = yOf(v[x + 1]);
+        int16_t lo = yPrev < yNext ? yPrev : yNext;
+        int16_t hi = yPrev < yNext ? yNext : yPrev;
+        if (!full) {
+            int16_t oLo = m_scopeLo[x], oHi = m_scopeHi[x];
+            if (oLo < lo) gfx->fillRect(kX0 + x, oLo, 1, (oHi < lo ? oHi + 1 : lo) - oLo, COLOR_BLACK);
+            if (oHi > hi) { int16_t from = (oLo > hi ? oLo : hi + 1); gfx->fillRect(kX0 + x, from, 1, oHi - from + 1, COLOR_BLACK); }
+        }
+        gfx->fillRect(kX0 + x, lo, 1, hi - lo + 1, kColorMutedLit);
+        m_scopeLo[x] = lo;
+        m_scopeHi[x] = hi;
+        yPrev = yNext;
+    }
+    m_scopeDrawn = true;
+}
+
+// The small spectrum: mono doubling bands (10 bars, low to high), the same
+// level mapping as the Spectrum screen, a gentle fall, fixed gray. Each bar
+// only grows (gray) or shrinks (black) by the rows that changed.
+void InfoScreen::drawMiniSpectrum() {
+    uint32_t now = millis();
+    if (m_miniDrawn && now - m_miniLastMs < 30) return; // ~33 fps, about the FFT rate
+    float dt = m_miniDrawn ? (now - m_miniLastMs) / 1000.0f : 0.0f;
+    m_miniLastMs = now;
+
+    constexpr int16_t kH   = kCharH * kValueSize;              // 40 px
+    constexpr int16_t kX0  = SCREEN_WIDTH - kMargin - kScopeW;
+    constexpr int16_t kY0  = kValueY;
+    constexpr int16_t kGap = 2;
+    constexpr int16_t kBarW = (kScopeW - (kMiniBars - 1) * kGap) / kMiniBars; // 15 px
+    constexpr float   kFallPerSec = 1.6f;                      // full height in ~0.6 s
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+
+    float bars[16] = {};
+    size_t n = AudioEngine::instance().getMiniBars(bars);
+    if (n > kMiniBars) n = kMiniBars;
+
+    if (!m_miniDrawn) {
+        gfx->fillRect(kX0, kY0, kScopeW, kH, COLOR_BLACK);
+        for (int i = 0; i < kMiniBars; ++i) { m_miniDrawnH[i] = 0; m_miniLevel[i] = 0.0f; }
+    }
+    for (int i = 0; i < kMiniBars; ++i) {
+        float target = (static_cast<size_t>(i) < n) ? AudioLevel::dbNormalize(bars[i]) : 0.0f;
+        float fallen = m_miniLevel[i] - kFallPerSec * dt;
+        m_miniLevel[i] = (target > fallen) ? target : (fallen > 0.0f ? fallen : 0.0f);
+        int16_t h = static_cast<int16_t>(lroundf(m_miniLevel[i] * kH));
+        int16_t old = m_miniDrawnH[i];
+        int16_t x = kX0 + i * (kBarW + kGap);
+        if (h > old)      gfx->fillRect(x, kY0 + kH - h, kBarW, h - old, kColorMutedLit);
+        else if (h < old) gfx->fillRect(x, kY0 + kH - old, kBarW, old - h, COLOR_BLACK);
+        m_miniDrawnH[i] = h;
+    }
+    m_miniDrawn = true;
 }
 
 void InfoScreen::drawSlot(uint8_t slot, int16_t x, uint8_t widthChars, const char* text, uint16_t color) {
@@ -235,53 +344,44 @@ void InfoScreen::drawTags() {
     else if (resync) drawSlot(3, slotX(3), kSlot[3].width, "RESYNC", COLOR_YELLOW);
     else             drawSlot(3, slotX(3), kSlot[3].width, "",       COLOR_BLACK);
 
-    // Time, right-aligned in the last slot (read from the module once a second).
-    if (now - m_lastTimeReadMs >= 1000 || !m_drawnSlot[4][0]) {
-        m_lastTimeReadMs = now;
-        char text[10] = "--:--";
-        RtcDateTime t;
-        if (RtcClock::instance().read(t)) {
-            if (DisplaySettings::instance().getClock24h()) {
-                snprintf(text, sizeof(text), "%02u:%02u", t.hour, t.minute);
-            } else {
-                unsigned h = t.hour % 12 ? t.hour % 12 : 12;
-                snprintf(text, sizeof(text), "%u:%02u%s", h, t.minute, t.hour >= 12 ? "PM" : "AM");
-            }
-        }
-        char padded[12];
-        snprintf(padded, sizeof(padded), "%*s", kSlot[4].width, text);
-        drawSlot(4, slotX(4), kSlot[4].width, padded, COLOR_WHITE);
-    }
+    // Rtotal value, right-aligned in the last slot: "95K" (auto/manual and
+    // the "R=" form are in the middle-right readout, one Options press away).
+    const DaughterStatus& st = link.status();
+    char rv[12] = "";
+    if (fresh && st.rOhms > 0) snprintf(rv, sizeof(rv), "%luK", static_cast<unsigned long>((st.rOhms + 500) / 1000));
+    char padded[12];
+    snprintf(padded, sizeof(padded), "%*s", kSlot[4].width, rv);
+    drawSlot(4, slotX(4), kSlot[4].width, padded, kColorRtotal);
 }
 
+// The big value on the left: "-23.5 dB", or -- Settings -> Volume Display =
+// Steps -- "14/31": the step (0-based, as the daughter numbers it) in white,
+// the last step in gray, like the dB unit.
 void InfoScreen::drawValue(int16_t vol, int16_t volMax, int32_t dbTenths) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
 
-    // Clear the whole value row (left: dB, right: step) before reprinting --
-    // the new text can be shorter than the old.
-    gfx->fillRect(0, kValueY, SCREEN_WIDTH, kCharH * kValueSize, COLOR_BLACK);
+    // Clear the value part of the row before reprinting -- the new text can be
+    // shorter than the old. (The right part is the Options view.)
+    gfx->fillRect(0, kValueY, SCREEN_WIDTH - kMargin - 15 * kCharW * kRowSize, kCharH * kValueSize, COLOR_BLACK);
 
-    char db[12];
-    formatTenths(db, sizeof(db), dbTenths);
+    char big[12], unit[12];
+    if (DisplaySettings::instance().getVolumeDisplay() == VolumeDisplay::STEPS) {
+        snprintf(big,  sizeof(big),  "%d", static_cast<int>(vol));
+        snprintf(unit, sizeof(unit), "/%d", static_cast<int>(volMax));
+    } else {
+        formatTenths(big, sizeof(big), dbTenths);
+        snprintf(unit, sizeof(unit), "dB");
+    }
     gfx->setTextSize(kValueSize);
     gfx->setTextColor(COLOR_WHITE, COLOR_BLACK);
     gfx->setCursor(kMargin, kValueY);
-    gfx->print(db);
+    gfx->print(big);
 
     gfx->setTextSize(kUnitSize);
     gfx->setTextColor(kColorSubtle, COLOR_BLACK);
-    gfx->setCursor(kMargin + textWidth(db, kValueSize) + 8,
-                   kValueY + kCharH * (kValueSize - kUnitSize)); // baseline-aligned with the big digits
-    gfx->print("dB");
-
-    // Step number, 0-based exactly as the daughter numbers it, under Rtotal.
-    char step[12];
-    snprintf(step, sizeof(step), "%d/%d", static_cast<int>(vol), static_cast<int>(volMax));
-    gfx->setTextSize(kStepSize);
-    gfx->setTextColor(kColorSubtle, COLOR_BLACK);
-    gfx->setCursor(SCREEN_WIDTH - kMargin - textWidth(step, kStepSize), kStepY);
-    gfx->print(step);
-    m_drawnR[0] = '\0'; // the row was cleared: Rtotal is redrawn after this
+    gfx->setCursor(kMargin + textWidth(big, kValueSize) + 8,
+                   kValueY + kCharH * (kValueSize - kUnitSize)); // bottom-aligned with the big digits
+    gfx->print(unit);
 }
 
 // One block per step, VOLMIN..VOLMAX, lit up to the current step in the
@@ -292,10 +392,12 @@ void InfoScreen::drawBar(int16_t vol, int16_t volMin, int16_t volMax, bool muted
 
     int16_t count = volMax - volMin + 1;
     if (count <= 0) return;
-    int16_t blockW = (SCREEN_WIDTH - 2 * kMargin - (count - 1) * kBarGap) / count;
+    // The bar spans the width between the margins.
+    int16_t areaW  = SCREEN_WIDTH - 2 * kMargin;
+    int16_t blockW = (areaW - (count - 1) * kBarGap) / count;
     if (blockW < 1) blockW = 1;
     int16_t totalW = count * blockW + (count - 1) * kBarGap;
-    int16_t x0     = (SCREEN_WIDTH - totalW) / 2;
+    int16_t x0     = kMargin + (areaW - totalW) / 2;
 
     int16_t lit = vol - volMin + 1; // the quietest step still lights one block
     if (lit < 0) lit = 0;
@@ -340,7 +442,9 @@ void InfoScreen::render() {
         m_drawnVolMin   = -2;
         m_drawnVolMax   = -2;
         m_drawnLit      = -1;
-        m_drawnR[0]     = '\0';
+        m_drawnRight[0] = '\0';
+        m_scopeDrawn    = false;
+        m_miniDrawn     = false;
         for (uint8_t i = 0; i < kSlots; ++i) { m_drawnSlot[i][0] = '\0'; m_drawnSlotColor[i] = 0; }
     }
 
@@ -351,13 +455,15 @@ void InfoScreen::render() {
     const DaughterStatus& s = DaughterBoardLink::instance().status();
     int32_t dbTenths = static_cast<int32_t>(lroundf(s.db * 10.0f));
 
-    if (dbTenths != m_drawnDbTenths || s.vol != m_drawnVol || s.volMax != m_drawnVolMax) {
+    VolumeDisplay mode = DisplaySettings::instance().getVolumeDisplay();
+    if (dbTenths != m_drawnDbTenths || s.vol != m_drawnVol || s.volMax != m_drawnVolMax || mode != m_drawnVolDisplay) {
         drawValue(s.vol, s.volMax, dbTenths);
-        m_drawnDbTenths = dbTenths;
-        m_drawnVol      = s.vol;
+        m_drawnDbTenths    = dbTenths;
+        m_drawnVol         = s.vol;
+        m_drawnVolDisplay  = mode;
     }
 
-    drawRTag();
+    drawRightInfo();
 
     // drawBar() is itself a delta draw, so it's safe to call every frame.
     drawBar(s.vol, s.volMin, s.volMax, muted);

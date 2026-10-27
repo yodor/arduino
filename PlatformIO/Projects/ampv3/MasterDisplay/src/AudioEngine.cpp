@@ -1,4 +1,5 @@
 #include "AudioEngine.hpp"
+#include "BeatDetector.hpp"
 #include "PersistentSettings.hpp"
 
 namespace {
@@ -122,6 +123,7 @@ void AudioEngine::runCore1() {
         m_waveform.pushChunk(chunk);
         uint32_t t1 = micros();
         m_spectrum.pushChunk(chunk);
+        BeatDetector::instance().pushChunk(chunk); // a few operations per sample (tempo for the Info screen)
         uint32_t t2 = micros();
         waveformAccumUs += t1 - t0;
         spectrumAccumUs += t2 - t1;
@@ -196,6 +198,14 @@ SpectrumPipeline::BandLayoutMode AudioEngine::getSpectrumBandLayoutMode() const 
 
 SpectrumPipeline::EnergyMode AudioEngine::getSpectrumEnergyMode() const {
     return m_spectrum.getEnergyMode();
+}
+
+size_t AudioEngine::getMiniBars(float* out) const {
+    return m_spectrum.getMiniBars(out);
+}
+
+void AudioEngine::getScopeMono(int16_t* out, size_t count, size_t spanSamples) const {
+    m_waveform.getScopeMono(out, count, spanSamples);
 }
 
 void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger) const {

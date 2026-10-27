@@ -4,11 +4,13 @@
 // Names of the screens, in the order RIGHT/LEFT step through them. Order and
 // count MUST match main.cpp's g_screens[] array (a static_assert there checks
 // the count).
+// One ring: RIGHT from Info runs Wave -> Spectrum -> Clock, LEFT from Info
+// runs Analog VU -> Digital VU -> Clock.
 constexpr const char* kScreenNames[] = {
     "Info",
-    "Clock",
     "Waveform",
     "Spectrum",
+    "Clock",
     "Digital VU",
     "Analog VU",
 };

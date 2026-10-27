@@ -8,7 +8,8 @@ ColorTheme& ColorTheme::instance() {
 
 GradientStyle ColorTheme::getStyle() const {
     switch (m_preset) {
-        case ColorPreset::COLORFUL: return GradientStyle::SMOOTH;
+        case ColorPreset::SUNSET:
+        case ColorPreset::AURORA:
         case ColorPreset::NASTYFFT: return GradientStyle::PER_BAR_FREQUENCY;
         default:                    return GradientStyle::FLAT_ZONES;
     }
@@ -16,8 +17,8 @@ GradientStyle ColorTheme::getStyle() const {
 
 uint16_t ColorTheme::lowColor() const {
     switch (m_preset) {
-        case ColorPreset::OCEAN:    return 0x07FF; // cyan
-        case ColorPreset::COLORFUL: return 0x001F; // blue
+        case ColorPreset::SUNSET:   return 0xD01A; // magenta (slightly deep)
+        case ColorPreset::AURORA:   return 0x07E8; // green
         case ColorPreset::NASTYFFT: return 0x001F; // blue
         default:                    return COLOR_GREEN;
     }
@@ -25,8 +26,8 @@ uint16_t ColorTheme::lowColor() const {
 
 uint16_t ColorTheme::midColor() const {
     switch (m_preset) {
-        case ColorPreset::OCEAN:    return 0x001F; // blue
-        case ColorPreset::COLORFUL: return 0x780F; // purple
+        case ColorPreset::SUNSET:   return 0xFB40; // orange
+        case ColorPreset::AURORA:   return 0x067F; // cyan-azure
         case ColorPreset::NASTYFFT: return 0x780F; // purple
         default:                    return COLOR_YELLOW;
     }
@@ -34,8 +35,8 @@ uint16_t ColorTheme::midColor() const {
 
 uint16_t ColorTheme::highColor() const {
     switch (m_preset) {
-        case ColorPreset::OCEAN:    return 0xF81F; // magenta
-        case ColorPreset::COLORFUL: return COLOR_RED;
+        case ColorPreset::SUNSET:   return 0xFF60; // warm yellow
+        case ColorPreset::AURORA:   return 0xA01F; // violet
         case ColorPreset::NASTYFFT: return COLOR_RED;
         default:                    return COLOR_RED;
     }

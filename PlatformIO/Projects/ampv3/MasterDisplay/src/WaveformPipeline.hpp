@@ -74,6 +74,12 @@ public:
     // the window start, with the same span so the scale doesn't jump.
     void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
 
+    // A triggered MONO (L+R) trace of `spanSamples` samples (from a rising
+    // zero crossing, as getWaveform(trigger=true)), decimated to `count`
+    // points -- the same timescale whatever the window mode, for the Info
+    // screen's small scope. spanSamples is capped at 3/4 of the window.
+    void getScopeMono(int16_t* out, size_t count, size_t spanSamples) const;
+
     void setWindowMode(WindowMode mode) { m_windowMode = mode; }
     WindowMode getWindowMode() const    { return m_windowMode; }
 

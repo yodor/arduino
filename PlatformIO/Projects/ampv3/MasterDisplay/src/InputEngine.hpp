@@ -111,7 +111,24 @@ public:
     // re-debounce or touch the pin itself. Call pollEvents() once per loop
     // iteration as usual before relying on these.
     bool isVolUpHeld() const   { return m_btnVolUp.isHeld(); }
-    bool isVolDownHeld() const { return m_btnVolDown.isHeld(); }
+    // DOWN counts as "held" (volume stepping down) only after DOWN_HOLD_MS
+    // while the double-click gesture is on -- a quick tap is held back to see
+    // whether a second one follows (see setDownGestures()).
+    bool isVolDownHeld() const {
+        if (!m_downGestures) return m_btnVolDown.isHeld();
+        return m_btnVolDown.isHeld() && (millis() - m_btnVolDown.pressedSinceMs >= DOWN_HOLD_MS);
+    }
+
+    // DOWN button gestures (on outside the menu, display test and standby --
+    // main.cpp switches them each loop):
+    //   double-click (two taps within DOUBLE_CLICK_MS) -> MUTE_TOGGLE, no volume change
+    //   single tap -> GAIN_DOWN (one step), once DOUBLE_CLICK_MS has passed with no second tap
+    //   hold       -> volume steps down while held (isVolDownHeld()), after DOWN_HOLD_MS
+    // Off: DOWN is immediate (menu navigation uses volDownJustPressed()).
+    void setDownGestures(bool on) {
+        if (!on) m_downTapPending = false;
+        m_downGestures = on;
+    }
 
     // Edge-triggered variants of the same two buttons, for contexts that
     // want one discrete step per press rather than continuous drive (e.g.
@@ -143,7 +160,10 @@ private:
     static constexpr uint32_t DEBOUNCE_MS         = 50;
     // Hold time for both long presses: LEFT (alone, or with RIGHT also held)
     // opens the menu; RIGHT alone switches power (on / standby).
-    static constexpr uint32_t LONG_PRESS_MS = 1000;
+    static constexpr uint32_t LONG_PRESS_MS = 3000;
+    // DOWN gestures (setDownGestures()).
+    static constexpr uint32_t DOWN_HOLD_MS    = 250; // a press longer than this is a hold, not a tap
+    static constexpr uint32_t DOUBLE_CLICK_MS = 350; // second tap within this of the first -> mute
 
     uint8_t m_irPin = 255;
 
@@ -158,6 +178,9 @@ private:
     bool m_leftConsumedByLongPress  = false;
     bool m_rightConsumedByLongPress = false;
     bool m_monitor = false;
+    bool     m_downGestures   = false;
+    bool     m_downTapPending = false; // a tap waiting to see if a second one follows
+    uint32_t m_downTapMs      = 0;
 
     // Events found in one poll are handed out one per pollEvents() call, so
     // two in the same poll (e.g. RIGHT pressed while LEFT is released)

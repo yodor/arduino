@@ -110,6 +110,12 @@ public:
 
     void getBars(float* leftBars, float* rightBars) const;
 
+    // Mono (L+R) bars in the DOUBLING layout, computed on every FFT frame
+    // whatever layout the Spectrum screen uses -- for the Info screen's
+    // small spectrum. Fills DOUBLING_BAND_COUNT values (raw magnitudes, as
+    // getBars()); returns that count.
+    size_t getMiniBars(float* out) const;
+
     // How many of getBars()'s output slots are actually valid right now --
     // DOUBLING_BAND_COUNT, FIXED_BAND_COUNT, or FULL_BAND_COUNT depending
     // on the active BandLayoutMode. Callers should never read past this
@@ -142,6 +148,7 @@ private:
     size_t m_startBin[MAX_BAND_COUNT] = {};
     size_t m_endBin[MAX_BAND_COUNT]   = {};
 
+    float m_miniBars[DOUBLING_BAND_COUNT] = {};
     float m_barsL[MAX_BAND_COUNT] = {};
     float m_barsR[MAX_BAND_COUNT] = {};
 };

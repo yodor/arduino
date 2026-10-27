@@ -27,6 +27,12 @@ enum class ClockMode : uint8_t {
     DATE        // HH:MM with the date in a column on the right
 };
 
+// What the Info screen's big value shows (Settings -> Volume Display).
+enum class VolumeDisplay : uint8_t {
+    DB,     // "-23.5 dB"
+    STEPS   // "14/31" -- the current step in white, the total in gray
+};
+
 // What the display shows in standby (Settings -> Power -> Standby Display).
 enum class StandbyDisplay : uint8_t {
     CLOCK,     // the Clock screen at the normal brightness
@@ -97,8 +103,12 @@ public:
     // on close, so changes apply as soon as the menu closes.
     ClockMode getClockMode() const      { return m_clockMode; }
     void      setClockMode(ClockMode m) { m_clockMode = m; }
-    uint16_t  getClockColor() const     { return m_clockColor; }  // RGB565, the lit digits
+    uint16_t  getClockColor() const     { return m_clockColor; }  // RGB565, the custom colour of the lit digits
     void      setClockColor(uint16_t c) { m_clockColor = c; }
+    // Clock colour source: the colour theme's middle mix (true), or the
+    // custom colour above.
+    bool      getClockFollowTheme() const   { return m_clockFollowTheme; }
+    void      setClockFollowTheme(bool on)  { m_clockFollowTheme = on; }
 
     // Auto standby (Settings -> Power): minutes of silence before switching
     // to standby, 0 = off.
@@ -107,6 +117,9 @@ public:
     // Input peak (ADC counts) above which the inputs count as playing.
     uint16_t getAutoStandbyThreshold() const    { return m_autoStandbyThreshold; }
     void     setAutoStandbyThreshold(uint16_t t) { m_autoStandbyThreshold = t; }
+
+    VolumeDisplay getVolumeDisplay() const          { return m_volumeDisplay; }
+    void          setVolumeDisplay(VolumeDisplay v) { m_volumeDisplay = v; }
     bool getClock24h() const         { return m_clock24h; }
     void setClock24h(bool on)        { m_clock24h = on; }
 
@@ -122,8 +135,10 @@ private:
     bool         m_peaksEnabled        = true; // matches current always-on behavior
     ClockMode    m_clockMode           = ClockMode::DATE;
     uint16_t     m_clockColor          = 0x07E0; // green
+    bool         m_clockFollowTheme    = true;
     bool         m_clock24h            = true;
     StandbyDisplay m_standbyDisplay    = StandbyDisplay::CLOCK;
     uint8_t      m_autoStandbyMin      = 0;      // off
     uint16_t     m_autoStandbyThreshold = AUTO_STANDBY_AUDIO_THRESHOLD;
+    VolumeDisplay m_volumeDisplay      = VolumeDisplay::DB;
 };

@@ -24,6 +24,7 @@
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
 #include "InfoScreen.hpp"
+#include "BeatDetector.hpp"
 #include "RtcClock.hpp"
 #include "MasterConsole.hpp"
 #include "DaughterBoardLink.hpp"
@@ -55,9 +56,9 @@ static InfoScreen            g_infoScreen;   // also the volume popup over the o
 // Order must match kScreenNames (ScreenRegistry.hpp).
 static Screen* g_screens[] = {
     &g_infoScreen,
-    &g_clockScreen,
     &g_waveformScreen,
     &g_spectrumScreen,
+    &g_clockScreen,
     &g_digitalVuMeterScreen,
     &g_analogVuScreen,
 };
@@ -292,6 +293,9 @@ void loop() {
 
     MasterConsole::instance().update(); // USB console + daughter pass-through
 
+    // DOWN's double-click (mute) only outside the menu, the display test and
+    // standby -- there DOWN must act at once.
+    InputEngine::instance().setDownGestures(!g_menuOpen && !g_displayTestOpen && PowerControl::instance().isOn());
     UIEvent event = InputEngine::instance().pollEvents();
 
     // Any key or remote press counts as activity for auto standby.
@@ -313,6 +317,16 @@ void loop() {
     power.update();
     g_powerOverlay.update();
     autoStandbyUpdate(keyActivity);
+
+    // Deferred save for settings changed outside the menu (the Options key
+    // on the Clock): written once nothing has changed for a few seconds, so
+    // stepping through the options costs one flash write, not one per press.
+    // (Menu changes save when the menu closes.)
+    if (PersistentSettings::instance().isDirty() && !g_menuOpen &&
+        PersistentSettings::instance().msSinceDirty() >= 5000) {
+        PersistentSettings::instance().saveIfDirty();
+    }
+    BeatDetector::instance().update(); // tempo estimate, about once a second
     daughterNotices();
     g_noticeOverlay.update();
 
@@ -435,6 +449,25 @@ void loop() {
             g_infoScreen.poke();
             Serial.printf("[Volume] Mute toggled -> %s\n",
                            VolumeControl::instance().isMuted() ? "MUTED" : "UNMUTED");
+        } else if (event == UIEvent::CHANNEL_MODE_TOGGLE &&
+                   (g_screens[g_currentScreenIdx] == &g_infoScreen || g_overlayShown)) {
+            // On the Info screen (or its popup) the Options key switches the
+            // right-hand readout between Rtotal and the detected tempo -- the
+            // Info screen has no stereo/mono layout of its own.
+            g_infoScreen.toggleRightInfo();
+            if (g_overlayShown) g_infoScreen.poke();
+            Serial.println("[Display] Info screen: next middle-right view");
+        } else if (event == UIEvent::CHANNEL_MODE_TOGGLE && g_screens[g_currentScreenIdx] == &g_clockScreen) {
+            // On the Clock screen the Options key steps the Display setting
+            // (Settings > Clock > Display): date -> seconds -> clock only.
+            DisplaySettings& ds = DisplaySettings::instance();
+            ClockMode next = (ds.getClockMode() == ClockMode::DATE)    ? ClockMode::SECONDS
+                           : (ds.getClockMode() == ClockMode::SECONDS) ? ClockMode::CLOCK_ONLY
+                                                                       : ClockMode::DATE;
+            ds.setClockMode(next);
+            PersistentSettings::instance().markDirty(); // saved a few seconds later (deferred save below)
+            g_clockScreen.onEnter();
+            Serial.printf("[Display] Clock shows %s\n", next == ClockMode::DATE ? "date" : next == ClockMode::SECONDS ? "seconds" : "time only");
         } else if (event == UIEvent::CHANNEL_MODE_TOGGLE) {
             DisplaySettings::instance().toggleChannelMode();
             g_infoScreen.dismiss();

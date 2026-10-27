@@ -126,3 +126,45 @@ void WaveformPipeline::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t
         if (rightWave) rightWave[i] = rightWave[limit - 1];
     }
 }
+
+void WaveformPipeline::getScopeMono(int16_t* out, size_t count, size_t spanSamples) const {
+    if (!out || count == 0) return;
+
+    uint8_t buf = m_readyBuf;
+    __dmb();
+    const int16_t* srcL = m_waveL[buf];
+    const int16_t* srcR = m_waveR[buf];
+    size_t windowSamples = m_waveSamples[buf];
+
+    size_t maxSpan = windowSamples - windowSamples / 4;
+    if (spanSamples > maxSpan) spanSamples = maxSpan;
+    if (spanSamples == 0) spanSamples = 1;
+    size_t search = windowSamples - spanSamples; // where the trigger may sit
+
+    // Rising zero crossing with hysteresis, as in getWaveform().
+    int32_t peak = 0;
+    for (size_t i = 0; i < windowSamples; i += 4) {
+        int32_t v = static_cast<int32_t>(srcL[i]) + srcR[i];
+        if (v < 0) v = -v;
+        if (v > peak) peak = v;
+    }
+    int32_t hyst  = (peak / 8 > 16) ? peak / 8 : 16;
+    bool    armed = false;
+    size_t  start = 0;
+    for (size_t i = 0; i < search; ++i) {
+        int32_t v = static_cast<int32_t>(srcL[i]) + srcR[i];
+        if (v < -hyst) {
+            armed = true;
+        } else if (armed && v >= 0) {
+            start = i;
+            break;
+        }
+    }
+
+    float stride = static_cast<float>(spanSamples) / static_cast<float>(count);
+    for (size_t i = 0; i < count; ++i) {
+        size_t idx = start + static_cast<size_t>(i * stride);
+        if (idx >= windowSamples) idx = windowSamples - 1;
+        out[i] = static_cast<int16_t>((static_cast<int32_t>(srcL[idx]) + srcR[idx]) / 2);
+    }
+}

@@ -13,9 +13,10 @@
 namespace {
 
 constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 10;         // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display,
+constexpr uint8_t  kVersion = 12;         // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display,
                                            // 7: + volume step (dropped again), 8: = the v6 layout, 9: clock mode + color,
-                                           // auto standby, 10: auto standby silence level. 4-9 are still read, see loadAndApply().
+                                           // auto standby, 10: auto standby silence level, 11: Info screen volume display,
+                                           // 12: clock colour source (theme / custom). 4-11 are still read, see loadAndApply().
 
 // Last flash sector -- same convention the Arduino-Pico EEPROM library
 // itself uses, chosen so this doesn't collide with program flash or a
@@ -135,6 +136,59 @@ struct PersistentDataV9 {
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 
+// Version 10 layout (+ auto standby silence level), kept for migration.
+struct PersistentDataV10 {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  channelMode;
+    uint8_t  startingScreenIndex;
+    uint8_t  stereoLayout;
+    uint8_t  mirrorLeftBars;
+    uint8_t  colorPreset;
+    uint8_t  bandLayoutMode;
+    uint8_t  energyMode;
+    uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
+    uint8_t  peaksEnabled;
+    uint8_t  peakDecaySpeed;
+    uint8_t  clockShowDate;
+    uint8_t  clockShowSeconds;
+    uint8_t  clock24h;
+    uint8_t  standbyDisplay;
+    uint8_t  clockMode;        // ClockMode (clockShowDate/clockShowSeconds above are no longer used)
+    uint16_t clockColor;       // RGB565
+    uint8_t  autoStandbyMin;   // 0 = off
+    uint16_t autoStandbyThreshold; // input peak, ADC counts
+    uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
+};
+
+// Version 11 layout (+ Info screen volume display), kept for migration.
+struct PersistentDataV11 {
+    uint32_t magic;
+    uint8_t  version;
+    uint8_t  channelMode;
+    uint8_t  startingScreenIndex;
+    uint8_t  stereoLayout;
+    uint8_t  mirrorLeftBars;
+    uint8_t  colorPreset;
+    uint8_t  bandLayoutMode;
+    uint8_t  energyMode;
+    uint8_t  waveformWindowMode;
+    uint8_t  brightnessPercent;
+    uint8_t  peaksEnabled;
+    uint8_t  peakDecaySpeed;
+    uint8_t  clockShowDate;
+    uint8_t  clockShowSeconds;
+    uint8_t  clock24h;
+    uint8_t  standbyDisplay;
+    uint8_t  clockMode;        // ClockMode (clockShowDate/clockShowSeconds above are no longer used)
+    uint16_t clockColor;       // RGB565
+    uint8_t  autoStandbyMin;   // 0 = off
+    uint16_t autoStandbyThreshold; // input peak, ADC counts
+    uint8_t  volumeDisplay;        // VolumeDisplay (Info screen: dB or steps)
+    uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
+};
+
 struct PersistentData {
     uint32_t magic;
     uint8_t  version;
@@ -157,6 +211,8 @@ struct PersistentData {
     uint16_t clockColor;       // RGB565
     uint8_t  autoStandbyMin;   // 0 = off
     uint16_t autoStandbyThreshold; // input peak, ADC counts
+    uint8_t  volumeDisplay;        // VolumeDisplay (Info screen: dB or steps)
+    uint8_t  clockFollowTheme;     // 1 = clock colour from the theme, 0 = clockColor
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
@@ -237,7 +293,53 @@ void PersistentSettings::loadAndApply() {
         if (stored->autoStandbyThreshold >= 1 && stored->autoStandbyThreshold <= 2047) {
             DisplaySettings::instance().setAutoStandbyThreshold(stored->autoStandbyThreshold);
         }
+        DisplaySettings::instance().setVolumeDisplay(stored->volumeDisplay == 1 ? VolumeDisplay::STEPS : VolumeDisplay::DB);
+        DisplaySettings::instance().setClockFollowTheme(stored->clockFollowTheme != 0);
         Serial.println("[Settings] Loaded saved settings from flash");
+        return;
+    }
+
+    if (stored->version == 11) {
+        // Previous layout: no colour source yet -- keep the custom colour
+        // the user had (so the clock looks exactly as before).
+        const PersistentDataV11* old = storedAs<PersistentDataV11>();
+        if (computeChecksum(*old) != old->checksum) {
+            Serial.println("[Settings] Saved settings (v11) failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(old);
+        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(old->clockMode));
+        DisplaySettings::instance().setClock24h(old->clock24h != 0);
+        DisplaySettings::instance().setClockColor(old->clockColor);
+        DisplaySettings::instance().setClockFollowTheme(false);
+        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
+        DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
+        if (old->autoStandbyThreshold >= 1 && old->autoStandbyThreshold <= 2047) {
+            DisplaySettings::instance().setAutoStandbyThreshold(old->autoStandbyThreshold);
+        }
+        DisplaySettings::instance().setVolumeDisplay(old->volumeDisplay == 1 ? VolumeDisplay::STEPS : VolumeDisplay::DB);
+        Serial.println("[Settings] Loaded v11 settings from flash (clock keeps its custom colour)");
+        return;
+    }
+
+    if (stored->version == 10) {
+        // Previous layout: everything but the volume display (dB, the default).
+        const PersistentDataV10* old = storedAs<PersistentDataV10>();
+        if (computeChecksum(*old) != old->checksum) {
+            Serial.println("[Settings] Saved settings (v10) failed checksum -- using defaults");
+            return;
+        }
+        applyCommon(old);
+        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(old->clockMode));
+        DisplaySettings::instance().setClock24h(old->clock24h != 0);
+        DisplaySettings::instance().setClockColor(old->clockColor);
+        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
+        DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
+        if (old->autoStandbyThreshold >= 1 && old->autoStandbyThreshold <= 2047) {
+            DisplaySettings::instance().setAutoStandbyThreshold(old->autoStandbyThreshold);
+        }
+        DisplaySettings::instance().setClockFollowTheme(false); // keeps the custom colour it had
+        Serial.println("[Settings] Loaded v10 settings from flash (volume display at default)");
         return;
     }
 
@@ -254,6 +356,7 @@ void PersistentSettings::loadAndApply() {
         DisplaySettings::instance().setClockColor(old->clockColor);
         DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
         DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
+        DisplaySettings::instance().setClockFollowTheme(false); // keeps the custom colour it had
         Serial.println("[Settings] Loaded v9 settings from flash (silence level at default)");
         return;
     }
@@ -345,6 +448,8 @@ void PersistentSettings::commitToFlash() {
     data.clockColor          = DisplaySettings::instance().getClockColor();
     data.autoStandbyMin      = DisplaySettings::instance().getAutoStandbyMinutes();
     data.autoStandbyThreshold = DisplaySettings::instance().getAutoStandbyThreshold();
+    data.volumeDisplay       = static_cast<uint8_t>(DisplaySettings::instance().getVolumeDisplay());
+    data.clockFollowTheme    = DisplaySettings::instance().getClockFollowTheme() ? 1 : 0;
     data.checksum            = computeChecksum(data);
 
     // flash_range_program() requires a page-aligned, page-sized source --

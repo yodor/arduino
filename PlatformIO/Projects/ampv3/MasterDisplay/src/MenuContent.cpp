@@ -210,8 +210,27 @@ bool menuIsActive_ClockDate()    { return DisplaySettings::instance().getClockMo
 
 // Clock digit color (COLOR chooser).
 uint16_t clockColorGet()           { return DisplaySettings::instance().getClockColor(); }
-void     clockColorSet(uint16_t c) { DisplaySettings::instance().setClockColor(c); PersistentSettings::instance().markDirty(); }
+void     clockColorSet(uint16_t c) {
+    // Picking a colour means using it: the source switches to Custom.
+    DisplaySettings::instance().setClockColor(c);
+    DisplaySettings::instance().setClockFollowTheme(false);
+    PersistentSettings::instance().markDirty();
+}
 const MenuColor kClockColor = { clockColorGet, clockColorSet };
+
+// Settings > Clock > Color > Source: the theme's middle mix, or the custom colour.
+void menuSet_ClockColorTheme()  { DisplaySettings::instance().setClockFollowTheme(true);  PersistentSettings::instance().markDirty(); }
+void menuSet_ClockColorCustom() { DisplaySettings::instance().setClockFollowTheme(false); PersistentSettings::instance().markDirty(); }
+bool menuIsActive_ClockColorTheme()  { return  DisplaySettings::instance().getClockFollowTheme(); }
+bool menuIsActive_ClockColorCustom() { return !DisplaySettings::instance().getClockFollowTheme(); }
+const MenuValueOption kClockColorSourceOptions[] = {
+    { "Theme",  menuSet_ClockColorTheme,  menuIsActive_ClockColorTheme  },
+    { "Custom", menuSet_ClockColorCustom, menuIsActive_ClockColorCustom },
+};
+const MenuItem kClockColorSubmenuItems[] = {
+    { "Source",       MenuItemType::VALUE_CHOICE, nullptr, kClockColorSourceOptions, 2 },
+    { "Custom Color", MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kClockColor },
+};
 void menuSet_Clock24h()      { DisplaySettings::instance().setClock24h(true);          PersistentSettings::instance().markDirty(); }
 void menuSet_Clock12h()      { DisplaySettings::instance().setClock24h(false);         PersistentSettings::instance().markDirty(); }
 bool menuIsActive_Clock24h()     { return DisplaySettings::instance().getClock24h(); }
@@ -223,12 +242,12 @@ bool menuIsActive_Stereo() { return DisplaySettings::instance().getChannelMode()
 bool menuIsActive_Mono()   { return DisplaySettings::instance().getChannelMode() == ChannelMode::MONO; }
 
 void menuSet_ColorClassic()  { ColorTheme::instance().setPreset(ColorPreset::CLASSIC);  PersistentSettings::instance().markDirty(); }
-void menuSet_ColorOcean()    { ColorTheme::instance().setPreset(ColorPreset::OCEAN);    PersistentSettings::instance().markDirty(); }
-void menuSet_ColorColorful() { ColorTheme::instance().setPreset(ColorPreset::COLORFUL); PersistentSettings::instance().markDirty(); }
+void menuSet_ColorSunset()   { ColorTheme::instance().setPreset(ColorPreset::SUNSET);   PersistentSettings::instance().markDirty(); }
+void menuSet_ColorAurora()   { ColorTheme::instance().setPreset(ColorPreset::AURORA);   PersistentSettings::instance().markDirty(); }
 void menuSet_ColorNastyFFT() { ColorTheme::instance().setPreset(ColorPreset::NASTYFFT); PersistentSettings::instance().markDirty(); }
 bool menuIsActive_ColorClassic()  { return ColorTheme::instance().getPreset() == ColorPreset::CLASSIC; }
-bool menuIsActive_ColorOcean()    { return ColorTheme::instance().getPreset() == ColorPreset::OCEAN; }
-bool menuIsActive_ColorColorful() { return ColorTheme::instance().getPreset() == ColorPreset::COLORFUL; }
+bool menuIsActive_ColorSunset()   { return ColorTheme::instance().getPreset() == ColorPreset::SUNSET; }
+bool menuIsActive_ColorAurora()   { return ColorTheme::instance().getPreset() == ColorPreset::AURORA; }
 bool menuIsActive_ColorNastyFFT() { return ColorTheme::instance().getPreset() == ColorPreset::NASTYFFT; }
 
 // Band Layout: Doubling (derived bar count from FFT_SIZE, formerly
@@ -323,9 +342,9 @@ bool menuIsActive_PeakDecayOff()    { return BarPhysics::instance().getPeakDecay
 
 const MenuValueOption kColorOptions[] = {
     { "Classic",  menuSet_ColorClassic,  menuIsActive_ColorClassic  },
-    { "Ocean",    menuSet_ColorOcean,    menuIsActive_ColorOcean    },
-    { "Colorful", menuSet_ColorColorful, menuIsActive_ColorColorful },
     { "NastyFFT", menuSet_ColorNastyFFT, menuIsActive_ColorNastyFFT },
+    { "Sunset",   menuSet_ColorSunset,   menuIsActive_ColorSunset   },
+    { "Aurora",   menuSet_ColorAurora,   menuIsActive_ColorAurora   },
 };
 
 const MenuValueOption kChannelModeOptions[] = {
@@ -430,7 +449,7 @@ const MenuItem kClockSubmenuItems[] = {
     { "Set Date",     MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kDateEditor },
     { "Display",      MenuItemType::VALUE_CHOICE, nullptr, kClockModeOptions,   3 },
     { "Format",       MenuItemType::VALUE_CHOICE, nullptr, kClockFormatOptions, 2 },
-    { "Color",        MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kClockColor },
+    { "Color",        MenuItemType::SUBMENU,      nullptr, nullptr, 0, kClockColorSubmenuItems, 2 },
 };
 constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kClockSubmenuItems[0]);
 
@@ -933,8 +952,19 @@ const MenuItem kPowerSubmenuItems[] = {
 constexpr size_t kPowerSubmenuItemCount = sizeof(kPowerSubmenuItems) / sizeof(kPowerSubmenuItems[0]);
 
 // --- Settings ---
+// Settings -> Volume Display: what the Info screen's big value shows.
+void menuSet_VolDb()    { DisplaySettings::instance().setVolumeDisplay(VolumeDisplay::DB);    PersistentSettings::instance().markDirty(); }
+void menuSet_VolSteps() { DisplaySettings::instance().setVolumeDisplay(VolumeDisplay::STEPS); PersistentSettings::instance().markDirty(); }
+bool menuIsActive_VolDb()    { return DisplaySettings::instance().getVolumeDisplay() == VolumeDisplay::DB; }
+bool menuIsActive_VolSteps() { return DisplaySettings::instance().getVolumeDisplay() == VolumeDisplay::STEPS; }
+const MenuValueOption kVolumeDisplayOptions[] = {
+    { "dB",    menuSet_VolDb,    menuIsActive_VolDb    },
+    { "Steps", menuSet_VolSteps, menuIsActive_VolSteps },
+};
+
 const MenuItem kSettingsSubmenuItems[] = {
     { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr, kBrightnessOptions,  4 },
+    { "Volume Display",  MenuItemType::VALUE_CHOICE, nullptr, kVolumeDisplayOptions, 2 },
     { "Clock",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kClockSubmenuItems,       kClockSubmenuItemCount },
     { "Power",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kPowerSubmenuItems,       kPowerSubmenuItemCount },
     { "Calibration",     MenuItemType::SUBMENU, nullptr, nullptr, 0, kCalibrationSubmenuItems, kCalibrationSubmenuItemCount },

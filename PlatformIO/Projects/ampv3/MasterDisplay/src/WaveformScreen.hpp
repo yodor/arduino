@@ -34,4 +34,8 @@ private:
     int16_t m_curWaveYMono[WAVEFORM_SAMPLES]  = {0};
 
     bool m_waveTraceValid = false;
+    // Trace colours, from the colour theme (onEnter()).
+    uint16_t m_colorTop    = COLOR_CYAN;
+    uint16_t m_colorBottom = COLOR_YELLOW;
+    uint16_t m_colorMono   = COLOR_CYAN;
 };
