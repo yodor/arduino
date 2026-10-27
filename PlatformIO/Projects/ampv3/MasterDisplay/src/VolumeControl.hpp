@@ -36,14 +36,16 @@ public:
     // rev 9 FORGET (CAL / COMP / ALL), retried until the link takes it.
     void forget(DaughterBoardLink::Forget what);
 
-    // Thermal compensation on/off (Settings -> Diagnostics), retried until
+    // Thermal compensation on/off (Diagnostics), retried until
     // the link takes it. The daughter doesn't store it: it boots ON.
     void setCompensation(bool on);
-    // rev 12 audio model (Settings -> Calibration -> Model): SET SRC / SET
+    // rev 12 audio model (Calibration -> Model): SET SRC / SET
     // LOAD, retried until the link takes them. A change makes the daughter
     // CAL=STALE (volume muted) until a calibration re-solves.
     void setModelSource(uint32_t ohms);
     void setModelLoad(uint32_t ohms);
+    // rev 16 AUTO preference (Calibration -> Auto Depth), retried likewise.
+    void setAutoPref(DaughterBoardLink::AutoPref pref);
 
     // For the menu: 1 on, 0 off, -1 unknown. Taken from ENV's COMP; right
     // after a change, the requested state until ENV has caught up.
@@ -91,6 +93,8 @@ private:
     bool     m_loadPending       = false;
     uint32_t m_srcOhms           = 0;
     uint32_t m_loadOhms          = 0;
+    bool     m_autoPrefPending   = false;
+    DaughterBoardLink::AutoPref m_autoPref = DaughterBoardLink::AutoPref::BALANCED;
     bool     m_compOn            = true;
     bool     m_compRequested     = false; // a COMP command was ever sent
     uint32_t m_compSentMs        = 0;

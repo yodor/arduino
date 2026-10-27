@@ -1,4 +1,6 @@
 #include "MasterLink.hpp"
+#include "VersionInfo.hpp"
+#include "AutoPref.hpp"
 #include "BoardSensors.hpp"
 #include "ThermalLog.hpp"
 #include "ThermalFit.hpp"
@@ -150,6 +152,8 @@ void MasterLink::serviceWhileBusy() {
       reportLearn();
     } else if (line == "MODEL") {
       reportModel();
+    } else if (line == "VER" || line == "FW") {
+      VersionInfo::printLine(stream_);
     } else {
       // Everything else must wait until STATUS reads IDLE -- but say so,
       // rather than leaving the master's command timing out.
@@ -227,6 +231,8 @@ void MasterLink::reportModel() {
   kv(stream_, F("LOAD"), AudioModel::loadOhms(), 0);
   kv(stream_, F("SOLVED_SRC"), s, 0);
   kv(stream_, F("SOLVED_LOAD"), l, 0);
+  stream_.print(F(" AUTO=")); stream_.print(AutoPref::name(AutoPref::current()));          // protocol 16
+  kv(stream_, F("REACH"), DualCalibration::walkReachOhms(left_, right_), 0);
   stream_.println();
 }
 
@@ -373,6 +379,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
   if (upper == "PROGRESS") { reportProgress(); return; }
   if (upper == "LEARN") { reportLearn(); return; }
   if (upper == "MODEL") { reportModel(); return; }
+  if (upper == "VER" || upper == "FW") { VersionInfo::printLine(stream_); return; }   // protocol 15
   // Protocol 10: no boot hold. Volume is refused until the attenuator is calibrated for
   // these cells (CAL=OK): the LDR mute stays on, so nothing plays uncalibrated.
   auto needCal = [&]() -> bool {
@@ -459,6 +466,15 @@ void MasterLink::handleStrictLine(const String &lineIn) {
       return;
     }
     DualCalibration::onModelChanged(left_, right_);
+    stream_.println(F("OK"));
+
+  } else if (upper.startsWith("SET AUTO ")) {
+    // Protocol 16: AUTO's depth vs settling preference. If AUTO would now pick another
+    // Rtotal, the stored solution turns STALE (LDR mute on, volume refused) until CAL.
+    AutoPref::Pref pr;
+    if (!AutoPref::parse(upper.substring(9).c_str(), pr)) { stream_.println(F("ERR usage: SET AUTO SNAPPY|BALANCED|DEEP")); return; }
+    AutoPref::set(pr);
+    DualCalibration::onAutoPrefChanged(left_, right_);
     stream_.println(F("OK"));
 
   } else if (upper == "COMP ON" || upper == "COMP OFF") {

@@ -160,14 +160,24 @@ void LDRVolume::trimLoopBoth(LDRVolume *ch[], uint8_t n, Stream &out, const char
     }
   };
 
+  // CdS cells BRIGHTEN fast and DARKEN slowly. A reading taken within the trim's short
+  // convergence window is only right when the cell approached its target from the dark side
+  // (brightening). So each element is trimmed in the order in which it brightens:
+  //   pass 1: the SERIES, quiet -> loud (its target falls step by step), shunt held bright;
+  //   pass 2: the SHUNT, loud -> quiet (its target falls step by step), series held bright.
+  // Trimming the shunt quiet -> loud (darkening) left every quiet step's shunt about one step
+  // too dark (measured: x1.4..2.0 at steps 9..14, matching the step-to-step target ratios).
+  const uint32_t BRIGHT = (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT;
+
+  // ---- pass 1: series, quiet -> loud ----
   for (uint8_t i = 0; i < nSteps; i++) {
-    CalProgress::step(i, nSteps);
-    bool use[MAXC], wantSer[MAXC], wantShu[MAXC], fromCurve[MAXC];
-    float tRs[MAXC] = {0, 0}, tRsh[MAXC] = {0, 0};
-    uint32_t oldSer[MAXC] = {0, 0}, oldShu[MAXC] = {0, 0}, newSer[MAXC] = {0, 0}, newShu[MAXC] = {0, 0};
+    CalProgress::step(i, (uint16_t)(2 * nSteps));
+    bool use[MAXC], wantSer[MAXC], fromCurve[MAXC];
+    float tRs[MAXC] = {0, 0};
+    uint32_t oldSer[MAXC] = {0, 0}, newSer[MAXC] = {0, 0}, keepShu[MAXC] = {0, 0};
     for (uint8_t c = 0; c < n; c++) {
       LDRVolume &v = *ch[c];
-      use[c] = false; wantSer[c] = false; wantShu[c] = false; fromCurve[c] = false;
+      use[c] = false; wantSer[c] = false; fromCurve[c] = false;
       if (i >= v.numSteps()) continue;
       const VolumeLut::Entry &e = v.lut().step(i);
       if (!e.valid) continue;
@@ -178,8 +188,8 @@ void LDRVolume::trimLoopBoth(LDRVolume *ch[], uint8_t n, Stream &out, const char
       }
       // Capture BEFORE the LUT is updated (e is a reference into it).
       use[c] = true;
-      oldSer[c] = e.seriesFine; oldShu[c] = e.shuntFine;
-      tRs[c] = e.targetRs; tRsh[c] = e.targetRsh;
+      oldSer[c] = e.seriesFine; keepShu[c] = e.shuntFine;
+      tRs[c] = e.targetRs;
       newSer[c] = oldSer[c];
       if (tRs[c] >= settledFrom[c]) {
         fromCurve[c] = true;                    // on the walk's settled curve: stays as solved
@@ -188,34 +198,61 @@ void LDRVolume::trimLoopBoth(LDRVolume *ch[], uint8_t n, Stream &out, const char
       } else {
         wantSer[c] = true;
       }
-      wantShu[c] = true;
     }
-    // 1. series searches, together -- with the shunt held BRIGHT. The series cell's resistance
-    //    does not depend on the shunt (two separate vactrols), but the measuring current does:
-    //    with the shunt as dark as the loud steps want (~Rtotal), only a few uA flow and the
-    //    readings fail or drift (deep Rtotal: unreadable). The sweeps measure the same way.
+    // The shunt held BRIGHT: the series cell's resistance does not depend on the shunt, but
+    // the measuring current does (a dark shunt leaves only a few uA at a deep Rtotal).
     for (uint8_t c = 0; c < n; c++)
-      if (wantSer[c]) ch[c]->driver_.setDutyFine(ch[c]->shuntCh_, (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT);
+      if (wantSer[c]) ch[c]->driver_.setDutyFine(ch[c]->shuntCh_, BRIGHT);
     uint32_t serResult[MAXC];
     searchAll(true, wantSer, tRs, oldSer, serResult);
     for (uint8_t c = 0; c < n; c++) {
       if (!use[c]) continue;
       if (wantSer[c]) { newSer[c] = serResult[c]; lastSeriesTarget[c] = tRs[c]; lastSeriesFine[c] = newSer[c]; }
-      // the shunt reading needs the series at THIS step's operating point
-      ch[c]->driver_.setDutyFine(ch[c]->seriesCh_, newSer[c]);
-    }
-    // 2. shunt searches, together
-    searchAll(false, wantShu, tRsh, oldShu, newShu);
-    // 3. store and report
-    for (uint8_t c = 0; c < n; c++) {
-      if (!use[c]) continue;
-      ch[c]->cal_.setLutStepDuty(i, newSer[c], newShu[c]);
+      ch[c]->cal_.setLutStepDuty(i, newSer[c], keepShu[c]);
       out.print(F("  ")); if (labels) out.print(labels[c]); out.print(F(" step ")); out.print(i);
       out.print(F(": seriesDuty ")); out.print(oldSer[c] / L, 2); out.print(F("->")); out.print(newSer[c] / L, 2);
-      out.print(F("  shuntDuty ")); out.print(oldShu[c] / L, 2); out.print(F("->")); out.print(newShu[c] / L, 2);
-      out.println(fromCurve[c] ? F("  (series from the settled curve)") : F(""));
+      out.println(fromCurve[c] ? F("  (from the settled curve)") : F(""));
     }
   }
+
+  // ---- pass 2: shunt, loud -> quiet, series held bright ----
+  // Pre-settle: the shunt at its darkest (loudest) step, the series bright, once for both.
+  for (uint8_t c = 0; c < n; c++) {
+    LDRVolume &v = *ch[c];
+    ch[c]->driver_.setDutyFine(ch[c]->seriesCh_, BRIGHT);
+    for (int16_t i0 = (int16_t)v.numSteps() - 1; i0 >= 0; i0--) {
+      const VolumeLut::Entry &e0 = v.lut().step((uint8_t)i0);
+      if (!e0.valid || v.lut().isTransparent((uint8_t)i0)) continue;
+      v.driver_.setDutyFine(v.shuntCh_, e0.shuntFine);
+      break;
+    }
+  }
+  out.println(F("  shunt pass (loud -> quiet, series held bright): settling at the darkest shunt step..."));
+  for (uint32_t waited = 0; waited < TRIM_PRECONDITION_MS; waited += 100) BusyHook::wait(100);
+  for (int16_t ii = (int16_t)nSteps - 1; ii >= 0; ii--) {
+    const uint8_t i = (uint8_t)ii;
+    CalProgress::step((uint16_t)(2 * nSteps - 1 - i), (uint16_t)(2 * nSteps));
+    bool wantShu[MAXC];
+    float tRsh[MAXC] = {0, 0};
+    uint32_t oldShu[MAXC] = {0, 0}, newShu[MAXC] = {0, 0}, ser[MAXC] = {0, 0};
+    for (uint8_t c = 0; c < n; c++) {
+      LDRVolume &v = *ch[c];
+      wantShu[c] = false;
+      if (i >= v.numSteps()) continue;
+      const VolumeLut::Entry &e = v.lut().step(i);
+      if (!e.valid || v.lut().isTransparent(i)) continue;
+      wantShu[c] = true;
+      oldShu[c] = e.shuntFine; tRsh[c] = e.targetRsh; ser[c] = e.seriesFine;
+    }
+    searchAll(false, wantShu, tRsh, oldShu, newShu);
+    for (uint8_t c = 0; c < n; c++) {
+      if (!wantShu[c]) continue;
+      ch[c]->cal_.setLutStepDuty(i, ser[c], newShu[c]);
+      out.print(F("  ")); if (labels) out.print(labels[c]); out.print(F(" step ")); out.print(i);
+      out.print(F(": shuntDuty ")); out.print(oldShu[c] / L, 2); out.print(F("->")); out.println(newShu[c] / L, 2);
+    }
+  }
+  // The series is left bright here: settleQuietPoint() drives the quiet step and holds it.
 }
 
 void LDRVolume::reapplyCurrentStepOrDefault() {

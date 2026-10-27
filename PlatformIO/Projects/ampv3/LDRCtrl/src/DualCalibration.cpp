@@ -5,6 +5,7 @@
 #include "ThermalComp.hpp"
 #include "CalProgress.hpp"
 #include "QuietSeek.hpp"
+#include "AutoPref.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
@@ -476,10 +477,32 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
       }
       BusyHook::wait(RETURN_MS);
     }
+    // The 5 s reading is the memory AUTO judges by (unchanged). The overshoot after a loud
+    // passage can peak later (measured ~10 s at ~1.4 MOhm), so read on at 8, 11, 14 s and
+    // report the peak and when -- information, not a limit (depth stays as AUTO picks it).
+    float rb5[MAX_CH] = {0, 0}, peak[MAX_CH] = {0, 0};
+    uint8_t peakS[MAX_CH] = {0, 0};
+    for (uint8_t c = 0; c < na; c++) {
+      if (!mem[c]) continue;
+      rb5[c] = readAvg3(ch[c]);
+      if (ra[c] > 0.0f && rb5[c] > 0.0f) { peak[c] = ra[c] >= rb5[c] ? ra[c] / rb5[c] : rb5[c] / ra[c]; peakS[c] = (uint8_t)(RETURN_MS / 1000); }
+    }
+    if (anyMem) {
+      for (uint8_t k = 1; k <= 3; k++) {
+        BusyHook::wait(3000);
+        for (uint8_t c = 0; c < na; c++) {
+          if (!mem[c]) continue;
+          const float r = readAvg3(ch[c]);
+          if (!(ra[c] > 0.0f) || !(r > 0.0f)) continue;
+          const float m = ra[c] >= r ? ra[c] / r : r / ra[c];
+          if (m > peak[c]) { peak[c] = m; peakS[c] = (uint8_t)(RETURN_MS / 1000 + 3 * k); }
+        }
+      }
+    }
     // 3. record, decide, print
     for (uint8_t c = 0; c < na; c++) {
       if (!active[c]) continue;
-      const float rb = mem[c] ? readAvg3(ch[c]) : 0.0f;
+      const float rb = mem[c] ? rb5[c] : 0.0f;
       DarkPoint d{};
       d.duty = (uint16_t)duty[c];
       d.settleS = secs[c];
@@ -492,12 +515,17 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
       out.print(F(" duty ")); out.print(duty[c]);
       out.print(F(": ")); out.print(ra[c] / 1000.0f, 1);
       out.print(F("k settled in ")); out.print(secs[c]);
-      if (mem[c]) { out.print(F(" s, memory x")); out.print(d.memory, 3); }
+      if (mem[c]) {
+        out.print(F(" s, memory x")); out.print(d.memory, 3);
+        if (peak[c] > 0.0f && peakS[c] > RETURN_MS / 1000 && peak[c] > d.memory + 0.005f) {
+          out.print(F(" at 5 s, peak x")); out.print(peak[c], 3); out.print(F(" at ")); out.print(peakS[c]); out.print(F(" s"));
+        }
+      }
       else out.print(F(" s (shallow: no memory test)"));
       if (!d.ok) out.print(settled[c] ? (darker ? F("  -- unreadable: end of walk") : F("  -- not darker than the last point: end of walk"))
                                       : F("  -- did not settle: end of walk"));
       out.println();
-      if (!d.ok || ra[c] >= TOP_OHMS || prof[c].n >= DarkProfile::MAX_POINTS) { active[c] = false; continue; }
+      if (!d.ok || ra[c] >= AutoPref::now().walkTopOhms || prof[c].n >= DarkProfile::MAX_POINTS) { active[c] = false; continue; }
       const int32_t next = nextDuty(duty[c], ra[c], prevDuty[c], prevOhms[c], havePrev[c]);
       prevDuty[c] = duty[c]; prevOhms[c] = ra[c]; havePrev[c] = true;
       duty[c] = next;
@@ -731,7 +759,8 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
       out.print(F(": worst x")); out.print(w, 3);
       out.print(e ? F(" (shunt @") : F(" (series @")); out.print(st.duty[i]); out.print(')');
       out.print(F(", ")); out.print(CellCheck::offDuties(st, now[c]));
-      out.print(F(" of ")); out.print(CellCheck::NFP); out.print(F(" duties >5%"));
+      out.print(F(" of ")); out.print(CellCheck::NFP); out.print(F(" duties beyond x"));
+      out.print(CellCheck::matchTol(CellCheck::tempDiff(st, now[c])), 3);
     }
     out.print(F(", die ")); out.print(now[c].tempC, 1); out.print(F(" C now / ")); out.print(st.tempC, 1);
     out.print(F(" C at calibration -> "));
@@ -910,6 +939,87 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
   return cs;
 }
 
+// Depth-dependent correction of the deep (curve-based) steps after the quiet-point seek: probe
+// a few middle-depth steps, settled and approached from the dark side (the fast direction for
+// CdS), with the shunt held bright for a healthy measuring current; give every deep step its own
+// shift interpolated between the probes (QuietSeek::DeepRefine). Both channels together.
+void refineDeepSteps(LDRVolume *ch[], uint8_t n, const char *labels, Stream &out) {
+  using namespace QuietSeek::DeepRefine;
+  const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
+  constexpr uint8_t MAXS = 64;
+  int16_t probe[MAX_CH][NPROBE];
+  float quiet[MAX_CH], lo[MAX_CH], pRs[MAX_CH][NPROBE], pCorr[MAX_CH][NPROBE];
+  bool any = false;
+  for (uint8_t c = 0; c < n; c++) {
+    for (uint8_t k = 0; k < NPROBE; k++) { probe[c][k] = -1; pRs[c][k] = 0.0f; pCorr[c][k] = NAN; }
+    const uint8_t s0 = ch[c]->lowestValidStep();
+    lo[c] = ch[c]->darkProfile().okCount() ? ch[c]->darkProfile().shallowestOkOhms() : 0.0f;
+    quiet[c] = s0 < ch[c]->numSteps() ? ch[c]->lut().step(s0).targetRs : 0.0f;
+    const uint8_t ns = ch[c]->numSteps() < MAXS ? ch[c]->numSteps() : MAXS;
+    float rs[MAXS]; bool deep[MAXS];
+    for (uint8_t i = 0; i < ns; i++) {
+      const VolumeLut::Entry &e = ch[c]->lut().step(i);
+      rs[i] = e.targetRs;
+      deep[i] = e.valid && !ch[c]->lut().isTransparent(i) && lo[c] > 0.0f && e.targetRs >= lo[c];
+    }
+    chooseProbes(rs, deep, ns, lo[c], quiet[c], probe[c]);
+    for (uint8_t k = 0; k < NPROBE; k++) if (probe[c][k] >= 0) any = true;
+  }
+  if (!any) return;
+  out.println(F("  deep steps: probing middle depths (settled, from the dark side)..."));
+  for (uint8_t k = 0; k < NPROBE; k++) {            // deepest first: each probe arrives from darker
+    bool active[MAX_CH] = {false, false};
+    for (uint8_t c = 0; c < n; c++) {
+      if (probe[c][k] < 0) continue;
+      const VolumeLut::Entry &e = ch[c]->lut().step((uint8_t)probe[c][k]);
+      active[c] = true;
+      ch[c]->driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * FPC);   // measuring current
+      const uint32_t dark = e.seriesFine > DarkWalk::APPROACH_COUNTS * FPC ? e.seriesFine - DarkWalk::APPROACH_COUNTS * FPC : 0;
+      ch[c]->driveElementFine(true, dark);                                     // approach from the dark side
+    }
+    BusyHook::wait(DarkWalk::APPROACH_MS);
+    for (uint8_t c = 0; c < n; c++)
+      if (active[c]) ch[c]->driveElementFine(true, ch[c]->lut().step((uint8_t)probe[c][k]).seriesFine);
+    float r[MAX_CH]; uint8_t secs[MAX_CH]; bool settled[MAX_CH];
+    settleRead(ch, n, active, r, secs, settled);
+    for (uint8_t c = 0; c < n; c++) {
+      if (!active[c]) continue;
+      const VolumeLut::Entry &e = ch[c]->lut().step((uint8_t)probe[c][k]);
+      out.print(F("    ")); out.print(labels ? labels[c] : '?'); out.print(F(" step ")); out.print(probe[c][k]);
+      out.print(F(" (target ")); out.print(e.targetRs / 1000.0f, 0); out.print(F("k): "));
+      if (!settled[c] || !(r[c] > 0.0f)) { out.println(F("did not settle -- not used")); continue; }
+      bool ex; float perCount = Capabilities::slopeAt(ch[c]->seriesCurve(), e.targetRs, ex);
+      if (!(perCount > 0.01f)) perCount = 0.1f;
+      float corr = logf(r[c] / e.targetRs) / perCount;                       // + = too dark -> brighter
+      if (corr > MAX_CORR_COUNTS) corr = MAX_CORR_COUNTS;
+      if (corr < -MAX_CORR_COUNTS) corr = -MAX_CORR_COUNTS;
+      pRs[c][k] = e.targetRs; pCorr[c][k] = corr;
+      out.print(r[c] / 1000.0f, 0); out.print(F("k (x")); out.print(r[c] / e.targetRs, 2);
+      out.print(F(") -> ")); if (corr >= 0) out.print('+'); out.print(corr, 2); out.println(F(" counts"));
+    }
+  }
+  for (uint8_t c = 0; c < n; c++) {
+    float minC = 0.0f, maxC = 0.0f; uint8_t changed = 0;
+    for (uint8_t i = 0; i < ch[c]->numSteps(); i++) {
+      const VolumeLut::Entry &e = ch[c]->lut().step(i);
+      if (!e.valid || ch[c]->lut().isTransparent(i) || !(lo[c] > 0.0f) || e.targetRs < lo[c]) continue;
+      const float corr = correctionAt(e.targetRs, pRs[c], pCorr[c], NPROBE, quiet[c]);
+      const int32_t delta = (int32_t)lroundf(corr * (float)FPC);
+      if (delta == 0) continue;
+      const int32_t nf = (int32_t)e.seriesFine + delta;
+      ch[c]->setStepSeriesFine(i, nf > 0 ? (uint32_t)nf : 0);
+      if (changed == 0 || corr < minC) minC = corr;
+      if (changed == 0 || corr > maxC) maxC = corr;
+      changed++;
+    }
+    out.print(F("  deep steps ")); out.print(labels ? labels[c] : '?'); out.print(F(": "));
+    if (!changed) { out.println(F("no correction needed")); continue; }
+    out.print(changed); out.print(F(" steps corrected by "));
+    if (minC >= 0) out.print('+'); out.print(minC, 2); out.print(F(" .. ")); if (maxC >= 0) out.print('+'); out.print(maxC, 2);
+    out.println(F(" counts (0 at the quiet point)"));
+  }
+}
+
 void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKind kind) {
   BusyHook::Scope busy;
   if (n == 0) return;
@@ -925,6 +1035,7 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   CalProgress::phase(CalProgress::Phase::TRIM);
   LDRVolume::trimLoopBoth(ch, n, out, labels);   // both channels together: shared waits
   settleQuietPoint(ch, n, labels, out);
+  refineDeepSteps(ch, n, labels, out);   // each deep step its own shift, from probes at middle depths
   for (uint8_t c = 0; c < n; c++) { ch[c]->guardShunt(out, labels ? labels[c] : '?'); ch[c]->guardSeries(out, labels ? labels[c] : '?'); }
   CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < n; c++) {
@@ -1167,5 +1278,42 @@ void onModelChanged(LDRVolume &left, LDRVolume &right) {
 bool solvedModel(float &src, float &load) { return readSolvedModel(src, load); }
 
 bool lastSeekFailed() { return gLastSeekFailed; }
+
+// AUTO's choice for the stored measurements under the current preference (0 if none).
+float autoChoiceOhms(LDRVolume &left, LDRVolume &right) {
+  using namespace Capabilities;
+  LDRVolume *ch[2] = {&left, &right};
+  ChannelCaps cc[2];
+  const LdrCurve *ser[2];
+  for (uint8_t c = 0; c < 2; c++) {
+    cc[c] = measure(ch[c]->seriesCurve(), ch[c]->shuntCurve(), &ch[c]->darkProfile());
+    ser[c] = &ch[c]->seriesCurve();
+  }
+  const RtotalChoice rc = chooseRtotal(cc, ser, 2, true, left.rTotalOhms(), AudioModel::load(),
+                                       RANGE_SAFETY_MARGIN_DB, CAPS_DITHER_LEVELS);
+  return rc.rangeOk ? rc.chosen : 0.0f;
+}
+
+// How deep the stored dark-end walks reach on BOTH channels (AUTO can never go deeper).
+float walkReachOhms(LDRVolume &left, LDRVolume &right) {
+  const float a = left.darkProfile().deepestOkOhms(), b = right.darkProfile().deepestOkOhms();
+  return a < b ? a : b;
+}
+
+// SET AUTO changed the preference: in AUTO mode, if AUTO now picks another Rtotal, the stored
+// solution is STALE (LDR mute on, volume refused until CAL re-solves -- like SET SRC/LOAD).
+// Returns AUTO's new choice (0 if not in AUTO mode or nothing qualifies).
+float onAutoPrefChanged(LDRVolume &left, LDRVolume &right) {
+  if (!left.hasUsableLut() || !right.hasUsableLut() || !left.rAuto() || !right.rAuto()) return 0.0f;
+  const float pick = autoChoiceOhms(left, right);
+  const bool differs = pick > 0.0f && fabsf(pick - left.rTotalOhms()) > 0.005f * left.rTotalOhms();
+  if (differs && gNeed == CalNeed::NONE) {
+    gNeed = CalNeed::STALE; gStaleFromModel = true;
+    left.mute(); right.mute();
+  } else if (!differs && gNeed == CalNeed::STALE && gStaleFromModel && modelMatches()) {
+    gNeed = CalNeed::NONE; gStaleFromModel = false;
+  }
+  return pick;
+}
 
 } // namespace DualCalibration

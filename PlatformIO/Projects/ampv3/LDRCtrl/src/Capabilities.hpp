@@ -6,6 +6,7 @@
 #include "Calibration.hpp"
 #include "AudioModel.hpp"
 #include "DarkProfile.hpp" // LdrCurve
+#include "AutoPref.hpp"
 #include "Config.hpp"
 #include "DividerMath.hpp"
 
@@ -209,12 +210,14 @@ inline float autoPickOhms(const ChannelCaps *ch, const LdrCurve *const *series, 
   const float lo = rMinOhms(ch, n, load);
   float hi = supportedMaxOhms(ch, n);
   { const float m = measuredMaxAll(ch, n); if (hi > m) hi = m; } // never deeper than MEASURED on every channel
+  const AutoPref::Params pp = AutoPref::now();                    // SET AUTO SNAPPY|BALANCED|DEEP
+  if (hi > pp.capOhms) hi = floorf(pp.capOhms / 500.0f) * 500.0f;
   if (lo <= 0.0f || hi < lo) return 0.0f;
   for (float r = hi; r >= lo; r -= 500.0f) {
     bool ok = true;
     for (uint8_t i = 0; i < n && ok; i++) {
       Row w = evaluate(ch[i], *series[i], r, load, marginDb, ditherLevels);
-      if (w.memoryUnknown || w.memory > CAPS_AUTO_MAX_MEMORY || w.quantDb > CAPS_AUTO_MAX_QUANT_DB || w.slope > CAPS_AUTO_MAX_SLOPE) ok = false;
+      if (w.memoryUnknown || w.memory > pp.memMax || w.quantDb > CAPS_AUTO_MAX_QUANT_DB || w.slope > pp.slopeMax) ok = false;
     }
     if (ok) return r;
   }
@@ -444,8 +447,10 @@ void printReport(OUT &out, const LdrCurve *const *ser, const LdrCurve *const *sh
     out.println(m.b); }
   { Line m;
     if (pick > 0) {
-      m.raw("AUTO pick (measured memory <= "); m.num(CAPS_AUTO_MAX_MEMORY, 2);
-      m.raw(", step error <= "); m.num(CAPS_AUTO_MAX_QUANT_DB, 2); m.raw(" dB, slope <= "); m.num(100.0 * CAPS_AUTO_MAX_SLOPE, 0); m.raw(" %/ct): "); m.num(pick, 0);
+      const AutoPref::Params pp = AutoPref::now();
+      m.raw("AUTO pick ("); m.raw(AutoPref::name(AutoPref::current())); m.raw(": measured memory <= "); m.num(pp.memMax, 2);
+      m.raw(", step error <= "); m.num(CAPS_AUTO_MAX_QUANT_DB, 2); m.raw(" dB, slope <= "); m.num(100.0 * pp.slopeMax, 0);
+      m.raw(" %/ct, at most "); m.num(pp.capOhms, 0); m.raw("): "); m.num(pick, 0);
     } else {
       m.raw("AUTO pick: none -- no Rtotal in [RMIN, curve-supported] meets the limits");
     }

@@ -71,4 +71,55 @@ inline uint8_t guardSeries(uint32_t *ser, const bool *use, const uint32_t *curve
   return fixed;
 }
 
+// Depth-dependent refinement of the deep steps after a resync's quiet-point seek. The seek
+// measures one shift, at the quiet point, and every deep (curve-based) step gets it; real cells
+// shifted a little more at middle depths (measured: x1.14..1.24 too dark between 84k and 990k).
+// So a few middle-depth steps are probed (settled) and every deep step gets its own correction,
+// interpolated in ln(Rs) between the probes, 0 at the quiet point (just matched by the seek).
+namespace DeepRefine {
+constexpr uint8_t NPROBE = 3;
+constexpr float FRACTIONS[NPROBE] = {0.8f, 0.5f, 0.2f};  // of ln(lo..quiet), deepest probe first
+constexpr float MAX_CORR_COUNTS = 12.0f;                 // a sanity bound per probe
+constexpr float QUIET_SHARE = 0.9f;                      // steps at >= 0.9 x the quiet target ARE the quiet point
+
+// deep[i]: step i is curve-based (its series stays as solved from the walk's curve). probe[k]:
+// the deep step nearest to fraction k of the ln distance lo..quiet, or -1. Distinct steps only.
+inline void chooseProbes(const float *rs, const bool *deep, uint8_t n, float lo, float quiet, int16_t probe[NPROBE]) {
+  for (uint8_t k = 0; k < NPROBE; k++) probe[k] = -1;
+  if (!(lo > 0.0f) || !(quiet > lo)) return;
+  const float a = logf(lo), b = logf(quiet);
+  for (uint8_t k = 0; k < NPROBE; k++) {
+    const float want = a + FRACTIONS[k] * (b - a);
+    float bestD = 1e9f;
+    for (uint8_t i = 0; i < n; i++) {
+      if (!deep[i] || !(rs[i] > 0.0f) || rs[i] >= QUIET_SHARE * quiet) continue;
+      bool taken = false;
+      for (uint8_t j = 0; j < k; j++) if (probe[j] == (int16_t)i) taken = true;
+      if (taken) continue;
+      const float d = fabsf(logf(rs[i]) - want);
+      if (d < bestD) { bestD = d; probe[k] = (int16_t)i; }
+    }
+  }
+}
+
+// The correction (counts, + = brighter) for a deep step at target rs: 0 at/above the quiet
+// point, linear in ln(rs) between the probes, the shallowest probe's below it.
+inline float correctionAt(float rs, const float *pRs, const float *pCorr, uint8_t np, float quiet) {
+  if (!(rs > 0.0f) || rs >= QUIET_SHARE * quiet) return 0.0f;
+  // points sorted by ln R: the probes (any order in) + the anchor (quiet, 0)
+  float x[NPROBE + 1], y[NPROBE + 1]; uint8_t m = 0;
+  for (uint8_t k = 0; k < np; k++) if (pRs[k] > 0.0f && isfinite(pCorr[k])) { x[m] = logf(pRs[k]); y[m] = pCorr[k]; m++; }
+  if (m == 0) return 0.0f;
+  x[m] = logf(quiet); y[m] = 0.0f; m++;
+  for (uint8_t i = 1; i < m; i++) for (uint8_t j = i; j > 0 && x[j] < x[j - 1]; j--) {
+    float t = x[j]; x[j] = x[j - 1]; x[j - 1] = t; t = y[j]; y[j] = y[j - 1]; y[j - 1] = t;
+  }
+  const float lr = logf(rs);
+  if (lr <= x[0]) return y[0];
+  for (uint8_t i = 0; i + 1 < m; i++)
+    if (lr <= x[i + 1]) return y[i] + (lr - x[i]) / (x[i + 1] - x[i]) * (y[i + 1] - y[i]);
+  return 0.0f;
+}
+} // namespace DeepRefine
+
 } // namespace QuietSeek

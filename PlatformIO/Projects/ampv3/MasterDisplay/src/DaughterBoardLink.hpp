@@ -124,6 +124,18 @@ struct DaughterModel {
     bool     valid      = false;
     uint32_t receivedMs = 0;
     int32_t  src = -1, load = -1, solvedSrc = -1, solvedLoad = -1;
+    char     autoPref[10] = "--";  // rev 16: SNAPPY | BALANCED | DEEP
+    int32_t  reach = -1;           // rev 16: ohms the stored dark-end walk measured to
+};
+
+// Revision 15 VER reply: the daughter's firmware and chip.
+struct DaughterVersion {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    char fw[16] = "--", build[24] = "--", hw[8] = "--", hwRev[6] = "--", calRev[6] = "--";
+    char chip[10] = "--", chipRev[6] = "--", mhz[6] = "--", flash[10] = "--", uid[20] = "--";
+    char board[16] = "--", core[12] = "--", sdk[12] = "--", note[96] = "";
+    uint8_t proto = 0;
 };
 
 // Outcome of the last CAL command (the reply to CAL itself; completion is
@@ -170,7 +182,13 @@ public:
     // other than what the calibration was solved for makes it CAL=STALE.
     bool sendSetSrc(uint32_t ohms);
     bool sendSetLoad(uint32_t ohms);
+    // rev 16 "SET AUTO SNAPPY|BALANCED|DEEP": how AUTO trades depth against
+    // settling. Stored on the daughter; may make it CAL=STALE (AUTO mode).
+    enum class AutoPref : uint8_t { SNAPPY, BALANCED, DEEP };
+    bool sendSetAuto(AutoPref pref);
     bool sendModel();                        // rev 12, read-only, answered at any time
+    bool sendVer();                          // rev 15, read-only, answered at any time
+    void requestVer() { m_verWantedUntilMs = millis() + 3000; } // polled while wanted (a page reads it)
     void requestModel() { m_modelWantedUntilMs = millis() + 3000; } // polled while wanted, like ENV
 
     // ENV is polled only while someone wants it (the calibration pages ask
@@ -196,6 +214,7 @@ public:
     const DaughterProgress& progress() const { return m_progress; }
     const DaughterLearn&    learn()    const { return m_learn; }
     const DaughterModel&    model()    const { return m_model; }
+    const DaughterVersion&  version()  const { return m_version; }
 
     // The last CAL command: started, or rejected with getCalStartError().
     DaughterCalStart calStart() const        { return m_calStart; }
@@ -221,7 +240,7 @@ private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL, VER
     };
 
     bool sendLine(const char* line, PendingCmd cmd);
@@ -231,6 +250,7 @@ private:
     bool parseProgressLine(const char* line);
     bool parseLearnLine(const char* line);
     bool parseModelLine(const char* line);
+    bool parseVerLine(const char* line);
     void setError(const char* text);
     uint32_t currentPollIntervalMs() const;
 
@@ -262,6 +282,9 @@ private:
     DaughterProgress m_progress;
     DaughterLearn    m_learn;
     DaughterModel    m_model;
+    DaughterVersion  m_version;
+    uint32_t         m_lastVerSentMs    = 0;
+    uint32_t         m_verWantedUntilMs = 0;
     uint32_t         m_lastModelSentMs    = 0;
     uint32_t         m_modelWantedUntilMs = 0;
     uint32_t         m_lastLearnSentMs    = 0;

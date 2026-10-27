@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 14
+# Master Board <-> Daughter Board UART Protocol — revision 16
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=14`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`, revision 13 the NTC state in `ENV`, revision 14 the resync hint in `ENV`) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=16`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`, revision 13 the NTC state in `ENV`, revision 14 the resync hint in `ENV`, revision 15 the `VER` query, revision 16 the AUTO preference) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=14
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16
 ```
 
 | Key | Meaning |
@@ -255,6 +255,56 @@ was solved for (`--` if unknown). When they differ, `STATUS` shows `CAL=STALE`.
 
 The thermal compensation on or off (`OK`). Not stored: it boots ON. `ENV` reports the state
 (`COMP=ON|PART|LEARNING|OFF`). Meant for an A/B comparison from the menu.
+
+## Revision 15: `VER` / `FW` -- firmware and chip information
+
+A read-only query (`VER` and `FW` are the same), answered at any time, also during a calibration:
+
+```
+VER
+OK VER FW=2026-10-27e PROTO=16 BUILD=2026-10-27T10:31:49 HW=v1b HWREV=4 CALREV=4 CHIP=RP2040 CHIPREV=2 MHZ=150 FLASH=2048K UID=E6614103E73F2B25 BOARD=rpipicow CORE=6.1.0 SDK=2.3.0 NOTE=version info: VER / FW query, Version.hpp
+```
+
+| Key | Meaning |
+|---|---|
+| `FW` | the firmware version (date + letter of the release) |
+| `PROTO` | the protocol revision (as in `STATUS`) |
+| `BUILD` | when this firmware was compiled, ISO 8601 |
+| `HW`, `HWREV`, `CALREV` | driver board, its calibration hardware revision, the calibration algorithm revision |
+| `CHIP`, `CHIPREV`, `MHZ` | the microcontroller, its silicon revision, the CPU clock |
+| `FLASH` | flash size (`--` if the build does not say) |
+| `UID` | the flash chip's unique ID: identifies this physical board |
+| `BOARD`, `CORE`, `SDK` | the board definition, the Arduino-Pico core and the Pico SDK versions the firmware was built with (`--` if unknown) |
+| `NOTE` | a few words on what this release changed. **Always last; its value runs to the end of the line** (it contains spaces), like `ERR=` in `STATUS` |
+
+The version itself is kept in `Version.hpp` (`FW_VERSION_ID`, `FW_VERSION_NOTE`).
+
+## Revision 16: the AUTO preference (`SET AUTO`)
+
+How AUTO trades depth against settling. The deeper the total resistance, the darker the series
+cell sits at the quiet steps, where CdS cells are slowest and have the most memory: deep settings
+fade into quiet steps more slowly after loud passages, shallow ones are snappy.
+
+| Command | Reply |
+|---|---|
+| `SET AUTO SNAPPY` / `SET AUTO BALANCED` / `SET AUTO DEEP` | `OK` / `ERR usage: SET AUTO SNAPPY\|BALANCED\|DEEP` |
+
+| Preference | Walk measures to | AUTO memory limit | AUTO at most |
+|---|---|---|---|
+| `SNAPPY` | 600 k | x1.06 | 600 k |
+| `BALANCED` (default) | 1.0 M | x1.12 | 1.0 M |
+| `DEEP` | 1.6 M | x1.20 | 1.6 M |
+
+Stored in flash. If the calibration is in AUTO mode and AUTO now picks another total resistance,
+it becomes **`CAL=STALE`** (LDR mute on, volume refused) and a plain `CAL` re-solves. A
+**deeper** preference can only go as deep as the stored dark-end walk measured (`REACH` in
+`MODEL`); beyond that it needs a full characterization (`FORGET CAL`, then `CAL`).
+
+`MODEL` now ends with ` AUTO=<preference> REACH=<ohms>`:
+
+```
+OK MODEL SRC=300 LOAD=10000 SOLVED_SRC=300 SOLVED_LOAD=10000 AUTO=BALANCED REACH=844600
+```
 
 ## Calibration
 

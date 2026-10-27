@@ -121,3 +121,35 @@ struct DarkProfile {
     return true;
   }
 };
+
+// Interpolation on a stored dark-end profile (ln ohms linear in duty between its settled points).
+namespace DarkProfileMath {
+inline float ohmsAt(const DarkProfile &p, float duty) {
+  const uint8_t k = p.okCount();
+  if (k < 2) return NAN;
+  uint8_t a = 0, b = 1;                        // the bracketing pair (or the nearest pair to extrapolate)
+  for (uint8_t i = 0; i + 1 < k; i++) {
+    const float d1 = p.p[i].duty, d2 = p.p[i + 1].duty;
+    if ((duty <= d1 && duty >= d2) || (duty >= d1 && duty <= d2)) { a = i; b = i + 1; break; }
+    if (i + 2 == k) { a = (fabsf(duty - p.p[0].duty) < fabsf(duty - p.p[k - 1].duty)) ? 0 : k - 2; b = a + 1; }
+  }
+  const float d1 = p.p[a].duty, d2 = p.p[b].duty;
+  if (d1 == d2) return p.p[a].ohms;
+  const float f = (duty - d1) / (d2 - d1);
+  return expf(logf(p.p[a].ohms) + f * (logf(p.p[b].ohms) - logf(p.p[a].ohms)));
+}
+inline float dutyAt(const DarkProfile &p, float ohms) {
+  const uint8_t k = p.okCount();
+  if (k < 2 || !(ohms > 0.0f)) return NAN;
+  uint8_t a = 0, b = 1;
+  for (uint8_t i = 0; i + 1 < k; i++) {
+    const float o1 = p.p[i].ohms, o2 = p.p[i + 1].ohms;
+    if ((ohms <= o1 && ohms >= o2) || (ohms >= o1 && ohms <= o2)) { a = i; b = i + 1; break; }
+    if (i + 2 == k) { a = (fabsf(logf(ohms / p.p[0].ohms)) < fabsf(logf(ohms / p.p[k - 1].ohms))) ? 0 : k - 2; b = a + 1; }
+  }
+  const float l1 = logf(p.p[a].ohms), l2 = logf(p.p[b].ohms);
+  if (l1 == l2) return p.p[a].duty;
+  const float f = (logf(ohms) - l1) / (l2 - l1);
+  return p.p[a].duty + f * ((float)p.p[b].duty - (float)p.p[a].duty);
+}
+} // namespace DarkProfileMath

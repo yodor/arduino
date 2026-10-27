@@ -249,6 +249,11 @@ public:
     return fixed;
   }
 
+  void setStepSeriesFine(uint8_t i, uint32_t fine) {
+    if (!hasLut() || i >= numSteps()) return;
+    cal_.setLutStepDuty(i, fine, lut().step(i).shuntFine);
+  }
+
   uint8_t applyQuietSeek(uint32_t oldFine, uint32_t newFine) {
     const float from = profile_.okCount() ? profile_.shallowestOkOhms() : 1e30f;
     return cal_.applyQuietSeek(oldFine, newFine, from);

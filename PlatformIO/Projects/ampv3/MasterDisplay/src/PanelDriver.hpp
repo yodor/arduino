@@ -4,7 +4,7 @@
 
 // NV3007 panel driver with a workaround for how this panel stores pixels.
 //
-// Found with Settings -> Diagnostics -> Display Test: the panel drives pixel
+// Found with Diagnostics -> Display Test: the panel drives pixel
 // columns in PAIRS (x = 0-1, 2-3, 4-5, ...). Windows that cover whole pairs
 // are always stored correctly; windows that split a pair are not:
 //  - a 1-px-wide window disturbs its pair partner (walking 1-px markers

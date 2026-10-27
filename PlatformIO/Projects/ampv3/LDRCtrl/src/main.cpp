@@ -18,6 +18,7 @@
 #include "Pins.hpp"
 #include "Config.hpp"
 #include "AudioModel.hpp"
+#include "AutoPref.hpp"
 #include "Board.hpp"
 #include "DriverChannels.hpp"
 #include "LDRVolume.hpp"
@@ -55,6 +56,7 @@ static MasterLink masterLinkUart(Serial1, board, leftChannel, rightChannel, cons
 void setup() {
   board.begin();        // Serial, mute/regulator pre-latch, clocks, boot info, LED
   AudioModel::begin();  // source/load model (SET SRC / SET LOAD), before any calibration loads
+  AutoPref::begin();    // AUTO preference (SET AUTO SNAPPY|BALANCED|DEEP)
   driver.begin();       // 4 PWM channels, all start at duty=0
   // The master link comes up BEFORE anything slow, and answers "busy" while
   // a calibration blocks the main loop: a first-boot calibration takes

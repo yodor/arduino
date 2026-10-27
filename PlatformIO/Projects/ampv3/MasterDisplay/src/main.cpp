@@ -77,7 +77,7 @@ static MenuScreen g_menuScreen;
 // over the others when the volume/mute changes. g_overlayShown tracks
 // whether it currently owns the panel, so the transitions in and out can
 // trigger the right full redraws.
-// Settings -> Diagnostics -> Display Test: an exclusive mode like the menu
+// Diagnostics -> Display Test: an exclusive mode like the menu
 // (see DisplayTestScreen.hpp for the tests and controls).
 static DisplayTestScreen g_displayTest;
 static bool              g_displayTestOpen = false;
@@ -424,7 +424,7 @@ void loop() {
     } else {
         if (event == UIEvent::MODE_NEXT && g_noticeShown && g_noticeOverlay.isResyncNotice()) {
             // RIGHT on the "CALIBRATION ADVISED" notice: straight to the
-            // resync start (Settings > Calibration > Rtotal, Cancel / Start).
+            // resync start (Calibration > Rtotal, Cancel / Start).
             g_menuOpen = true;
             g_noticeOverlay.dismiss();
             g_infoScreen.dismiss();

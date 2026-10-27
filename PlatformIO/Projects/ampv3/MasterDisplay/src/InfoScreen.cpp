@@ -152,7 +152,7 @@ void InfoScreen::drawStaticForView(View v) {
                 gfx->setCursor(kMargin, kMsgY + 44);
                 gfx->print(s.err);
             } else {
-                drawCentered("Settings > Calibration", 2, kMsgY + 44, kColorSubtle);
+                drawCentered("Menu > Calibration", 2, kMsgY + 44, kColorSubtle);
             }
             break;
         }

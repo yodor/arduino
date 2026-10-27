@@ -40,6 +40,14 @@ constexpr uint8_t  NFP = 4;
 // was a false alarm on a 2 C cooler morning: x1.055 at the lowest duty, the rest close.)
 constexpr float    MATCH_TOL = 1.05f;
 constexpr float    STRONG_TOL = 1.20f;
+// Temperature-aware: the bright-end fingerprint moves ~1.5 % per C of die-temperature difference
+// (a cool start after a warm calibration read x1.06 at two duties -- a false CHANGED). The
+// tolerances widen with the difference since the fingerprint was taken; a real cell swap at a
+// similar temperature is still caught at 5 %.
+constexpr float    TOL_PER_C = 0.015f;
+constexpr float    MATCH_TOL_MAX = 1.20f;
+inline float matchTol(float dT)  { float t = MATCH_TOL + TOL_PER_C * (isnan(dT) ? 0.0f : fabsf(dT)); return t > MATCH_TOL_MAX ? MATCH_TOL_MAX : t; }
+inline float strongTol(float dT) { return STRONG_TOL + (matchTol(dT) - MATCH_TOL); }
 constexpr uint8_t  MIN_OFF_DUTIES = 2;
 constexpr uint32_t SETTLE_MS = 400;       // bright end: settled well within this
 constexpr float    BRIGHT_FACTOR = 4.0f;  // lowest fingerprint duty: both cells within 4x their floor
@@ -118,24 +126,29 @@ inline void chooseDuties(const LdrCurve &series, const LdrCurve &shunt, uint16_t
 
 // How many of one element's fingerprint duties are more than MATCH_TOL off, and its worst
 // ratio. e: 0 = series, 1 = shunt. Returns false if a reading is missing.
-inline bool elementOff(const CellFingerprint &a, const CellFingerprint &b, uint8_t e, uint8_t &nOff, float &worstR) {
+inline bool elementOff(const CellFingerprint &a, const CellFingerprint &b, uint8_t e, uint8_t &nOff, float &worstR,
+                       float tol = MATCH_TOL) {
   nOff = 0; worstR = 1.0f;
   for (uint8_t i = 0; i < NFP; i++) {
     const float x = e ? a.shu[i] : a.ser[i], y = e ? b.shu[i] : b.ser[i];
     if (!(x > 0.0f) || !(y > 0.0f)) return false;
     const float r = x > y ? x / y : y / x;
-    if (r > MATCH_TOL) nOff++;
+    if (r > tol) nOff++;
     if (r > worstR) worstR = r;
   }
   return true;
 }
 
 // The duties beyond MATCH_TOL on the element that decided the verdict (the larger count).
+inline float tempDiff(const CellFingerprint &a, const CellFingerprint &b) {
+  return (isnan(a.tempC) || isnan(b.tempC)) ? NAN : b.tempC - a.tempC;
+}
 inline uint8_t offDuties(const CellFingerprint &a, const CellFingerprint &b) {
+  const float tol = matchTol(tempDiff(a, b));
   uint8_t best = 0;
   for (uint8_t e = 0; e < 2; e++) {
     uint8_t n; float w;
-    if (elementOff(a, b, e, n, w) && n > best) best = n;
+    if (elementOff(a, b, e, n, w, tol) && n > best) best = n;
   }
   return best;
 }
@@ -144,10 +157,11 @@ inline CellState judge(bool haveStored, const CellFingerprint &stored, const Cel
   if (!haveStored || !stored.valid) return CellState::NO_DATA;
   for (uint8_t i = 0; i < NFP; i++) if (stored.duty[i] != now.duty[i] || stored.duty[i] == 0) return CellState::NO_DATA;
   if (!stored.valid || !now.valid) return CellState::CHANGED;
+  const float dT = tempDiff(stored, now);
   for (uint8_t e = 0; e < 2; e++) {
     uint8_t n; float w;
-    if (!elementOff(stored, now, e, n, w)) return CellState::CHANGED; // a reading failed: do not trust it
-    if (n >= MIN_OFF_DUTIES || w > STRONG_TOL) return CellState::CHANGED;
+    if (!elementOff(stored, now, e, n, w, matchTol(dT))) return CellState::CHANGED; // a reading failed: do not trust it
+    if (n >= MIN_OFF_DUTIES || w > strongTol(dT)) return CellState::CHANGED;
   }
   return CellState::MATCH;
 }

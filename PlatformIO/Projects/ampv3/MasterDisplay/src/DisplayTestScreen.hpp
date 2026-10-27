@@ -2,7 +2,7 @@
 #include "Screen.hpp"
 #include "Config.hpp"
 
-// Settings -> Diagnostics -> Display Test: drawing patterns that tell apart
+// Diagnostics -> Display Test: drawing patterns that tell apart
 // WHICH display line loses writes. Each test runs continuously; leftovers
 // accumulate on screen, so even a rare loss becomes visible.
 //

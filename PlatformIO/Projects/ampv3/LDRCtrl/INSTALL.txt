@@ -1,13 +1,17 @@
-LDR daughter board firmware -- 2026-10-26d (resync hint: ENV RESYNC= WHY=, TEMP/DIAG)  (driver v1b, 2nd-edition LDR boards)
+LDR daughter board firmware -- 2026-10-28a  (driver v1b, 2nd-edition LDR boards)
 
-Resync hint (protocol 14): ENV ends with RESYNC=0|1 WHY=SPAN|LIMIT|NOCOMP|SEEK|-
-  SPAN    the block is further from the calibration temperature than the compensation has
-          learned (and > 1.5 C): it extrapolates; a resync makes it exact and teaches the range
-  LIMIT   30 C or more from the calibration temperature
-  NOCOMP  the compensation is not active (learning / switched off) and the block moved > 1 C
-  SEEK    the last calibration's quiet-point seek did not converge
-Based on the block's 1-minute average (no flicker). TEMP / DIAG show it as a sentence.
-Appended at the end of ENV: existing master parsing keeps working.
+* AUTO preference (protocol 16): SET AUTO SNAPPY | BALANCED | DEEP, stored. Sets how deep the
+  dark-end walk measures, AUTO's memory/slope limits and a cap on its pick:
+    SNAPPY   600 k, memory <= x1.06      BALANCED (default) 1.0 M, x1.12      DEEP 1.6 M, x1.20
+  So AUTO's depth is consistent (it used to follow wherever the walk's doubling steps landed:
+  844 k this time, 1431 k before). A changed AUTO pick makes the calibration STALE; a plain CAL
+  re-solves. A deeper preference beyond the stored walk (MODEL: REACH=) needs FORGET CAL, CAL.
+  MODEL ends with AUTO=<pref> REACH=<ohms>.
+* Cell check: the tolerance widens with the die-temperature difference since the fingerprint
+  (5 % + 1.5 %/C, at most 20 %), so a cool start no longer looks like new cells (the cause of
+  the unexpected full characterization). A real swap at a similar temperature: still 5 %.
+
+Default BALANCED keeps your current 844.5 k (the stored walk reaches no deeper). For more depth:
+SET AUTO DEEP, then FORGET CAL, CAL (a full characterization walks to 1.6 M).
 
 firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
-No recalibration needed.

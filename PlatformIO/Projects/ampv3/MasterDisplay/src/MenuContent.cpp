@@ -1,4 +1,7 @@
 #include "MenuContent.hpp"
+#if defined(PICO_RP2350) && PICO_RP2350
+#include "hardware/structs/sysinfo.h"
+#endif
 #include "MenuScreen.hpp"
 #include "Version.hpp"
 #include "ScreenRegistry.hpp"
@@ -74,7 +77,7 @@ void addWrapped(char (*lines)[kInfoLineLen], size_t& n, size_t maxLines, const c
     }
 }
 
-// Settings -> Calibration -> Status: everything the daughter reports in its
+// Calibration -> Status: everything the daughter reports in its
 // STATUS line, live (the menu re-fills this twice a second while it's open).
 size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
     // Lines fit kInfoCols (23) characters: the page is shown large.
@@ -453,7 +456,7 @@ const MenuItem kClockSubmenuItems[] = {
 };
 constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kClockSubmenuItems[0]);
 
-// --- Settings -> Calibration ---
+// --- Calibration ---
 //
 // Rtotal: the Rs+Rsh the daughter's volume steps are solved for. The choice
 // made here is only a request for the NEXT calibration ("Start"): it starts
@@ -578,7 +581,7 @@ const char* phaseLabel(const char* phase) {
     return "Starting";
 }
 
-// Settings -> Calibration -> Start -> "Start now" lands here: live progress
+// Calibration -> Start -> "Start now" lands here: live progress
 // while it runs (from PROGRESS, polled every second), the result afterwards.
 size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     // Lines fit kInfoCols (23) characters: the page is shown large.
@@ -641,7 +644,7 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
-// Settings -> Calibration -> Temperature: the driver block's NTC (the
+// Calibration -> Temperature: the driver block's NTC (the
 // temperature the thermal compensation works from), the change since the
 // last calibration, and whether the daughter recommends a resync (rev 13/14).
 size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
@@ -674,7 +677,7 @@ size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
-// Settings -> Calibration -> Learning: the daughter's thermal learning
+// Calibration -> Learning: the daughter's thermal learning
 // (rev 9 LEARN) -- how many resyncs it has, how far the block temperature
 // has varied, and the per-side fit against the bar it must clear.
 size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
@@ -702,7 +705,7 @@ size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
-// Settings -> Calibration -> Forget (rev 9 FORGET). Cancel is first and
+// Calibration -> Forget (rev 9 FORGET). Cancel is first and
 // focused; picking one of the others shows the Status page, where the ~3 s
 // of BUSY and the resulting state can be watched.
 void menuAction_ForgetCal()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::CAL);  Serial.println("[Menu] FORGET CAL requested"); }
@@ -729,7 +732,7 @@ uint32_t joinDigits(const int16_t* f, uint8_t n) {
 }
 void limitsDigit(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) { *lo = 0; *hi = 9; }
 
-// --- Settings -> Calibration -> Model (rev 12) ------------------------------------
+// --- Calibration -> Model (rev 12) ------------------------------------
 // The audio model the steps are solved for: the source's output impedance
 // (the splitter -- about 300 ohm for the JFET splitter, 47 for an op-amp one)
 // and the load after the attenuator (the amplifier input; 0 = unloaded).
@@ -806,10 +809,39 @@ size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
     ohms(a, sizeof a, m.solvedSrc, false); ohms(b, sizeof b, m.solvedLoad, true);
     addLine(lines, n, maxLines, "Solved: src %s", a);
     addLine(lines, n, maxLines, "  load %s", b);
+    // rev 16: the AUTO preference and how deep the stored walk reaches.
+    if (strcmp(m.autoPref, "--")) {
+        addLine(lines, n, maxLines, "Auto depth %s", m.autoPref);
+        if (m.reach > 0) {
+            addLine(lines, n, maxLines, "Reach %ldK", static_cast<long>((m.reach + 500) / 1000));
+            long prefMax = !strcmp(m.autoPref, "SNAPPY") ? 600000L : !strcmp(m.autoPref, "DEEP") ? 1600000L : 1000000L;
+            if (prefMax > m.reach) {
+                addLine(lines, n, maxLines, "Deeper: forget the");
+                addLine(lines, n, maxLines, "  cal, then calibrate");
+            }
+        }
+    }
     addLine(lines, n, maxLines, "Cal: %s", calStateText(s.cal));
     if (s.cal == DaughterCalState::STALE) addLine(lines, n, maxLines, "Calibrate to re-solve");
     return n;
 }
+
+// Calibration -> Auto Depth (rev 16): how AUTO trades depth against
+// settling -- deeper Rtotal sits the series cell darker at the quiet steps,
+// where it's slowest. Shown from MODEL's AUTO=; choosing one sends SET AUTO
+// and shows the Model overview (CAL may go STALE: a calibration re-solves).
+void menuSet_AutoSnappy()   { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::SNAPPY);   Serial.println("[Menu] SET AUTO SNAPPY"); }
+void menuSet_AutoBalanced() { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::BALANCED); Serial.println("[Menu] SET AUTO BALANCED"); }
+void menuSet_AutoDeep()     { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::DEEP);     Serial.println("[Menu] SET AUTO DEEP"); }
+bool autoPrefIs(const char* p) { DaughterBoardLink::instance().requestModel(); return !strcmp(DaughterBoardLink::instance().model().autoPref, p); }
+bool menuIsActive_AutoSnappy()   { return autoPrefIs("SNAPPY"); }
+bool menuIsActive_AutoBalanced() { return autoPrefIs("BALANCED"); }
+bool menuIsActive_AutoDeep()     { return autoPrefIs("DEEP"); }
+const MenuValueOption kAutoPrefOptions[] = {
+    { "Snappy",   menuSet_AutoSnappy,   menuIsActive_AutoSnappy   },
+    { "Balanced", menuSet_AutoBalanced, menuIsActive_AutoBalanced },
+    { "Deep",     menuSet_AutoDeep,     menuIsActive_AutoDeep     },
+};
 
 const MenuItem kModelSubmenuItems[] = {
     { "Source",   MenuItemType::EDITOR, nullptr, kApplySrcOptions,  2, nullptr, 0, fillModelInfo, &kSrcEditor  },
@@ -824,11 +856,12 @@ const MenuValueOption kCalStartOptions[] = {
     { "Cancel",     nullptr,                     nullptr },
     { g_startLabel, menuAction_StartCalibration, nullptr },
 };
-// Settings -> Calibration. "Rtotal" shows the daughter's current Rtotal;
+// Calibration. "Rtotal" shows the daughter's current Rtotal;
 // entering it opens the selector on that value, confirming offers Cancel /
 // Start R=..., and Start shows the progress page.
 const MenuItem kCalibrationSubmenuItems[] = {
     { "Rtotal",   MenuItemType::EDITOR,       nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress, &kRTotalEditor },
+    { "Auto Depth", MenuItemType::VALUE_CHOICE, nullptr, kAutoPrefOptions, 3, nullptr, 0, fillModelInfo },
     { "Model",    MenuItemType::SUBMENU,      nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount },
     { "Progress", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
     { "Status",   MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
@@ -837,7 +870,7 @@ const MenuItem kCalibrationSubmenuItems[] = {
     { "Forget",   MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
 };constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
 
-// --- Settings -> Diagnostics ---
+// --- Diagnostics ---
 // The action only raises a request; main.cpp closes the menu and runs the
 // test screen (a menu action is a plain function with no access to main's
 // screen state).
@@ -867,7 +900,90 @@ const MenuValueOption kCompOptions[] = {
     { "Off", menuSet_CompOff, menuIsActive_CompOff },
 };
 
+// --- Diagnostics > Versions ------------------------------------------------------
+// Lines fit kInfoCols (23) characters: the pages are shown large.
+
+// This board: firmware, build, chip, toolchain.
+size_t fillMasterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    addLine(lines, n, maxLines, "FW %s", FW_VERSION);
+    addLine(lines, n, maxLines, "Built %s", __DATE__);
+    addLine(lines, n, maxLines, "  at %s", __TIME__);
+#if defined(PICO_RP2350) && PICO_RP2350
+    unsigned rev = (sysinfo_hw->chip_id >> 28) & 0xF;
+    addLine(lines, n, maxLines, "RP2350 A%u, %lu MHz", rev, static_cast<unsigned long>(rp2040.f_cpu() / 1000000));
+#else
+    addLine(lines, n, maxLines, "RP2040, %lu MHz", static_cast<unsigned long>(rp2040.f_cpu() / 1000000));
+#endif
+#if defined(__riscv) || defined(__riscv__)
+    addLine(lines, n, maxLines, "Arch RISC-V (Hazard3)");
+#else
+    addLine(lines, n, maxLines, "Arch ARM Cortex-M33");
+#endif
+#ifdef PICO_FLASH_SIZE_BYTES
+    addLine(lines, n, maxLines, "Flash %luK", static_cast<unsigned long>(PICO_FLASH_SIZE_BYTES / 1024));
+#endif
+    addLine(lines, n, maxLines, "UID %s", rp2040.getChipID());
+#ifdef ARDUINO_PICO_VERSION_STR
+    addLine(lines, n, maxLines, "Core %s", ARDUINO_PICO_VERSION_STR);
+#endif
+#ifdef PICO_SDK_VERSION_STRING
+    addLine(lines, n, maxLines, "SDK %s", PICO_SDK_VERSION_STRING);
+#endif
+    addLine(lines, n, maxLines, "Expects protocol %u", DAUGHTER_PROTO_EXPECTED);
+    unsigned long up = millis() / 1000;
+    addLine(lines, n, maxLines, "Up %lud %02lu:%02lu:%02lu", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
+    return n;
+}
+
+// The volume (daughter) board, from its VER reply (rev 15).
+size_t fillDaughterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.requestVer();
+    const DaughterVersion& v = link.version();
+    if (!link.isStatusFresh() && !v.valid) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!v.valid) {
+        if (link.status().valid && link.status().proto < 15) addLine(lines, n, maxLines, "Needs protocol 15+");
+        else                                                 addLine(lines, n, maxLines, "Waiting for data...");
+        if (link.status().valid) addLine(lines, n, maxLines, "Protocol %u", link.status().proto);
+        return n;
+    }
+    addLine(lines, n, maxLines, "FW %s", v.fw);
+    // BUILD is ISO 8601: date and time on two lines.
+    char date[16] = "--", time[16] = "";
+    const char* t = strchr(v.build, 'T');
+    if (t) {
+        size_t dl = static_cast<size_t>(t - v.build);
+        if (dl >= sizeof(date)) dl = sizeof(date) - 1;
+        memcpy(date, v.build, dl);
+        date[dl] = '\0';
+        snprintf(time, sizeof(time), "%s", t + 1);
+    } else {
+        snprintf(date, sizeof(date), "%s", v.build);
+    }
+    addLine(lines, n, maxLines, "Built %s", date);
+    if (time[0]) addLine(lines, n, maxLines, "  at %s", time);
+    addLine(lines, n, maxLines, "Protocol %u", v.proto);
+    addLine(lines, n, maxLines, "HW %s rev %s", v.hw, v.hwRev);
+    addLine(lines, n, maxLines, "Cal algorithm rev %s", v.calRev);
+    addLine(lines, n, maxLines, "%s rev %s, %s MHz", v.chip, v.chipRev, v.mhz);
+    addLine(lines, n, maxLines, "Flash %s", v.flash);
+    addLine(lines, n, maxLines, "UID %s", v.uid);
+    addLine(lines, n, maxLines, "Board %s", v.board);
+    addLine(lines, n, maxLines, "Core %s", v.core);
+    addLine(lines, n, maxLines, "SDK %s", v.sdk);
+    if (v.note[0]) addWrapped(lines, n, maxLines, "Note: ", v.note);
+    return n;
+}
+
+const MenuItem kVersionsSubmenuItems[] = {
+    { "Master",       MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillMasterVersion },
+    { "Volume Board", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillDaughterVersion },
+};
+
 const MenuItem kDiagnosticsSubmenuItems[] = {
+    { "Versions",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kVersionsSubmenuItems, 2 },
     { "Amp Mute",     MenuItemType::VALUE_CHOICE, nullptr, kAmpMuteOptions, 2 },
     { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2 },
     { "Display Test", MenuItemType::ACTION,       menuAction_DisplayTest, nullptr, 0 },
@@ -967,16 +1083,14 @@ const MenuItem kSettingsSubmenuItems[] = {
     { "Volume Display",  MenuItemType::VALUE_CHOICE, nullptr, kVolumeDisplayOptions, 2 },
     { "Clock",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kClockSubmenuItems,       kClockSubmenuItemCount },
     { "Power",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kPowerSubmenuItems,       kPowerSubmenuItemCount },
-    { "Calibration",     MenuItemType::SUBMENU, nullptr, nullptr, 0, kCalibrationSubmenuItems, kCalibrationSubmenuItemCount },
-    { "Diagnostics",     MenuItemType::SUBMENU, nullptr, nullptr, 0, kDiagnosticsSubmenuItems, kDiagnosticsSubmenuItemCount },
-    // Read-only: shows the running firmware version; selecting it does nothing.
-    { "FW " FW_VERSION,  MenuItemType::ACTION,  nullptr, nullptr, 0 },
 };
 constexpr size_t kSettingsSubmenuItemCount = sizeof(kSettingsSubmenuItems) / sizeof(kSettingsSubmenuItems[0]);
 
 const MenuItem kRootMenuItems[] = {
-    { "Theme",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kThemeSubmenuItems,    kThemeSubmenuItemCount },
-    { "Settings",        MenuItemType::SUBMENU,      nullptr, nullptr, 0, kSettingsSubmenuItems, kSettingsSubmenuItemCount },
+    { "Theme",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kThemeSubmenuItems,       kThemeSubmenuItemCount },
+    { "Calibration",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kCalibrationSubmenuItems, kCalibrationSubmenuItemCount },
+    { "Settings",        MenuItemType::SUBMENU,      nullptr, nullptr, 0, kSettingsSubmenuItems,    kSettingsSubmenuItemCount },
+    { "Diagnostics",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kDiagnosticsSubmenuItems, kDiagnosticsSubmenuItemCount },
 };
 constexpr size_t kRootMenuItemCount = sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]);
 
@@ -998,11 +1112,8 @@ int indexOfInfo(const MenuItem* items, size_t count, MenuInfoFill fill, MenuItem
 } // namespace
 
 void menuOpenResyncStart(MenuScreen& menu) {
-    int settings    = indexOfSubmenu(kRootMenuItems, sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]), kSettingsSubmenuItems);
-    int calibration = indexOfSubmenu(kSettingsSubmenuItems, kSettingsSubmenuItemCount, kCalibrationSubmenuItems);
-    if (settings < 0 || calibration < 0) return;
-    menu.focus(static_cast<size_t>(settings));
-    menu.enter();
+    int calibration = indexOfSubmenu(kRootMenuItems, sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]), kCalibrationSubmenuItems);
+    if (calibration < 0) return;
     menu.focus(static_cast<size_t>(calibration));
     menu.enter();
 

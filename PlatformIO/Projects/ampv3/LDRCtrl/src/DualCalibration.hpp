@@ -100,4 +100,10 @@ void onModelChanged(LDRVolume &left, LDRVolume &right);
 bool solvedModel(float &src, float &load);
 // The last quiet-point seek (this session) did not converge: a resync is recommended.
 bool lastSeekFailed();
+// AUTO preference (SET AUTO SNAPPY|BALANCED|DEEP): AUTO's choice for the stored measurements,
+// how deep the stored walks reach on both channels, and the reaction to a change (STALE if AUTO
+// would now pick another Rtotal; returns that pick).
+float autoChoiceOhms(LDRVolume &left, LDRVolume &right);
+float walkReachOhms(LDRVolume &left, LDRVolume &right);
+float onAutoPrefChanged(LDRVolume &left, LDRVolume &right);
 } // namespace DualCalibration

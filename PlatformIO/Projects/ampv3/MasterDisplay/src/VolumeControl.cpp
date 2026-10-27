@@ -56,6 +56,12 @@ void VolumeControl::setModelSource(uint32_t ohms) {
     retryPendingCommands();
 }
 
+void VolumeControl::setAutoPref(DaughterBoardLink::AutoPref pref) {
+    m_autoPref        = pref;
+    m_autoPrefPending = true;
+    retryPendingCommands();
+}
+
 void VolumeControl::setModelLoad(uint32_t ohms) {
     m_loadOhms    = ohms;
     m_loadPending = true;
@@ -106,6 +112,9 @@ void VolumeControl::retryPendingCommands() {
     }
     if (m_loadPending && !link.isBusy()) {
         if (link.sendSetLoad(m_loadOhms)) m_loadPending = false;
+    }
+    if (m_autoPrefPending && !link.isBusy()) {
+        if (link.sendSetAuto(m_autoPref)) m_autoPrefPending = false;
     }
     if (m_compPending && !link.isBusy()) {
         if (link.sendComp(m_compOn)) { m_compPending = false; m_compSentMs = millis(); }
@@ -181,7 +190,7 @@ void VolumeControl::syncFromDaughterStatus() {
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.holdPolls(m_mutePending || m_calPending || m_ampMutePending || m_forgetPending || m_compPending ||
-                   m_srcPending || m_loadPending);
+                   m_srcPending || m_loadPending || m_autoPrefPending);
     link.update();
     syncFromDaughterStatus();
     retryPendingCommands();

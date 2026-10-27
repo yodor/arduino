@@ -96,6 +96,7 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     if (cmd == PendingCmd::PROGRESS) m_lastProgressSentMs = m_commandSentMs;
     if (cmd == PendingCmd::LEARN)    m_lastLearnSentMs    = m_commandSentMs;
     if (cmd == PendingCmd::MODEL)    m_lastModelSentMs    = m_commandSentMs;
+    if (cmd == PendingCmd::VER)      m_lastVerSentMs      = m_commandSentMs;
     if (cmd == PendingCmd::CAL)      m_calStart           = DaughterCalStart::PENDING;
     m_lineLen       = 0;     // fresh reply incoming; discard anything stale
     m_lineOverflow  = false;
@@ -141,7 +142,16 @@ bool DaughterBoardLink::sendSetLoad(uint32_t ohms) {
     return sent;
 }
 
+bool DaughterBoardLink::sendSetAuto(AutoPref pref) {
+    const char* line = (pref == AutoPref::SNAPPY) ? "SET AUTO SNAPPY" : (pref == AutoPref::DEEP) ? "SET AUTO DEEP" : "SET AUTO BALANCED";
+    bool sent = sendLine(line, PendingCmd::SET_MODEL);
+    if (sent) { m_lastModelSentMs = 0; requestModel(); requestStatusRefresh(); } // read both back (CAL may go STALE)
+    return sent;
+}
+
 bool DaughterBoardLink::sendModel() { return sendLine("MODEL", PendingCmd::MODEL); }
+
+bool DaughterBoardLink::sendVer() { return sendLine("VER", PendingCmd::VER); }
 
 bool DaughterBoardLink::sendForget(Forget what) {
     const char* line = (what == Forget::CAL) ? "FORGET CAL" : (what == Forget::COMP) ? "FORGET COMP" : "FORGET ALL";
@@ -254,7 +264,9 @@ namespace {
 // each pair (values without spaces; tokens without '=' are skipped).
 template <typename Fn>
 void forEachField(const char* p, Fn fn) {
-    char key[16], val[16];
+    // Values up to 31 characters (VER's BUILD and UID are 19 and 16); longer
+    // ones are skipped. Each parser copies into its own sized field.
+    char key[16], val[32];
     while (*p) {
         while (*p == ' ') ++p;
         if (!*p) break;
@@ -347,6 +359,50 @@ bool DaughterBoardLink::parseLearnLine(const char* line) {
     return true;
 }
 
+// "OK VER FW=2026-10-27e PROTO=15 BUILD=... ... NOTE=free text to the end" (rev 15).
+// NOTE is always last and its value has spaces, so it's split off first.
+bool DaughterBoardLink::parseVerLine(const char* line) {
+    static const char kPrefix[] = "OK VER ";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterVersion v;
+    char fields[256];
+    snprintf(fields, sizeof(fields), "%s", line + sizeof(kPrefix) - 1);
+    char* note = strstr(fields, " NOTE=");
+    if (note) {
+        snprintf(v.note, sizeof(v.note), "%s", note + 6);
+        *note = '\0';
+    } else if (!strncmp(fields, "NOTE=", 5)) {
+        snprintf(v.note, sizeof(v.note), "%s", fields + 5);
+        fields[0] = '\0';
+    }
+    forEachField(fields, [&](const char* k, const char* val) {
+        if      (!strcmp(k, "FW"))      copyField(v.fw, val);
+        else if (!strcmp(k, "PROTO"))   v.proto = static_cast<uint8_t>(atoi(val));
+        else if (!strcmp(k, "BUILD"))   copyField(v.build, val);
+        else if (!strcmp(k, "HW"))      copyField(v.hw, val);
+        else if (!strcmp(k, "HWREV"))   copyField(v.hwRev, val);
+        else if (!strcmp(k, "CALREV"))  copyField(v.calRev, val);
+        else if (!strcmp(k, "CHIP"))    copyField(v.chip, val);
+        else if (!strcmp(k, "CHIPREV")) copyField(v.chipRev, val);
+        else if (!strcmp(k, "MHZ"))     copyField(v.mhz, val);
+        else if (!strcmp(k, "FLASH"))   copyField(v.flash, val);
+        else if (!strcmp(k, "UID"))     copyField(v.uid, val);
+        else if (!strcmp(k, "BOARD"))   copyField(v.board, val);
+        else if (!strcmp(k, "CORE"))    copyField(v.core, val);
+        else if (!strcmp(k, "SDK"))     copyField(v.sdk, val);
+    });
+    bool first   = !m_version.valid;
+    v.valid      = true;
+    v.receivedMs = millis();
+    m_version    = v;
+    if (first) {
+        Serial.printf("[Daughter] Firmware %s (built %s), %s %s rev %s, protocol %u\n",
+                      v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
+        if (v.note[0]) Serial.printf("[Daughter] Release note: %s\n", v.note);
+    }
+    return true;
+}
+
 // "OK MODEL SRC=300 LOAD=10000 SOLVED_SRC=47 SOLVED_LOAD=10000" (rev 12)
 bool DaughterBoardLink::parseModelLine(const char* line) {
     static const char kPrefix[] = "OK MODEL ";
@@ -358,6 +414,8 @@ bool DaughterBoardLink::parseModelLine(const char* line) {
         else if (!strcmp(k, "LOAD"))        m.load       = num(v);
         else if (!strcmp(k, "SOLVED_SRC"))  m.solvedSrc  = num(v);
         else if (!strcmp(k, "SOLVED_LOAD")) m.solvedLoad = num(v);
+        else if (!strcmp(k, "AUTO"))        copyField(m.autoPref, v);
+        else if (!strcmp(k, "REACH"))       m.reach      = num(v);
     });
     m.valid      = true;
     m.receivedMs = millis();
@@ -403,7 +461,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         return;
     }
 
-    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line) || parseModelLine(line)) {
+    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line) || parseModelLine(line) || parseVerLine(line)) {
         if (wasPending) m_status = DaughterCmdStatus::OK;
         return;
     }
@@ -529,6 +587,12 @@ void DaughterBoardLink::update() {
                            (m_lastLearnSentMs == 0 || now - m_lastLearnSentMs >= DAUGHTER_ENV_POLL_MS);
         bool modelDue    = static_cast<int32_t>(m_modelWantedUntilMs - now) > 0 &&
                            (m_lastModelSentMs == 0 || now - m_lastModelSentMs >= DAUGHTER_ENV_POLL_MS);
+        // VER: while a page wants it, and once on its own after the link is
+        // up (for the boot log) -- from a daughter that knows it (rev 15+).
+        bool verDue      = (static_cast<int32_t>(m_verWantedUntilMs - now) > 0 &&
+                            (m_lastVerSentMs == 0 || now - m_lastVerSentMs >= DAUGHTER_ENV_POLL_MS)) ||
+                           (!m_version.valid && m_lastVerSentMs == 0 && m_statusData.valid && isStatusFresh() &&
+                            m_statusData.proto >= 15);
         if (statusDue) {
             if (sendStatus()) m_statusRefreshRequested = false;
         } else if (progressDue) {
@@ -539,6 +603,8 @@ void DaughterBoardLink::update() {
             sendLearn();
         } else if (modelDue) {
             sendModel();
+        } else if (verDue) {
+            sendVer();
         }
     }
 }

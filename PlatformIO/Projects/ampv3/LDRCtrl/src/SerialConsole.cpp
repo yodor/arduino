@@ -6,6 +6,8 @@
 #include "ThermalComp.hpp"
 #include "BoardSensors.hpp"
 #include "Config.hpp"
+#include "VersionInfo.hpp"
+#include "AutoPref.hpp"
 #include "DualCalibration.hpp"
 #include "CalArgs.hpp"
 #include "BusyHook.hpp"
@@ -114,24 +116,47 @@ void SerialConsole::diagWalk() {
   DarkProfile now[2];
   const char lab[3] = {'L', 'R', 0};
   DualCalibration::walkDarkEnd(v, 2, lab, now, stream_);
-  stream_.println(F("--- compared with the stored calibration ---"));
+  stream_.println(F("--- compared with the stored calibration (at the duties shifted by what the resyncs tracked) ---"));
+  // The stored walk is from the full characterization; every resync since moved the step
+  // table by the knee shift it measured. That accumulated shift = where the quiet step's
+  // series duty sits now minus where the stored walk puts that resistance. Comparing the
+  // fresh walk with the stored one at duty d - shift asks: does the table still fit?
+  float worstDev = 1.0f;
   for (uint8_t c = 0; c < 2; c++) {
     const DarkProfile &st = v[c]->darkProfile();
     stream_.print(F("  ")); stream_.print(lab[c]);
     stream_.print(F(": settles up to ")); stream_.print(now[c].deepestOkOhms() / 1000.0f, 1);
     stream_.print(F("k now, ")); stream_.print(st.deepestOkOhms() / 1000.0f, 1);
     stream_.print(F("k at calibration"));
-    if (st.okCount() && now[c].okCount()) {
-      // same duty in both? compare resistance there
-      for (uint8_t i = 0; i < now[c].okCount(); i++) for (uint8_t k = 0; k < st.okCount(); k++) {
-        if (now[c].p[i].duty != st.p[k].duty) continue;
+    const float FPCf = (float)DriverChannels::FINE_PER_COUNT;
+    const uint8_t s0 = v[c]->lowestValidStep();
+    float shift = NAN;
+    if (st.okCount() >= 2 && s0 < v[c]->numSteps()) {
+      const VolumeLut::Entry &q = v[c]->lut().step(s0);
+      const float dStored = DarkProfileMath::dutyAt(st, q.targetRs);
+      if (!isnan(dStored)) shift = q.seriesFine / FPCf - dStored;
+    }
+    if (!isnan(shift)) {
+      stream_.print(F(" | tracked shift ")); if (shift >= 0) stream_.print('+'); stream_.print(shift, 1); stream_.print(F(" counts"));
+      for (uint8_t i = 0; i < now[c].okCount(); i++) {
+        const float expect = DarkProfileMath::ohmsAt(st, (float)now[c].p[i].duty - shift);
+        if (isnan(expect) || !(expect > 0.0f)) continue;
+        const float ratio = now[c].p[i].ohms / expect;
         stream_.print(F(" | duty ")); stream_.print(now[c].p[i].duty);
-        stream_.print(F(": x")); stream_.print(now[c].p[i].ohms / st.p[k].ohms, 3);
+        stream_.print(F(": x")); stream_.print(ratio, 2);
+        const float dev = ratio >= 1.0f ? ratio : 1.0f / ratio;
+        if (dev > worstDev) worstDev = dev;
       }
     }
     stream_.println();
   }
-  stream_.println(F("Ratios near x1.00 at the same duties: the stored calibration still fits. A large shift: send CAL."));
+  if (worstDev <= 1.10f)
+    stream_.println(F("Ratios near x1.00: the step table (with the shifts the resyncs tracked) still fits the cells."));
+  else if (worstDev <= 1.35f) {
+    stream_.print(F("The deep part of the table is off by up to ")); stream_.print((worstDev - 1.0f) * 100.0f, 0);
+    stream_.println(F(" % at some depths (the resyncs track one shift, measured at the quiet point) -- the middle steps sit a little quieter than labelled, on both channels alike."));
+  } else
+    stream_.println(F("Some ratios far from x1.00: the cells changed shape since the full characterization -- a full CAL (FORGET CAL, CAL) would re-measure them."));
 }
 
 namespace {
@@ -164,6 +189,7 @@ void SerialConsole::diagVerify() {
     up[c][i] = NAN; dn[c][i] = NAN; lastUpSer_[c][i] = NAN; lastUpShu_[c][i] = NAN;
   }
   const uint8_t n = left_.numSteps() > right_.numSteps() ? left_.numSteps() : right_.numSteps();
+  bool anyAssumed = false;
   for (uint8_t pass = 0; pass < 2; pass++) {
     const bool down = (pass == 1);
     stream_.println(down ? F("volume DOWN (30 -> 0): step | target dB | L real (err)  ser/shu live:target | R real (err)  ser/shu live:target | L-R | L up-down | R up-down")
@@ -189,7 +215,21 @@ void SerialConsole::diagVerify() {
         const VolumeLut::Entry &e = v[c]->lut().step(i);
         if (!e.valid) { stream_.print(F("--")); continue; }
         float rsh;
-        const float rs = avgRead(*v[c], rsh);
+        float rs = avgRead(*v[c], rsh);
+        bool assumedShunt = false;
+        if ((rs <= 0.0f || rsh <= 0.0f) && e.targetRsh > 0.0f) {
+          // Too little measuring current (the shunt as dark as this step wants, ~Rtotal): read
+          // the series with the shunt held bright -- its resistance does not depend on the
+          // shunt -- and take the shunt at its target (masked by the load at these steps).
+          v[c]->driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT);
+          BusyHook::wait(300);
+          float dummy;
+          rs = avgRead(*v[c], dummy);
+          v[c]->driveElementFine(false, e.shuntFine);
+          rsh = e.targetRsh;
+          assumedShunt = rs > 0.0f;
+          if (assumedShunt) anyAssumed = true;
+        }
         if (rs <= 0.0f || rsh <= 0.0f) { stream_.print(F("unreadable")); continue; }
         db[c] = 20.0f * log10f(DividerMath::gain(rs, rsh, load));
         const float err = db[c] - e.targetDb;
@@ -204,7 +244,8 @@ void SerialConsole::diagVerify() {
         stream_.print(err, 2);
         stream_.print(F(")  x"));
         stream_.print(rs / e.targetRs, 2);
-        if (e.targetRsh > 0.0f) { stream_.print(F("/x")); stream_.print(rsh / e.targetRsh, 2); }
+        if (assumedShunt) stream_.print(F("/dark*"));
+        else if (e.targetRsh > 0.0f) { stream_.print(F("/x")); stream_.print(rsh / e.targetRsh, 2); }
         else stream_.print(F("/open"));
         if (fabsf(err) > worst[c]) worst[c] = fabsf(err);
         sumSq[c] += err * err; cnt[c]++;
@@ -236,6 +277,8 @@ void SerialConsole::diagVerify() {
   }
   stream_.print(F("  worst |L-R| (up) ")); stream_.print(worstBal, 2);
   stream_.print(F(" dB, worst |up-down| ")); stream_.print(worstHyst, 2); stream_.println(F(" dB"));
+  if (anyAssumed)
+    stream_.println(F("  * dark*: too little measuring current at this depth -- series read with the shunt held bright, shunt taken at its target"));
   for (uint8_t c = 0; c < 2; c++)
     for (uint8_t i = 0; i < VolumeLut::MAX_STEPS; i++) lastUpDb_[c][i] = up[c][i];
   lastVerifyMs_ = millis() | 1;
@@ -318,7 +361,9 @@ void SerialConsole::printHelp() {
   stream_.println(F("  COMP [ON|OFF]           thermal compensation from the learned fit (A/B; boots ON)"));
   stream_.println(F("  SET SRC <ohms>          source (splitter) output impedance; stored; CAL re-solves"));
   stream_.println(F("  SET LOAD <ohms>         load after the attenuator (amp input; 0 = none); stored; CAL re-solves"));
+  stream_.println(F("  SET AUTO SNAPPY|BALANCED|DEEP  AUTO's depth vs settling preference; stored; CAL re-solves"));
   stream_.println(F("  MODEL                   the source/load in use and what the calibration was solved for"));
+  stream_.println(F("  VER | FW                firmware version, build, chip, flash ID, core and SDK versions"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
   stream_.println(F("  DIAG ALL                + cell check, verify up/down, dark-end walk, creep (~8-9 min)"));
@@ -459,6 +504,9 @@ void SerialConsole::printModel() {
   if (DualCalibration::solvedModel(s, l)) {
     stream_.print(F(" | calibration solved for ")); stream_.print(s, 0); stream_.print(F(" / ")); stream_.print(l, 0);
   }
+  stream_.print(F(" | AUTO ")); stream_.print(AutoPref::name(AutoPref::current()));
+  { const float reach = DualCalibration::walkReachOhms(left_, right_);
+    if (reach > 0.0f) { stream_.print(F(", walk reaches ")); stream_.print(reach / 1000.0f, 0); stream_.print('k'); } }
   stream_.print(F(" | CAL=")); stream_.println(DualCalibration::calNeedName());
   if (DualCalibration::calNeed() == DualCalibration::CalNeed::STALE)
     stream_.println(F("  the calibration was solved for another model: send CAL to re-solve (~2-3 min); the LDR mute stays on until then"));
@@ -865,8 +913,31 @@ void SerialConsole::handleLine(String line) {
     DualCalibration::onModelChanged(left_, right_);
     printModel();
 
+  } else if (cmd == "SET" && n >= 3 && tok[1].equalsIgnoreCase("AUTO")) {
+    AutoPref::Pref pr;
+    if (!AutoPref::parse(tok[2].c_str(), pr)) { stream_.println(F("ERR usage: SET AUTO SNAPPY | BALANCED | DEEP")); return; }
+    AutoPref::set(pr);
+    const float pick = DualCalibration::onAutoPrefChanged(left_, right_);
+    const AutoPref::Params pp = AutoPref::now();
+    stream_.print(F("OK AUTO preference ")); stream_.print(AutoPref::name(pr));
+    stream_.print(F(" (walk to ")); stream_.print(pp.walkTopOhms / 1000.0f, 0); stream_.print(F("k, memory <= x"));
+    stream_.print(pp.memMax, 2); stream_.print(F(", at most ")); stream_.print(pp.capOhms / 1000.0f, 0); stream_.println(F("k)"));
+    const float reach = DualCalibration::walkReachOhms(left_, right_);
+    if (pick > 0.0f) {
+      stream_.print(F("  AUTO now picks ")); stream_.print(pick, 0);
+      stream_.print(F(" (current ")); stream_.print(left_.rTotalOhms(), 0); stream_.println(F(")"));
+    }
+    if (reach > 0.0f && pp.capOhms > reach * 1.05f) {
+      stream_.print(F("  the stored walk reaches only ")); stream_.print(reach / 1000.0f, 0);
+      stream_.println(F("k: for the full depth of this preference, FORGET CAL then CAL (a full characterization walks deeper)"));
+    }
+    printModel();
+
   } else if (cmd == "MODEL") {
     printModel();
+
+  } else if (cmd == "VER" || cmd == "FW") {
+    VersionInfo::printReadable(stream_);
 
   } else if (cmd == "SET") {
     if (n < 3) { stream_.println(F("ERR usage: SET <SER_L|SER_R|SHUNT_L|SHUNT_R> <duty 0-4095> | SET SRC <ohms> | SET LOAD <ohms>")); return; }
