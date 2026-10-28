@@ -105,8 +105,8 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
             valueR = sqrtf(sumSqR);
         }
 
-        m_barsL[band] = (valueL > SPECTRUM_NOISE_GATE) ? valueL : 0.0f;
-        m_barsR[band] = (valueR > SPECTRUM_NOISE_GATE) ? valueR : 0.0f;
+        m_barsL[band] = valueL;
+        m_barsR[band] = valueR;
     }
 
     // The Info screen's small mono spectrum: doubling bands (1, 2, 4... bins
@@ -122,7 +122,7 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
             else                                sumSq += m * m;
         }
         if (energyMode != EnergyMode::PEAK) value = sqrtf(sumSq);
-        m_miniBars[band] = (value > SPECTRUM_NOISE_GATE) ? value : 0.0f;
+        m_miniBars[band] = value;
         start = end;
     }
 }

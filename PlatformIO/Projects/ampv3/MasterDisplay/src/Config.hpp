@@ -98,8 +98,10 @@ constexpr bool DAUGHTER_LINK_TRACE = false;
 //    report (chunk timing, FFT duration, DMA overlap, raw ADC peak-to-peak)
 //    and SpectrumScreen's [Spectrum] loudest-bin line.
 //  - DEBUG_PERF: core0's once-a-second [Perf] FPS/render-time line.
+// These are the start-up defaults; both can be switched at run time in
+// Diagnostics > Debug Output (DebugFlags.hpp, not saved).
 constexpr bool DEBUG_AUDIO_DIAGNOSTICS = false;
-constexpr bool DEBUG_PERF              = true;
+constexpr bool DEBUG_PERF              = false;
 
 // Oscilloscope trigger for the Waveform screen (Oscilloscope mode only): each
 // frame starts at a rising zero crossing, so the trace stands still and
@@ -181,83 +183,20 @@ constexpr uint16_t GRADIENT_BAND_COUNT = 24;
 // getWaveform() decimates FROM.
 constexpr uint16_t WAVEFORM_SAMPLES = SCREEN_WIDTH / 2;
 
-// Waveform erase/redraw is processed in chunks of this many samples rather
-// than the whole trace at once (see WaveformScreen::renderStereo/Mono's
-// chunked loop), so only a small stretch of screen is ever blank between
-// erasing the old chunk and drawing the new one -- doing the whole trace
-// in one erase-then-redraw pass causes a full-width blank flash every
-// frame, regardless of how fast that pass completes.
-//
-// Two costs pull in opposite directions as this changes:
-//  - Each chunk costs a fixed handful of SPI calls (erase old segment,
-//    repaint the gridline under it, draw new segment) -- a SMALLER chunk
-//    means MORE chunks per frame, so MORE total SPI transactions, each
-//    with its own fixed per-call overhead regardless of how little data
-//    it carries.
-//  - drawWavePolylineRange() coalesces consecutive equal-Y points into
-//    ONE longer line call instead of many 1-pixel-wide ones, but it only
-//    looks for runs WITHIN a single chunk -- a smaller chunk caps how
-//    long a run can ever be, capping how much that optimization can help
-//    even when the waveform is genuinely flat/quiet there.
-// Both costs get WORSE, not better, as this shrinks -- there's no
-// tradeoff where a smaller value wins on both counts. The only thing a
-// smaller value buys is a narrower transient blank gap per chunk, which
-// is already imperceptible at the values below.
-//
-// At the low end: 1 makes every chunk exactly one segment (2 points) --
-// the maximum possible chunk count AND a complete loss of the run-length
-// coalescing benefit (a 2-point "run" can never merge with anything), for
-// a flicker reduction that isn't visible at any value in this range to
-// begin with. There's no upside to 1, only the two costs above maxed out.
-// 0 is not just a bad value but a HANG: the render loop advances by
-// `chunkStart += WAVE_CHUNK_SAMPLES`, so 0 never advances and the screen
-// freezes forever on the very first waveform frame -- never set this to 0.
-//
-// At the high end: raising this toward WAVEFORM_SAMPLES (how many points
-// are actually on screen) shrinks the chunk count back down to 1, which
-// is exactly the "erase everything, then redraw everything" behavior this
-// whole scheme exists to avoid -- the full-width blank flash returns.
-//
-// 8-16 is the sensible range: few enough chunks to keep SPI call count
-// reasonable, each chunk still wide enough that a flat/quiet stretch of
-// waveform gets real benefit from the run coalescing above.
-constexpr size_t WAVE_CHUNK_SAMPLES = 8;
+// Waveform screen auto-gain (switched in Theme > Wave > Auto Gain, off by
+// default): the trace grows to fill most of its lane and eases back when the
+// music gets louder (the scale follows peaks up at once, and decays by
+// WAVEFORM_GAIN_DECAY per frame -- ~1.5 s to halve at 100 fps).
+// WAVEFORM_MIN_FULL_SCALE (ADC counts, of 2048) stops a quiet input from
+// being blown up into noise. Off: fixed scale, full ADC range = lane.
+constexpr float WAVEFORM_GAIN_DECAY     = 0.995f;
+constexpr float WAVEFORM_MIN_FULL_SCALE = 256.0f;
 
-static_assert(WAVE_CHUNK_SAMPLES >= 1,
-              "WAVE_CHUNK_SAMPLES must be at least 1 -- at 0, the render loop's "
-              "chunkStart += WAVE_CHUNK_SAMPLES never advances, hanging the device on the very first "
-              "waveform frame. This is a proven hard floor, not a guideline.");
-static_assert(WAVE_CHUNK_SAMPLES <= (WAVEFORM_SAMPLES / 4),
-              "WAVE_CHUNK_SAMPLES this large leaves too few chunks per frame to keep the erase/redraw "
-              "sweep's transient blank gap imperceptible -- this ceiling guarantees at least 4 chunks "
-              "per frame. The documented sensible range (8-16) sits comfortably inside it; this is a "
-              "sanity guard against a value close to WAVEFORM_SAMPLES itself (which reintroduces the "
-              "full-width flash this scheme exists to avoid), not a proven hard limit like the floor "
-              "above.");
+// Waveform DAW mode: capture chunks per timeline column. 5 chunks of 128
+// samples = ~14.5 ms per column at 44.1 kHz, so the 214 columns show ~3.1 s;
+// raise it for a longer, slower-scrolling view.
+constexpr uint32_t WAVEFORM_DAW_CHUNKS_PER_COLUMN = 5;
 
-// Raw waveform samples (DC-removed, +/-2048 range) with magnitude below this
-// render as a flat zero line instead of jitter. Mainly there to hide small
-// ADC round-robin crosstalk on a channel that isn't carrying a real signal --
-// it won't hide genuine crosstalk larger than the gate, since that's the ADC
-// actually reading something real. Kept as its own separate, still-tunable
-// constant (not consolidated with SPECTRUM_NOISE_GATE below) -- real
-// hardware testing found 0 works well here, but this one's still being
-// experimented with independently for a while longer.
-constexpr int16_t WAVE_NOISE_GATE = 0;
-
-// FFT bin/band magnitude (post Hann-coherent-gain-corrected scale) below
-// which a band reads as silent rather than showing residual
-// noise/crosstalk. Like WAVE_NOISE_GATE, this targets ADC round-robin
-// crosstalk on a channel not carrying real signal -- it won't hide genuine
-// content louder than the gate, since that's the ADC actually reading
-// something real. Shared by SpectrumPipeline's peak and quadrature-sum
-// aggregation modes alike -- these were briefly split into separate
-// BAR_NOISE_GATE/OCTAVE_NOISE_GATE constants (back when peak and
-// quadrature-sum lived in two separate pipeline classes) on the theory
-// that quadrature-summed bands would need a different threshold than
-// peak-based bars, but real hardware testing found the same 0.01f value
-// works well for both, so consolidated back to one.
-constexpr float SPECTRUM_NOISE_GATE = 0.01f;
 
 // Target frame period. The main loop paces itself against this instead of
 // an unconditional delay, so measured FPS reflects the real budget rather

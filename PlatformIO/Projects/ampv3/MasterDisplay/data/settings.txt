@@ -9,6 +9,7 @@ mirror_left=1
 spectrum_bands=DOUBLING
 spectrum_energy=QUADRATURE_SUM
 waveform_window=OSCILLOSCOPE
+waveform_auto_gain=0
 peaks=1
 peak_decay=NORMAL
 volume_display=DB

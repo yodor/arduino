@@ -24,6 +24,7 @@
 #include "ColorTheme.hpp"
 #include "MenuScreen.hpp"
 #include "InfoScreen.hpp"
+#include "DebugFlags.hpp"
 #include "BeatDetector.hpp"
 #include "RtcClock.hpp"
 #include "MasterConsole.hpp"
@@ -99,7 +100,7 @@ static size_t     g_screenIdxBeforeMenu = 0;
 
 void bootInfo() {
 
-    Serial.println("\n--- " FW_NAME " " FW_VERSION " ---");
+    Serial.println("\r\n--- " FW_NAME " " FW_VERSION " ---");
     Serial.println("--- HARDWARE & CLOCK VALIDATION ---");
 
     // 1. Compile-time check
@@ -186,7 +187,7 @@ void setup() {
 
     VolumeControl::instance().init();
     Serial.println("[OK] VolumeControl initialized.");
-    Serial.printf("[OK] Power control: %s (IR power key toggles)\n", PowerControl::instance().isOn() ? "ON" : "STANDBY");
+    Serial.printf("[OK] Power control: %s (IR power key toggles)\r\n", PowerControl::instance().isOn() ? "ON" : "STANDBY");
 
     RtcClock::instance().begin(); // logs its own outcome
 
@@ -247,7 +248,7 @@ static void daughterNotices() {
                         : !strcmp(e.why, "SEEK")   ? "last quiet-point seek didn't settle"
                                                    : "temperature changed";
         g_noticeOverlay.show("CALIBRATION ADVISED", why, "press RIGHT to calibrate", COLOR_YELLOW, true);
-        if (!s_resyncShown) Serial.printf("[Daughter] Resync recommended (WHY=%s)\n", e.why);
+        if (!s_resyncShown) Serial.printf("[Daughter] Resync recommended (WHY=%s)\r\n", e.why);
         s_resyncShown   = true;
         s_resyncShownMs = millis();
     };
@@ -272,7 +273,7 @@ static void daughterNotices() {
         char line[40];
         snprintf(line, sizeof(line), "block NTC %s: compensation off", e.ntc);
         if (on) g_noticeOverlay.show("SENSOR FAULT", line, "check the NTC on the driver block", COLOR_RED);
-        Serial.printf("[Daughter] Block NTC fault: NTC=%s -- thermal compensation off\n", e.ntc);
+        Serial.printf("[Daughter] Block NTC fault: NTC=%s -- thermal compensation off\r\n", e.ntc);
     }
     s_lastNtcOk = ntcOk;
 }
@@ -281,7 +282,7 @@ static void daughterNotices() {
 // the normal standby sequence -- closing the menu / display test first.
 static void autoStandbyUpdate(bool keyActivity) {
     if (!AutoStandby::instance().update(keyActivity)) return;
-    Serial.printf("[Power] Auto standby: no audio or input for %u min\n",
+    Serial.printf("[Power] Auto standby: no audio or input for %u min\r\n",
                   DisplaySettings::instance().getAutoStandbyMinutes());
     if (g_menuOpen) closeMenu();
     g_displayTestOpen = false;
@@ -443,11 +444,11 @@ void loop() {
             g_overlayShown = false;
             g_noticeShown = false;
             g_screens[g_currentScreenIdx]->onEnter();
-            Serial.printf("[Display] Screen switched to %s\n", g_screens[g_currentScreenIdx]->name());
+            Serial.printf("[Display] Screen switched to %s\r\n", g_screens[g_currentScreenIdx]->name());
         } else if (event == UIEvent::MUTE_TOGGLE) {
             VolumeControl::instance().toggleMute();
             g_infoScreen.poke();
-            Serial.printf("[Volume] Mute toggled -> %s\n",
+            Serial.printf("[Volume] Mute toggled -> %s\r\n",
                            VolumeControl::instance().isMuted() ? "MUTED" : "UNMUTED");
         } else if (event == UIEvent::CHANNEL_MODE_TOGGLE &&
                    (g_screens[g_currentScreenIdx] == &g_infoScreen || g_overlayShown)) {
@@ -467,7 +468,7 @@ void loop() {
             ds.setClockMode(next);
             PersistentSettings::instance().markDirty(); // saved a few seconds later (deferred save below)
             g_clockScreen.onEnter();
-            Serial.printf("[Display] Clock shows %s\n", next == ClockMode::DATE ? "date" : next == ClockMode::SECONDS ? "seconds" : "time only");
+            Serial.printf("[Display] Clock shows %s\r\n", next == ClockMode::DATE ? "date" : next == ClockMode::SECONDS ? "seconds" : "time only");
         } else if (event == UIEvent::CHANNEL_MODE_TOGGLE) {
             DisplaySettings::instance().toggleChannelMode();
             g_infoScreen.dismiss();
@@ -478,7 +479,7 @@ void loop() {
             // re-enter and rebuild its geometry rather than continuing
             // with stale state from the previous mode.
             g_screens[g_currentScreenIdx]->onEnter();
-            Serial.printf("[Display] Channel mode switched to %s\n",
+            Serial.printf("[Display] Channel mode switched to %s\r\n",
                            DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO ? "STEREO" : "MONO");
         } else if (event == UIEvent::MENU_TOGGLE) {
             g_menuOpen = true;
@@ -493,7 +494,7 @@ void loop() {
         } else if (event == UIEvent::GAIN_DOWN) {
             g_lastGainDownMs = millis();
         } else if (event != UIEvent::NONE) {
-            Serial.printf("[Input] Event ID: %d\n", static_cast<int>(event));
+            Serial.printf("[Input] Event ID: %d\r\n", static_cast<int>(event));
         }
     }
 
@@ -652,7 +653,7 @@ void loop() {
         float avgRenderMs  = (g_renderTimeSumUs / 1000.0f) / g_frameCount;
         float avgLoopMs    = (g_loopTimeSumUs   / 1000.0f) / g_frameCount;
 
-        if (DEBUG_PERF && !DaughterBoardLink::instance().isPassthrough()) { // quiet during a pass-through session
+        if (DebugFlags::perf && !DaughterBoardLink::instance().isPassthrough()) { // quiet during a pass-through session
             Serial.print("[Perf] FPS: ");
             Serial.print(fps, 1);
             Serial.print(" | render: ");

@@ -1,52 +1,107 @@
 #include "WaveformScreen.hpp"
-#include "ColorTheme.hpp"
 #include "Renderer.hpp"
 #include "AudioEngine.hpp"
 #include "DisplaySettings.hpp"
+#include "ColorTheme.hpp"
+#include <cmath>
 
 void WaveformScreen::onEnter() {
-    // Trace colours from the active theme: its first colour for the top
-    // (left) trace, its last for the bottom (right), the middle mix for mono.
-    // (A theme change happens in the menu, and closing it re-enters here.)
-    ColorTheme& theme = ColorTheme::instance();
-    m_colorTop    = theme.lowColor();
-    m_colorBottom = theme.highColor();
-    m_colorMono   = theme.interpolatedColor(0.5f);
-
     Renderer::instance().clear();
-    m_waveTraceValid = false; // next render() call must redraw gridlines fresh
+    m_valid = false;
+    setupLanes();
 }
 
-namespace {
-// x position of sample i when `count` samples span the panel width.
-uint16_t sampleX(size_t i, size_t count) {
-    return static_cast<uint16_t>((i * (SCREEN_WIDTH - 1)) / (count - 1));
+// Lane geometry and colours: two lanes in stereo (the theme's first colour
+// on top, its last below), one lane of the mix in mono (its middle mix).
+void WaveformScreen::setupLanes() {
+    ColorTheme& theme = ColorTheme::instance();
+    bool stereo = DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO;
+    m_wasStereo = stereo;
+    if (stereo) {
+        m_laneCount = 2;
+        m_lanes[0].top = 0;                 m_lanes[0].bottom = SCREEN_HEIGHT / 2 - 2;
+        m_lanes[1].top = SCREEN_HEIGHT / 2 + 1; m_lanes[1].bottom = SCREEN_HEIGHT - 1;
+        m_lanes[0].color = theme.lowColor();
+        m_lanes[1].color = theme.highColor();
+    } else {
+        m_laneCount = 1;
+        m_lanes[0].top = 0; m_lanes[0].bottom = SCREEN_HEIGHT - 1;
+        m_lanes[0].color = theme.interpolatedColor(0.5f);
+    }
+    for (Lane& l : m_lanes) l.peak = 0.0f;
 }
-} // namespace
 
-void WaveformScreen::drawWavePolylineRange(const int16_t* y, size_t count, size_t rangeStart, size_t rangeEndExclusive, uint16_t color) {
+// Auto-gain: the full scale follows the frame's peak up at once and decays
+// slowly; never below WAVEFORM_MIN_FULL_SCALE. Returns pixels per count.
+float WaveformScreen::gainFor(Lane& lane, int32_t framePeak) {
+    float half = (lane.bottom - lane.top) / 2.0f - 2.0f;
+    if (!DisplaySettings::instance().getWaveformAutoGain()) return half / 2048.0f;
+    float p = static_cast<float>(framePeak);
+    lane.peak = (p > lane.peak) ? p : lane.peak * WAVEFORM_GAIN_DECAY;
+    float fullScale = (lane.peak > WAVEFORM_MIN_FULL_SCALE) ? lane.peak : WAVEFORM_MIN_FULL_SCALE;
+    return half / (fullScale * 1.1f); // ~10% headroom above the peak
+}
+
+void WaveformScreen::spansFromLine(Lane& lane, const int16_t* v, int16_t* lo, int16_t* hi) {
+    int32_t peak = 0;
+    for (int i = 0; i <= kCols; ++i) { int32_t a = v[i] < 0 ? -v[i] : v[i]; if (a > peak) peak = a; }
+    float k   = gainFor(lane, peak);
+    float mid = (lane.top + lane.bottom) / 2.0f;
+    auto y = [&](int16_t s) {
+        int16_t r = static_cast<int16_t>(lroundf(mid - s * k));
+        return r < lane.top ? lane.top : (r > lane.bottom ? lane.bottom : r);
+    };
+    int16_t prev = y(v[0]);
+    for (int i = 0; i < kCols; ++i) {
+        int16_t next = y(v[i + 1]);
+        lo[i] = prev < next ? prev : next;
+        hi[i] = prev < next ? next : prev;
+        prev = next;
+    }
+}
+
+void WaveformScreen::spansFromEnvelope(Lane& lane, const int16_t* vmin, const int16_t* vmax, int16_t* lo, int16_t* hi) {
+    int32_t peak = 0;
+    for (int i = 0; i < kCols; ++i) {
+        int32_t a = vmax[i] < 0 ? -vmax[i] : vmax[i], b = vmin[i] < 0 ? -vmin[i] : vmin[i];
+        if (a > peak) peak = a;
+        if (b > peak) peak = b;
+    }
+    float k   = gainFor(lane, peak);
+    float mid = (lane.top + lane.bottom) / 2.0f;
+    auto y = [&](int16_t s) {
+        int16_t r = static_cast<int16_t>(lroundf(mid - s * k));
+        return r < lane.top ? lane.top : (r > lane.bottom ? lane.bottom : r);
+    };
+    for (int i = 0; i < kCols; ++i) {
+        lo[i] = y(vmax[i]);  // higher value = higher on screen = smaller y
+        hi[i] = y(vmin[i]);
+    }
+}
+
+// Each column is one pixel pair (2 px) wide and only its edges are touched:
+// the part of the old span the new one no longer covers is erased, and only
+// the part of the new span that wasn't already lit is drawn. A column that
+// barely moved costs one or two short writes.
+void WaveformScreen::drawLane(Lane& lane, const int16_t* lo, const int16_t* hi) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
-    if (!gfx || !y || rangeEndExclusive <= rangeStart + 1) return;
-
-    size_t i = rangeStart;
-    while (i < rangeEndExclusive - 1) {
-        if (y[i] == y[i + 1]) {
-            size_t runEnd = i + 1;
-            while (runEnd < rangeEndExclusive - 1 && y[runEnd] == y[runEnd + 1]) {
-                ++runEnd;
-            }
-
-            uint16_t x0 = sampleX(i, count);
-            uint16_t x1 = sampleX(runEnd, count);
-            gfx->drawLine(x0, y[i], x1, y[runEnd], color);
-
-            i = runEnd;
+    for (int i = 0; i < kCols; ++i) {
+        int16_t x = static_cast<int16_t>(i * 2);
+        int16_t nLo = lo[i], nHi = hi[i];
+        if (!m_valid) {
+            gfx->fillRect(x, nLo, 2, nHi - nLo + 1, lane.color);
         } else {
-            uint16_t x0 = sampleX(i, count);
-            uint16_t x1 = sampleX(i + 1, count);
-            gfx->drawLine(x0, y[i], x1, y[i + 1], color);
-            ++i;
+            int16_t oLo = lane.lo[i], oHi = lane.hi[i];
+            if (oLo == nLo && oHi == nHi) continue; // unchanged column
+            // erase: old rows above / below the new span
+            if (oLo < nLo) { int16_t to = (oHi < nLo ? oHi : nLo - 1); gfx->fillRect(x, oLo, 2, to - oLo + 1, COLOR_BLACK); }
+            if (oHi > nHi) { int16_t from = (oLo > nHi ? oLo : nHi + 1); gfx->fillRect(x, from, 2, oHi - from + 1, COLOR_BLACK); }
+            // draw: new rows above / below the old span (the overlap is lit already)
+            if (nLo < oLo) { int16_t to = (nHi < oLo ? nHi : oLo - 1); gfx->fillRect(x, nLo, 2, to - nLo + 1, lane.color); }
+            if (nHi > oHi) { int16_t from = (nLo > oHi ? nLo : oHi + 1); gfx->fillRect(x, from, 2, nHi - from + 1, lane.color); }
         }
+        lane.lo[i] = nLo;
+        lane.hi[i] = nHi;
     }
 }
 
@@ -54,105 +109,37 @@ void WaveformScreen::render() {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     if (!gfx) return;
 
-    int16_t leftWave[WAVEFORM_SAMPLES];
-    int16_t rightWave[WAVEFORM_SAMPLES];
-    // Triggered in Oscilloscope mode (a stable picture of the wave shape);
-    // free-running in Track Preview, which shows an envelope, not cycles.
-    bool trigger = WAVEFORM_TRIGGER &&
-                   AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::OSCILLOSCOPE;
-    AudioEngine::instance().getWaveform(leftWave, rightWave, WAVEFORM_SAMPLES, trigger);
+    bool stereo = DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO;
+    if (stereo != m_wasStereo) { onEnter(); }        // layout changed under us
+    if (!m_valid) gfx->fillScreen(COLOR_BLACK);
 
-    if (WAVEFORM_SAMPLES < 2) return;
+    AudioEngine& audio = AudioEngine::instance();
+    WaveformPipeline::WindowMode mode = audio.getWaveformWindowMode();
+    int16_t lo[kCols], hi[kCols];
 
-    if (DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO) {
-        renderStereo(leftWave, rightWave, WAVEFORM_SAMPLES);
+    if (mode == WaveformPipeline::WindowMode::DAW) {
+        int16_t minA[kCols], maxA[kCols], minB[kCols], maxB[kCols];
+        if (stereo) {
+            audio.getEnvelope(minA, maxA, minB, maxB, kCols, false);
+            spansFromEnvelope(m_lanes[0], minA, maxA, lo, hi); drawLane(m_lanes[0], lo, hi);
+            spansFromEnvelope(m_lanes[1], minB, maxB, lo, hi); drawLane(m_lanes[1], lo, hi);
+        } else {
+            audio.getEnvelope(minA, maxA, nullptr, nullptr, kCols, true);
+            spansFromEnvelope(m_lanes[0], minA, maxA, lo, hi); drawLane(m_lanes[0], lo, hi);
+        }
     } else {
-        renderMono(leftWave, rightWave, WAVEFORM_SAMPLES);
-    }
-}
-
-void WaveformScreen::renderStereo(const int16_t* leftWave, const int16_t* rightWave, size_t sampleCount) {
-    Arduino_GFX* gfx = Renderer::instance().gfx();
-
-    constexpr uint16_t halfHeight = SCREEN_HEIGHT / 2;
-    constexpr uint16_t leftMidY   = halfHeight / 2;
-    constexpr uint16_t rightMidY  = halfHeight + halfHeight / 2;
-    constexpr float ampScale = (halfHeight / 2 - 4) / 2048.0f;
-
-    // Plain black background, no gridlines -- nothing for the trace's erase
-    // pass to cut through and repair.
-    if (!m_waveTraceValid) {
-        gfx->fillScreen(COLOR_BLACK);
-    }
-
-    for (size_t i = 0; i < sampleCount; ++i) {
-        int16_t yL = leftMidY  - static_cast<int16_t>(leftWave[i]  * ampScale);
-        int16_t yR = rightMidY - static_cast<int16_t>(rightWave[i] * ampScale);
-
-        m_curWaveYL[i] = constrain(yL, 0, static_cast<int16_t>(halfHeight - 1));
-        m_curWaveYR[i] = constrain(yR, static_cast<int16_t>(halfHeight), static_cast<int16_t>(SCREEN_HEIGHT - 1));
-    }
-
-    for (size_t chunkStart = 0; chunkStart < sampleCount - 1; chunkStart += WAVE_CHUNK_SAMPLES) {
-        size_t chunkEnd = chunkStart + WAVE_CHUNK_SAMPLES + 1;
-        if (chunkEnd > sampleCount) chunkEnd = sampleCount;
-
-        if (m_waveTraceValid) {
-            drawWavePolylineRange(m_prevWaveYL, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
-            drawWavePolylineRange(m_prevWaveYR, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
+        // Line modes: kCols+1 points, so column i joins point i to point i+1.
+        // Triggered in Oscilloscope mode (a still picture of the cycles).
+        int16_t a[kCols + 1], b[kCols + 1];
+        bool trigger = WAVEFORM_TRIGGER && mode == WaveformPipeline::WindowMode::OSCILLOSCOPE;
+        audio.getWaveform(a, b, kCols + 1, trigger);
+        if (stereo) {
+            spansFromLine(m_lanes[0], a, lo, hi); drawLane(m_lanes[0], lo, hi);
+            spansFromLine(m_lanes[1], b, lo, hi); drawLane(m_lanes[1], lo, hi);
+        } else {
+            for (int i = 0; i <= kCols; ++i) a[i] = static_cast<int16_t>((static_cast<int32_t>(a[i]) + b[i]) / 2);
+            spansFromLine(m_lanes[0], a, lo, hi); drawLane(m_lanes[0], lo, hi);
         }
-
-        // Start one point early: that also redraws the previous chunk's last
-        // segment, which this chunk's erase may have nicked where the two
-        // chunks meet.
-        size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
-        drawWavePolylineRange(m_curWaveYL, sampleCount, drawFrom, chunkEnd, m_colorTop);
-        drawWavePolylineRange(m_curWaveYR, sampleCount, drawFrom, chunkEnd, m_colorBottom);
     }
-
-    for (size_t i = 0; i < sampleCount; ++i) {
-        m_prevWaveYL[i] = m_curWaveYL[i];
-        m_prevWaveYR[i] = m_curWaveYR[i];
-    }
-
-    m_waveTraceValid = true;
-}
-
-void WaveformScreen::renderMono(const int16_t* leftWave, const int16_t* rightWave, size_t sampleCount) {
-    Arduino_GFX* gfx = Renderer::instance().gfx();
-
-    constexpr uint16_t midY = SCREEN_HEIGHT / 2;
-    // Nearly the full height is available for a single trace, vs. half of
-    // it per channel in stereo mode.
-    constexpr float ampScale = (SCREEN_HEIGHT / 2 - 4) / 2048.0f;
-
-    if (!m_waveTraceValid) {
-        gfx->fillScreen(COLOR_BLACK); // plain background, see renderStereo()
-    }
-
-    for (size_t i = 0; i < sampleCount; ++i) {
-        // Average, not sum, so a mono-duplicated stereo source (L==R)
-        // reads at the same amplitude as either channel alone.
-        int16_t monoSample = static_cast<int16_t>((leftWave[i] + rightWave[i]) / 2);
-        int16_t y = midY - static_cast<int16_t>(monoSample * ampScale);
-        m_curWaveYMono[i] = constrain(y, 0, static_cast<int16_t>(SCREEN_HEIGHT - 1));
-    }
-
-    for (size_t chunkStart = 0; chunkStart < sampleCount - 1; chunkStart += WAVE_CHUNK_SAMPLES) {
-        size_t chunkEnd = chunkStart + WAVE_CHUNK_SAMPLES + 1;
-        if (chunkEnd > sampleCount) chunkEnd = sampleCount;
-
-        if (m_waveTraceValid) {
-            drawWavePolylineRange(m_prevWaveYMono, sampleCount, chunkStart, chunkEnd, COLOR_BLACK);
-        }
-
-        size_t drawFrom = (chunkStart > 0) ? chunkStart - 1 : 0;
-        drawWavePolylineRange(m_curWaveYMono, sampleCount, drawFrom, chunkEnd, m_colorMono);
-    }
-
-    for (size_t i = 0; i < sampleCount; ++i) {
-        m_prevWaveYMono[i] = m_curWaveYMono[i];
-    }
-
-    m_waveTraceValid = true;
+    m_valid = true;
 }

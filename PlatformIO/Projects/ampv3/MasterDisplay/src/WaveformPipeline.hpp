@@ -22,7 +22,11 @@
 // deliberate, user-initiated events.
 class WaveformPipeline {
 public:
-    enum class WindowMode : uint8_t { OSCILLOSCOPE, TRACK_PREVIEW };
+    // OSCILLOSCOPE: a short window, triggered, drawn as a line (cycles).
+    // TRACK_PREVIEW: the long window drawn as a line.
+    // DAW: a scrolling ~3 s min/max timeline (getEnvelope()), kept in every
+    // mode so it's full the moment the mode is chosen.
+    enum class WindowMode : uint8_t { OSCILLOSCOPE, TRACK_PREVIEW, DAW };
 
     // ~11.6ms at 44.1kHz/channel -- about 5 cycles of a 440Hz tone. Shows
     // actual waveform SHAPE: individual cycles, useful for judging the
@@ -80,6 +84,16 @@ public:
     // screen's small scope. spanSamples is capped at 3/4 of the window.
     void getScopeMono(int16_t* out, size_t count, size_t spanSamples) const;
 
+    // The DAW timeline: kEnvCols columns, oldest first, newest last, each
+    // the true minimum and maximum of every sample in its stretch of time
+    // (WAVEFORM_DAW_CHUNKS_PER_COLUMN capture chunks, ~15 ms) -- every peak
+    // and transient counts (no decimation, no aliasing), and each column
+    // spans several cycles, so music reads as a solid envelope. mono = the
+    // L+R mix, into minL/maxL (minR/maxR may be null). count must be kEnvCols.
+    static constexpr int kEnvCols = WAVEFORM_SAMPLES;
+    void getEnvelope(int16_t* minL, int16_t* maxL, int16_t* minR, int16_t* maxR,
+                     size_t count, bool mono) const;
+
     void setWindowMode(WindowMode mode) { m_windowMode = mode; }
     WindowMode getWindowMode() const    { return m_windowMode; }
 
@@ -111,6 +125,15 @@ private:
     // along the trace. Now core1 fills the back buffer and then publishes
     // it (m_readyBuf); core0 only ever reads the published one, which core1
     // won't touch again until the chunk after next (copying takes ~10us).
+    // The DAW timeline (written by core 1, a column at a time).
+    int16_t m_envMinL[kEnvCols] = {}, m_envMaxL[kEnvCols] = {};
+    int16_t m_envMinR[kEnvCols] = {}, m_envMaxR[kEnvCols] = {};
+    int16_t m_envMinM[kEnvCols] = {}, m_envMaxM[kEnvCols] = {};
+    volatile uint32_t m_envColumns = 0;            // columns written so far
+    int16_t m_accMinL = 0, m_accMaxL = 0, m_accMinR = 0, m_accMaxR = 0, m_accMinM = 0, m_accMaxM = 0;
+    int     m_accChunks = 0;
+    void accumulateEnvelope(const uint16_t* interleavedChunk, float meanL, float meanR);
+
     int16_t m_waveL[2][kMaxWindowSamples] = {};
     int16_t m_waveR[2][kMaxWindowSamples] = {};
     size_t  m_waveSamples[2] = {kOscilloscopeSamples, kOscilloscopeSamples}; // window size each buffer was filled for

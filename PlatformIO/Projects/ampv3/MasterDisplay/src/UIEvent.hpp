@@ -17,3 +17,18 @@ enum class UIEvent {
     MENU_TOGGLE,
     POWER_TOGGLE
 };
+
+// A readable name for an event (the BUTTONS monitor's IR lines).
+inline const char* uiEventName(UIEvent e) {
+    switch (e) {
+        case UIEvent::MODE_NEXT:           return "next / right";
+        case UIEvent::MODE_PREV:           return "previous / left";
+        case UIEvent::GAIN_UP:             return "volume up";
+        case UIEvent::GAIN_DOWN:           return "volume down";
+        case UIEvent::MUTE_TOGGLE:         return "mute";
+        case UIEvent::CHANNEL_MODE_TOGGLE: return "options";
+        case UIEvent::MENU_TOGGLE:         return "menu";
+        case UIEvent::POWER_TOGGLE:        return "power";
+        default:                           return "none";
+    }
+}

@@ -27,7 +27,7 @@ const char* const kStereoLayouts[]  = { "SIDE_BY_SIDE", "TOP_BOTTOM" };
 const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT" };
 const char* const kBandLayouts[]    = { "DOUBLING", "FIXED_BANDS", "FULL" };
 const char* const kEnergyModes[]    = { "PEAK", "QUADRATURE_SUM" };
-const char* const kWindowModes[]    = { "OSCILLOSCOPE", "TRACK_PREVIEW" };
+const char* const kWindowModes[]    = { "OSCILLOSCOPE", "TRACK_PREVIEW", "DAW" };
 const char* const kPeakDecays[]     = { "SLOW", "NORMAL", "FAST", "OFF" };
 const char* const kStandbyDisplays[] = { "CLOCK", "DIM_CLOCK", "OFF" };
 const char* const kClockModes[]     = { "CLOCK_ONLY", "SECONDS", "DATE" };
@@ -90,6 +90,7 @@ const Key kKeys[] = {
              AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(i))),
     ENUM_KEY("waveform_window", kWindowModes,    AudioEngine::instance().getWaveformWindowMode(),
              AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(i))),
+    BOOL_KEY("waveform_auto_gain", ds().getWaveformAutoGain(), ds().setWaveformAutoGain(b)),
     BOOL_KEY("peaks",           ds().getPeaksEnabled(), ds().setPeaksEnabled(b)),
     ENUM_KEY("peak_decay",      kPeakDecays,     BarPhysics::instance().getPeakDecaySpeed(),
              BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(i))),
@@ -181,7 +182,7 @@ void PersistentSettings::applyLine(char* line, int lineNo) {
     if (!*s) return;
     char* eq = strchr(s, '=');
     if (!eq) {
-        Serial.printf("[Settings] line %d ignored (no '=')\n", lineNo);
+        Serial.printf("[Settings] line %d ignored (no '=')\r\n", lineNo);
         return;
     }
     *eq = '\0';
@@ -189,10 +190,10 @@ void PersistentSettings::applyLine(char* line, int lineNo) {
     char* val = trim(eq + 1);
     for (const Key& k : kKeys) {
         if (strcasecmp(k.name, key)) continue;
-        if (!k.read(val)) Serial.printf("[Settings] %s=%s: not a valid value -- default kept\n", key, val);
+        if (!k.read(val)) Serial.printf("[Settings] %s=%s: not a valid value -- default kept\r\n", key, val);
         return;
     }
-    Serial.printf("[Settings] unknown key '%s' ignored\n", key);
+    Serial.printf("[Settings] unknown key '%s' ignored\r\n", key);
 }
 
 void PersistentSettings::loadAndApply() {
@@ -230,7 +231,7 @@ void PersistentSettings::loadAndApply() {
         }
     }
     f.close();
-    Serial.printf("[Settings] Loaded %s (%d lines)\n", kPath, lineNo);
+    Serial.printf("[Settings] Loaded %s (%d lines)\r\n", kPath, lineNo);
     (void)applied;
 }
 
@@ -297,7 +298,12 @@ void PersistentSettings::printFile() {
     if (!m_mounted) { Serial.println("[Settings] LittleFS not available"); return; }
     File f = LittleFS.open(kPath, "r");
     if (!f) { Serial.println("[Settings] No settings file -- defaults in use"); return; }
-    while (f.available()) Serial.write(static_cast<uint8_t>(f.read()));
+    // The file uses plain \n line ends; the terminal gets \r\n.
+    while (f.available()) {
+        int c = f.read();
+        if (c == '\n') Serial.write('\r');
+        Serial.write(static_cast<uint8_t>(c));
+    }
     f.close();
 }
 

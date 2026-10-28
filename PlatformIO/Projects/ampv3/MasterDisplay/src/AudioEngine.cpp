@@ -1,4 +1,7 @@
 #include "AudioEngine.hpp"
+#include "DebugFlags.hpp"
+#include <cmath>
+#include "hardware/clocks.h"
 #include "BeatDetector.hpp"
 
 namespace {
@@ -35,7 +38,21 @@ void AudioEngine::runCore1() {
     adc_select_input(2);        // Force starting input explicitly to ADC2 (Left)
     adc_set_round_robin(0x06);  // Alternates between ADC2 (L) and ADC1 (R)
     adc_fifo_setup(true, true, 1, false, false);
-    adc_set_clkdiv(544.0f);     // ~44.1 kHz sampling per channel
+    // Divider from the ACTUAL ADC clock (normally 48 MHz from the USB PLL),
+    // so the rate is AUDIO_SAMPLE_RATE_HZ per channel whatever that clock
+    // is: one conversion every (1 + div) ADC clock cycles, two channels.
+    {
+        uint32_t adcHz = clock_get_hz(clk_adc);
+        float    div   = static_cast<float>(adcHz) / (2.0f * AUDIO_SAMPLE_RATE_HZ) - 1.0f;
+        if (div < 95.0f) div = 95.0f; // a conversion takes 96 cycles: the fastest the ADC can go
+        adc_set_clkdiv(div);
+        m_adcDiv = div;
+        // (Serial.printf here has no float support: tenths as integers.)
+        Serial.printf("[Audio] ADC clock %lu Hz, divider %ld.%ld -> %lu Hz per channel\r\n",
+                      static_cast<unsigned long>(adcHz),
+                      static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10,
+                      static_cast<unsigned long>(lroundf(adcHz / (2.0f * (div + 1.0f)))));
+    }
 
     // --- Continuous ring capture ---
     // Two DMA channels, BOTH writing into the same ring buffer (wrapping
@@ -84,21 +101,78 @@ void AudioEngine::runCore1() {
     constexpr uint32_t kChunk = CAPTURE_CHUNK_SAMPLES;
     uint32_t readPos = 0; // next chunk to process (samples, always a multiple of kChunk)
 
-    // Diagnostics (DEBUG_AUDIO_DIAGNOSTICS): per-chunk cost, deepest backlog,
+    // Diagnostics (DebugFlags::audio): per-chunk cost, deepest backlog,
     // overruns -- reported once a second.
     uint32_t chunkCount = 0, waveformAccumUs = 0, spectrumAccumUs = 0;
     uint32_t maxBacklogChunks = 0, overruns = 0, totalOverruns = 0;
     uint32_t lastReportMs = 0;
+    uint32_t maxGapUs = 0, gapSkips = 0, lostChunks = 0;
+    // 3/4 of the ring's duration (16 chunks = ~46 ms at 44.1 kHz).
+    constexpr uint32_t kLapGuardUs = static_cast<uint32_t>(
+        0.75f * (kRingSamples / 2) / AUDIO_SAMPLE_RATE_HZ * 1000000.0f);
+
+    // ADC rate self-calibration: the samples the DMA actually PRODUCED
+    // (its write position's progress -- independent of how many chunks this
+    // core processed) are counted over a 2 s window; if the per-channel rate
+    // is more than 1% off AUDIO_SAMPLE_RATE_HZ, the ADC divider is scaled by
+    // exactly that ratio (rate = clk_adc / (1 + div)), then checked once
+    // more. Fixes the rate whatever clk_adc really is.
+    uint32_t producedSamples = 0;                 // per diagnostics second
+    uint32_t calSamples = 0, calStartMs = 0, lastWp = writePos();
+    uint8_t  calStage = 0;                        // 0 settle, 1 measure, 2 verify, 3 done
+    uint32_t calStageMs = millis();
 
     uint32_t lastLoopUs = micros();
     while (true) {
-        // A settings save pauses this core during flash writes (LittleFS
-        // does it via rp2040.idleOtherCore()). After a long gap the DMA may
-        // have lapped us, so skip to fresh audio rather than read
-        // overwritten chunks.
+        // Samples produced since the last iteration (the ring is far longer
+        // than one iteration, so a lap can't be missed).
+        {
+            uint32_t wp = writePos();
+            uint32_t produced = (wp + kRingSamples - lastWp) % kRingSamples;
+            lastWp = wp;
+            producedSamples += produced;
+            calSamples      += produced;
+            uint32_t ms = millis();
+            if (calStage == 0 && ms - calStageMs >= 1000) {          // let start-up settle
+                calStage = 1; calSamples = 0; calStartMs = ms;
+            } else if ((calStage == 1 || calStage == 2) && ms - calStartMs >= 2000) {
+                float rate = calSamples / 2.0f / ((ms - calStartMs) / 1000.0f); // per channel
+                float div  = m_adcDiv;
+                if (calStage == 1 && fabsf(rate / AUDIO_SAMPLE_RATE_HZ - 1.0f) > 0.01f) {
+                    float newDiv = (div + 1.0f) * rate / AUDIO_SAMPLE_RATE_HZ - 1.0f;
+                    if (newDiv < 95.0f) newDiv = 95.0f;
+                    adc_set_clkdiv(newDiv);
+                    m_adcDiv = newDiv;
+                    Serial.printf("[Audio] measured %lu Hz/ch (target %lu): ADC divider %ld.%ld -> %ld.%ld\r\n",
+                                  static_cast<unsigned long>(lroundf(rate)), static_cast<unsigned long>(AUDIO_SAMPLE_RATE_HZ),
+                                  static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10,
+                                  static_cast<long>(newDiv), static_cast<long>(lroundf(newDiv * 10.0f)) % 10);
+                    calStage = 2; calSamples = 0; calStartMs = ms;
+                } else {
+                    Serial.printf("[Audio] %s %lu Hz/ch (divider %ld.%ld)\r\n", calStage == 2 ? "verified" : "measured",
+                                  static_cast<unsigned long>(lroundf(rate)),
+                                  static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10);
+                    m_measuredRateHz = rate;
+                    calStage = 3;
+                }
+            }
+        }
+
+        // A pause of this core (a flash write: LittleFS idles it via
+        // rp2040.idleOtherCore(); a moment's wait on the shared USB serial)
+        // is simply caught up afterwards -- processing a chunk takes about
+        // half its real time. Only a pause long enough that the DMA could
+        // have lapped the ring (the wrap would hide it) jumps to fresh audio,
+        // and that's counted. (An earlier 10 ms threshold here silently threw
+        // away 10-20% of the chunks.)
         uint32_t nowUs = micros();
-        if (nowUs - lastLoopUs > 10000) {
+        uint32_t gapUs = nowUs - lastLoopUs;
+        if (gapUs > maxGapUs) maxGapUs = gapUs;
+        if (gapUs > kLapGuardUs) {
+            uint32_t lost = ((writePos() + kRingSamples - readPos) % kRingSamples) / kChunk;
             readPos = ((writePos() / kChunk) * kChunk + kRingSamples - kChunk) % kRingSamples;
+            ++gapSkips;
+            lostChunks += lost;
         }
         lastLoopUs = nowUs;
 
@@ -136,7 +210,7 @@ void AudioEngine::runCore1() {
         uint32_t nowMs = millis();
         if (nowMs - lastReportMs >= 1000) {
             lastReportMs = nowMs;
-            if (DEBUG_AUDIO_DIAGNOSTICS && chunkCount > 0) {
+            if (DebugFlags::audio && chunkCount > 0) {
                 // ~344 chunks/s means every chunk was processed.
                 uint16_t minL = 4095, maxL = 0, minR = 4095, maxR = 0;
                 for (uint32_t i = 0; i < kChunk / 2; ++i) {
@@ -148,7 +222,9 @@ void AudioEngine::runCore1() {
                 }
                 Serial.print("[Audio] ");
                 Serial.print(chunkCount);
-                Serial.print(" chunks/s | per chunk: waveform ");
+                Serial.print(" chunks/s | ADC ");
+                Serial.print(static_cast<unsigned long>(producedSamples / 2));
+                Serial.print(" Hz/ch | per chunk: waveform ");
                 Serial.print(waveformAccumUs / 1000.0f / chunkCount, 3);
                 Serial.print("ms, spectrum ");
                 Serial.print(spectrumAccumUs / 1000.0f / chunkCount, 3);
@@ -164,6 +240,12 @@ void AudioEngine::runCore1() {
                 Serial.print(overruns);
                 Serial.print(" (total ");
                 Serial.print(totalOverruns);
+                Serial.print(") | max gap ");
+                Serial.print(maxGapUs / 1000.0f, 1);
+                Serial.print("ms, skips ");
+                Serial.print(gapSkips);
+                Serial.print(" (lost ");
+                Serial.print(lostChunks);
                 Serial.print(") | raw pp L=");
                 Serial.print(static_cast<unsigned>(maxL - minL));
                 Serial.print(" R=");
@@ -174,6 +256,8 @@ void AudioEngine::runCore1() {
             }
             chunkCount = waveformAccumUs = spectrumAccumUs = 0;
             maxBacklogChunks = overruns = 0;
+            producedSamples = 0;
+            maxGapUs = gapSkips = lostChunks = 0;
         }
     }
 }

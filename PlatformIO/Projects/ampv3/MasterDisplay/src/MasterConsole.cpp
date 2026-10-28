@@ -24,8 +24,9 @@ void MasterConsole::printHelp() {
     Serial.println("             (type ~. at the start of a line to come back)");
     Serial.println("  SETTINGS   print the settings file (/settings.txt)");
     Serial.println("  SETTINGS RESET   delete it: defaults from the next boot");
-    Serial.println("  BUTTONS    button monitor on/off: logs every raw edge on the");
-    Serial.println("             four button pins and each debounced press/release");
+    Serial.println("  BUTTONS    input monitor on/off: logs every raw edge on the four");
+    Serial.println("             button pins, each debounced press/release, and every");
+    Serial.println("             IR remote code with the action it maps to");
     Serial.println("  TIME       show the clock module's time");
     Serial.println("  TIME YYYY-MM-DD HH:MM:SS   set it");
 }
@@ -115,7 +116,7 @@ void MasterConsole::handleLine(char* line) {
     } else if (!strcmp(line, "BUTTONS") || !strcmp(line, "BTN")) {
         InputEngine& in = InputEngine::instance();
         in.setMonitor(!in.monitor());
-        Serial.printf("[Console] Button monitor %s\n", in.monitor() ? "ON -- press the buttons; BUTTONS again to stop" : "OFF");
+        Serial.printf("[Console] Button monitor %s\r\n", in.monitor() ? "ON -- press the buttons or the remote; BUTTONS again to stop" : "OFF");
         in.printRawStates();
     } else if (!strncmp(line, "TIME", 4) && (line[4] == '\0' || line[4] == ' ')) {
         handleTime(line + 4);

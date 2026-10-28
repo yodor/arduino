@@ -1,12 +1,14 @@
 #include "WaveformPipeline.hpp"
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include "hardware/sync.h" // __dmb()
 
 void WaveformPipeline::applyWindowModeChange() {
-    m_activeWindowSamples = (m_windowMode == WindowMode::OSCILLOSCOPE)
-                                 ? kOscilloscopeSamples
-                                 : kTrackPreviewSamples;
+    // DAW draws from its own timeline, so the short window does (cheaper).
+    m_activeWindowSamples = (m_windowMode == WindowMode::TRACK_PREVIEW)
+                                 ? kTrackPreviewSamples
+                                 : kOscilloscopeSamples;
 
     // Clear rather than carry over stale content from a differently-sized
     // (or previous same-mode) window -- avoids old data briefly
@@ -56,14 +58,16 @@ void WaveformPipeline::pushChunk(const uint16_t* interleavedChunk) {
     meanL /= static_cast<float>(windowSamples);
     meanR /= static_cast<float>(windowSamples);
 
+    accumulateEnvelope(interleavedChunk, meanL, meanR);
+
     uint8_t  buf  = m_writeBuf;
     int16_t* outL = m_waveL[buf];
     int16_t* outR = m_waveR[buf];
     for (size_t i = 0; i < windowSamples; ++i) {
         int16_t rawL = static_cast<int16_t>(static_cast<float>(m_slideL[i]) - meanL);
         int16_t rawR = static_cast<int16_t>(static_cast<float>(m_slideR[i]) - meanR);
-        outL[i] = (abs(rawL) < WAVE_NOISE_GATE) ? 0 : rawL;
-        outR[i] = (abs(rawR) < WAVE_NOISE_GATE) ? 0 : rawR;
+        outL[i] = rawL;
+        outR[i] = rawR;
     }
     m_waveSamples[buf] = windowSamples;
 
@@ -166,5 +170,53 @@ void WaveformPipeline::getScopeMono(int16_t* out, size_t count, size_t spanSampl
         size_t idx = start + static_cast<size_t>(i * stride);
         if (idx >= windowSamples) idx = windowSamples - 1;
         out[i] = static_cast<int16_t>((static_cast<int32_t>(srcL[idx]) + srcR[idx]) / 2);
+    }
+}
+
+// Core 1, every chunk: this chunk's min/max (DC removed with the window's
+// mean) folded into the current column; every
+// WAVEFORM_DAW_CHUNKS_PER_COLUMN chunks the column is stored in the ring.
+void WaveformPipeline::accumulateEnvelope(const uint16_t* chunk, float meanL, float meanR) {
+    constexpr size_t kChunkPerChannel = CAPTURE_CHUNK_SAMPLES / 2;
+    if (m_accChunks == 0) {
+        m_accMinL = m_accMinR = m_accMinM = INT16_MAX;
+        m_accMaxL = m_accMaxR = m_accMaxM = INT16_MIN;
+    }
+    for (size_t i = 0; i < kChunkPerChannel; ++i) {
+        int16_t l = static_cast<int16_t>(static_cast<float>(chunk[i * 2]     & 0x0FFF) - meanL);
+        int16_t r = static_cast<int16_t>(static_cast<float>(chunk[i * 2 + 1] & 0x0FFF) - meanR);
+        int16_t m = static_cast<int16_t>((static_cast<int32_t>(l) + r) / 2);
+        if (l < m_accMinL) m_accMinL = l;
+        if (l > m_accMaxL) m_accMaxL = l;
+        if (r < m_accMinR) m_accMinR = r;
+        if (r > m_accMaxR) m_accMaxR = r;
+        if (m < m_accMinM) m_accMinM = m;
+        if (m > m_accMaxM) m_accMaxM = m;
+    }
+    if (++m_accChunks < static_cast<int>(WAVEFORM_DAW_CHUNKS_PER_COLUMN)) return;
+    m_accChunks = 0;
+    uint32_t col = m_envColumns % kEnvCols;
+    m_envMinL[col] = m_accMinL; m_envMaxL[col] = m_accMaxL;
+    m_envMinR[col] = m_accMinR; m_envMaxR[col] = m_accMaxR;
+    m_envMinM[col] = m_accMinM; m_envMaxM[col] = m_accMaxM;
+    __dmb();
+    m_envColumns = m_envColumns + 1;
+}
+
+// Core 0: the timeline, oldest column first. (Core 1 may store one column
+// meanwhile -- at worst that column shows its newer value a frame early.)
+void WaveformPipeline::getEnvelope(int16_t* minL, int16_t* maxL, int16_t* minR, int16_t* maxR,
+                                   size_t count, bool mono) const {
+    if (!minL || !maxL || count != static_cast<size_t>(kEnvCols)) return;
+    uint32_t n = m_envColumns;
+    __dmb();
+    for (int i = 0; i < kEnvCols; ++i) {
+        uint32_t col = (n + static_cast<uint32_t>(i)) % kEnvCols; // n % kEnvCols is the oldest
+        if (mono) {
+            minL[i] = m_envMinM[col]; maxL[i] = m_envMaxM[col];
+        } else {
+            minL[i] = m_envMinL[col]; maxL[i] = m_envMaxL[col];
+            if (minR && maxR) { minR[i] = m_envMinR[col]; maxR[i] = m_envMaxR[col]; }
+        }
     }
 }

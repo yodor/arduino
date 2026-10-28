@@ -2,11 +2,25 @@
 #include "Screen.hpp"
 #include "Config.hpp"
 
-// Oscilloscope-style waveform. STEREO: left channel top half, right
-// channel bottom half (the original layout). MONO: one trace spanning the
-// full height, using the averaged (not summed) L+R sample so a
-// mono-duplicated stereo source reads at the same amplitude as either
-// channel alone. Same chunked delta-redraw and run-merging either way.
+// The waveform screen, in three modes (Theme > Waveform):
+//   OSCILLOSCOPE   a short window, triggered at a rising zero crossing:
+//                  individual cycles, standing still
+//   TRACK_PREVIEW  the long window as a line
+//   DAW            the long window as a min/max ENVELOPE: each column is the
+//                  span from the lowest to the highest sample in its slice
+//                  of the window (~19 samples), so every peak and transient
+//                  shows, with no aliasing -- the solid look of a DAW clip
+//
+// One column renderer draws all of them: WAVEFORM_SAMPLES columns, each one
+// NV3007 pixel pair wide (2 px), drawn as a vertical span. In the line modes
+// a column's span joins its point to the next one (a connected trace); in
+// DAW mode it's the min..max range. Each frame a column only erases the part
+// of its old span the new one no longer covers and draws the new span -- a
+// handful of small writes per column, nothing left behind, no flicker.
+//
+// Stereo: two lanes (L top, R bottom) in the theme's first and last colours;
+// mono: one lane of the L+R mix in its middle mix. Optional auto-gain
+// (Theme > Wave > Auto Gain) keeps the trace a readable size at any level.
 class WaveformScreen : public Screen {
 public:
     void onEnter() override;
@@ -14,28 +28,26 @@ public:
     const char* name() const override { return "WAVEFORM"; }
 
 private:
-    void renderStereo(const int16_t* leftWave, const int16_t* rightWave, size_t sampleCount);
-    void renderMono(const int16_t* leftWave, const int16_t* rightWave, size_t sampleCount);
+    static constexpr int kCols = WAVEFORM_SAMPLES;
 
-    // Draws a polyline through y[0..count-1] over the sample-index range
-    // [rangeStart, rangeEnd), merging consecutive samples that share the
-    // same Y value into a single drawLine call within that range.
-    void drawWavePolylineRange(const int16_t* y, size_t count, size_t rangeStart, size_t rangeEndExclusive, uint16_t color);
+    struct Lane {
+        int16_t  top = 0, bottom = 0;   // the lane's pixel rows, inclusive
+        uint16_t color = 0;
+        int16_t  lo[kCols] = {};        // what each column shows now
+        int16_t  hi[kCols] = {};
+        float    peak = 0.0f;           // auto-gain state (ADC counts)
+    };
 
-    // Previous/current frame trace, stereo.
-    int16_t m_prevWaveYL[WAVEFORM_SAMPLES] = {0};
-    int16_t m_prevWaveYR[WAVEFORM_SAMPLES] = {0};
-    int16_t m_curWaveYL[WAVEFORM_SAMPLES]  = {0};
-    int16_t m_curWaveYR[WAVEFORM_SAMPLES]  = {0};
+    void setupLanes();
+    // The new spans for a lane from raw values: a line (point i joined to
+    // point i+1; `v` holds kCols+1 points) or an envelope (vmin/vmax per column).
+    void spansFromLine(Lane& lane, const int16_t* v, int16_t* lo, int16_t* hi);
+    void spansFromEnvelope(Lane& lane, const int16_t* vmin, const int16_t* vmax, int16_t* lo, int16_t* hi);
+    void drawLane(Lane& lane, const int16_t* lo, const int16_t* hi);
+    float gainFor(Lane& lane, int32_t framePeak);
 
-    // Previous/current frame trace, mono. Kept separate from the stereo
-    // arrays so switching channel modes never mixes up trace history.
-    int16_t m_prevWaveYMono[WAVEFORM_SAMPLES] = {0};
-    int16_t m_curWaveYMono[WAVEFORM_SAMPLES]  = {0};
-
-    bool m_waveTraceValid = false;
-    // Trace colours, from the colour theme (onEnter()).
-    uint16_t m_colorTop    = COLOR_CYAN;
-    uint16_t m_colorBottom = COLOR_YELLOW;
-    uint16_t m_colorMono   = COLOR_CYAN;
+    Lane m_lanes[2];
+    int  m_laneCount = 1;
+    bool m_valid     = false;   // the lanes on the panel match lo/hi
+    bool m_wasStereo = false;
 };

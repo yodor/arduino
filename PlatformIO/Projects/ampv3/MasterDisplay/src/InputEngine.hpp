@@ -51,7 +51,7 @@ struct DebouncedButton {
             if (rawEdges == 0) firstEdgeMs = now;
             ++rawEdges;
             if (monitor) {
-                Serial.printf("[Btn] %-5s raw %s  (+%lums)\n", name, reading == LOW ? "LOW " : "HIGH",
+                Serial.printf("[Btn] %-5s raw %s  (+%lums)\r\n", name, reading == LOW ? "LOW " : "HIGH",
                               static_cast<unsigned long>(now - firstEdgeMs));
             }
             lastChangeMs = now;
@@ -63,7 +63,7 @@ struct DebouncedButton {
             // real, settled state change.
             stableState = reading;
             if (monitor) {
-                Serial.printf("[Btn] %-5s %s after %u raw edge%s\n", name, stableState == LOW ? "PRESSED " : "released",
+                Serial.printf("[Btn] %-5s %s after %u raw edge%s\r\n", name, stableState == LOW ? "PRESSED " : "released",
                               rawEdges, rawEdges == 1 ? "" : "s");
             }
             rawEdges = 0;
@@ -78,7 +78,7 @@ struct DebouncedButton {
             // Raw edges that settled back where they started (a contact
             // that blipped shorter than the debounce time): no press.
             if (monitor) {
-                Serial.printf("[Btn] %-5s glitch ignored (%u raw edge%s, shorter than %lums)\n", name, rawEdges,
+                Serial.printf("[Btn] %-5s glitch ignored (%u raw edge%s, shorter than %lums)\r\n", name, rawEdges,
                               rawEdges == 1 ? "" : "s", static_cast<unsigned long>(debounceMs));
             }
             rawEdges = 0;
@@ -147,7 +147,8 @@ public:
     bool lastIrWasRepeat() const { return m_lastIrWasRepeat; }
 
     // Button monitor (USB console BUTTONS): logs every raw edge on the four
-    // button pins and every debounced press/release. A clean press shows one
+    // button pins, every debounced press/release, and every IR remote code
+    // (with the action it maps to). A clean press shows one
     // raw LOW, then PRESSED; a bouncy or intermittent contact shows bursts of
     // LOW/HIGH, "glitch ignored", or a press that never reaches PRESSED.
     void setMonitor(bool on) { m_monitor = on; }

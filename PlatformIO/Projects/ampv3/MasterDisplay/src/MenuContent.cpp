@@ -1,4 +1,5 @@
 #include "MenuContent.hpp"
+#include "DebugFlags.hpp"
 #if defined(PICO_RP2350) && PICO_RP2350
 #include "hardware/structs/sysinfo.h"
 #endif
@@ -169,7 +170,7 @@ bool saveTime(const int16_t* v) {
     bool ok = RtcClock::instance().set(t);
     char buf[20];
     RtcClock::format(t, buf, sizeof(buf));
-    Serial.printf("[Clock] %s %s\n", ok ? "Time set:" : "Setting the time failed:", buf);
+    Serial.printf("[Clock] %s %s\r\n", ok ? "Time set:" : "Setting the time failed:", buf);
     return ok;
 }
 
@@ -195,7 +196,7 @@ bool saveDate(const int16_t* v) {
     bool ok = RtcClock::instance().set(t);
     char buf[20];
     RtcClock::format(t, buf, sizeof(buf));
-    Serial.printf("[Clock] %s %s\n", ok ? "Date set:" : "Setting the date failed:", buf);
+    Serial.printf("[Clock] %s %s\r\n", ok ? "Date set:" : "Setting the date failed:", buf);
     return ok;
 }
 
@@ -317,6 +318,8 @@ void menuSet_WaveOscilloscope() { AudioEngine::instance().setWaveformWindowMode(
 void menuSet_WaveTrackPreview() { AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::TRACK_PREVIEW); PersistentSettings::instance().markDirty(); }
 bool menuIsActive_WaveOscilloscope() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::OSCILLOSCOPE; }
 bool menuIsActive_WaveTrackPreview() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::TRACK_PREVIEW; }
+void menuSet_WaveDaw()      { AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::DAW); PersistentSettings::instance().markDirty(); }
+bool menuIsActive_WaveDaw() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::DAW; }
 
 // Peaks Enabled: whether SpectrumScreen/DigitalVuMeterScreen draw their
 // peak-hold indicators at all -- purely a core0/display-side setting (see
@@ -390,12 +393,24 @@ constexpr size_t kFftSubmenuItemCount = sizeof(kFftSubmenuItems) / sizeof(kFftSu
 const MenuValueOption kWaveWindowModeOptions[] = {
     { "Oscilloscope",  menuSet_WaveOscilloscope, menuIsActive_WaveOscilloscope },
     { "Track Preview", menuSet_WaveTrackPreview, menuIsActive_WaveTrackPreview },
+    { "DAW",           menuSet_WaveDaw,          menuIsActive_WaveDaw          },
 };
 
 // "Wave" submenu, nested inside "Theme" -- currently just the one
 // setting (Window Mode), with room to grow the same way "FFT" did.
+// Theme > Wave > Auto Gain: the waveform trace scaled to fill its lane.
+void menuSet_WaveGainOn()  { DisplaySettings::instance().setWaveformAutoGain(true);  PersistentSettings::instance().markDirty(); }
+void menuSet_WaveGainOff() { DisplaySettings::instance().setWaveformAutoGain(false); PersistentSettings::instance().markDirty(); }
+bool menuIsActive_WaveGainOn()  { return  DisplaySettings::instance().getWaveformAutoGain(); }
+bool menuIsActive_WaveGainOff() { return !DisplaySettings::instance().getWaveformAutoGain(); }
+const MenuValueOption kWaveAutoGainOptions[] = {
+    { "On",  menuSet_WaveGainOn,  menuIsActive_WaveGainOn  },
+    { "Off", menuSet_WaveGainOff, menuIsActive_WaveGainOff },
+};
+
 const MenuItem kWaveSubmenuItems[] = {
-    { "Window Mode", MenuItemType::VALUE_CHOICE, nullptr, kWaveWindowModeOptions, 2 },
+    { "Window Mode", MenuItemType::VALUE_CHOICE, nullptr, kWaveWindowModeOptions, 3 },
+    { "Auto Gain",   MenuItemType::VALUE_CHOICE, nullptr, kWaveAutoGainOptions,   2 },
 };
 constexpr size_t kWaveSubmenuItemCount = sizeof(kWaveSubmenuItems) / sizeof(kWaveSubmenuItems[0]);
 
@@ -561,7 +576,7 @@ void menuAction_StartCalibration() {
         Serial.println("[Menu] Calibration requested, Rtotal AUTO");
     } else {
         vc.calibrate(VolumeControl::CalR::SET_R, g_rSelOhms);
-        Serial.printf("[Menu] Calibration requested, Rtotal %lu ohm\n", static_cast<unsigned long>(g_rSelOhms));
+        Serial.printf("[Menu] Calibration requested, Rtotal %lu ohm\r\n", static_cast<unsigned long>(g_rSelOhms));
     }
 }
 
@@ -781,12 +796,12 @@ void describeLoad(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink:
 void menuAction_ApplySrc() {
     if (static_cast<int32_t>(g_editSrc) == DaughterBoardLink::instance().model().src) return; // unchanged
     VolumeControl::instance().setModelSource(g_editSrc);
-    Serial.printf("[Menu] Source impedance -> %lu ohm\n", static_cast<unsigned long>(g_editSrc));
+    Serial.printf("[Menu] Source impedance -> %lu ohm\r\n", static_cast<unsigned long>(g_editSrc));
 }
 void menuAction_ApplyLoad() {
     if (static_cast<int32_t>(g_editLoad) == DaughterBoardLink::instance().model().load) return;
     VolumeControl::instance().setModelLoad(g_editLoad);
-    Serial.printf("[Menu] Load impedance -> %lu ohm\n", static_cast<unsigned long>(g_editLoad));
+    Serial.printf("[Menu] Load impedance -> %lu ohm\r\n", static_cast<unsigned long>(g_editLoad));
 }
 
 const MenuEditor kSrcEditor  = { 4, {1, 1, 1, 1},       '\0', loadSrc,  limitsDigit, saveSrc,  nullptr, describeSrc  };
@@ -986,11 +1001,34 @@ const MenuItem kVersionsSubmenuItems[] = {
     { "Volume Board", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillDaughterVersion },
 };
 
+// Diagnostics > Debug Output: the serial debug lines, at run time (not saved).
+void menuSet_DbgAudioOn()  { DebugFlags::audio = true;  Serial.println("[Menu] Audio debug output on"); }
+void menuSet_DbgAudioOff() { DebugFlags::audio = false; Serial.println("[Menu] Audio debug output off"); }
+void menuSet_DbgPerfOn()   { DebugFlags::perf  = true;  Serial.println("[Menu] Perf debug output on"); }
+void menuSet_DbgPerfOff()  { DebugFlags::perf  = false; Serial.println("[Menu] Perf debug output off"); }
+bool menuIsActive_DbgAudioOn()  { return  DebugFlags::audio; }
+bool menuIsActive_DbgAudioOff() { return !DebugFlags::audio; }
+bool menuIsActive_DbgPerfOn()   { return  DebugFlags::perf; }
+bool menuIsActive_DbgPerfOff()  { return !DebugFlags::perf; }
+const MenuValueOption kDbgAudioOptions[] = {
+    { "On",  menuSet_DbgAudioOn,  menuIsActive_DbgAudioOn  },
+    { "Off", menuSet_DbgAudioOff, menuIsActive_DbgAudioOff },
+};
+const MenuValueOption kDbgPerfOptions[] = {
+    { "On",  menuSet_DbgPerfOn,  menuIsActive_DbgPerfOn  },
+    { "Off", menuSet_DbgPerfOff, menuIsActive_DbgPerfOff },
+};
+const MenuItem kDebugOutputItems[] = {
+    { "Audio", MenuItemType::VALUE_CHOICE, nullptr, kDbgAudioOptions, 2 }, // [Audio] / [Spectrum] timing lines
+    { "Perf",  MenuItemType::VALUE_CHOICE, nullptr, kDbgPerfOptions,  2 }, // [Perf] frame-rate line
+};
+
 const MenuItem kDiagnosticsSubmenuItems[] = {
     { "Versions",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kVersionsSubmenuItems, 2 },
     { "Amp Mute",     MenuItemType::VALUE_CHOICE, nullptr, kAmpMuteOptions, 2 },
     { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2 },
     { "Display Test", MenuItemType::ACTION,       menuAction_DisplayTest, nullptr, 0 },
+    { "Debug Output", MenuItemType::SUBMENU,      nullptr, nullptr, 0, kDebugOutputItems, 2 },
 };
 constexpr size_t kDiagnosticsSubmenuItemCount = sizeof(kDiagnosticsSubmenuItems) / sizeof(kDiagnosticsSubmenuItems[0]);
 
@@ -1019,7 +1057,7 @@ void formatAutoStandby(const int16_t* v, uint8_t, char* out, size_t outSize) {
 bool saveAutoStandby(const int16_t* v) {
     DisplaySettings::instance().setAutoStandbyMinutes(static_cast<uint8_t>(v[0]));
     PersistentSettings::instance().markDirty();
-    if (v[0]) Serial.printf("[Menu] Auto standby after %d min of silence\n", static_cast<int>(v[0]));
+    if (v[0]) Serial.printf("[Menu] Auto standby after %d min of silence\r\n", static_cast<int>(v[0]));
     else      Serial.println("[Menu] Auto standby off");
     return true;
 }
@@ -1033,7 +1071,7 @@ bool saveSilence(const int16_t* v) {
     if (t < 1) t = 1;
     DisplaySettings::instance().setAutoStandbyThreshold(static_cast<uint16_t>(t));
     PersistentSettings::instance().markDirty();
-    Serial.printf("[Menu] Silence level %lu counts\n", static_cast<unsigned long>(t));
+    Serial.printf("[Menu] Silence level %lu counts\r\n", static_cast<unsigned long>(t));
     return true;
 }
 void describeSilence(char* out, size_t n) {

@@ -196,7 +196,7 @@ void VolumeControl::syncFromDaughterStatus() {
             m_lastMuteChangeMs = millis();
         }
         m_ready = true;
-        Serial.printf("[Volume] Calibrated -- %s (step %d)\n",
+        Serial.printf("[Volume] Calibrated -- %s (step %d)\r\n",
                       m_muted ? "staying muted (user mute)" : "unmuting", s.vol);
         retryPendingCommands();
         return;
@@ -204,7 +204,7 @@ void VolumeControl::syncFromDaughterStatus() {
 
     if (!calOk) {
         m_ready = false;
-        Serial.printf("[Volume] Calibration needed (%s) -- the daughter keeps the volume muted\n", calStateText(s.cal));
+        Serial.printf("[Volume] Calibration needed (%s) -- the daughter keeps the volume muted\r\n", calStateText(s.cal));
         return;
     }
 

@@ -29,7 +29,7 @@ void PowerControl::setRelay(bool on) {
     m_relayOn = on;
     digitalWrite(RELAY_CTRL_PIN, on ? HIGH : LOW);
     digitalWrite(PWR_BTN_LED_PIN, on ? HIGH : LOW);
-    Serial.printf("[Power] Mains relay %s\n", on ? "ON" : "OFF");
+    Serial.printf("[Power] Mains relay %s\r\n", on ? "ON" : "OFF");
 }
 
 void PowerControl::enter(State s) {

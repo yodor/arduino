@@ -24,6 +24,10 @@ public:
     void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
     // Triggered mono trace of a fixed span -- see WaveformPipeline::getScopeMono().
     void getScopeMono(int16_t* out, size_t count, size_t spanSamples) const;
+    // DAW view: per-column min/max -- see WaveformPipeline::getEnvelope().
+    void getEnvelope(int16_t* minL, int16_t* maxL, int16_t* minR, int16_t* maxR, size_t count, bool mono) const {
+        m_waveform.getEnvelope(minL, maxL, minR, maxR, count, mono);
+    }
     // Mono doubling-band bars -- see SpectrumPipeline::getMiniBars().
     size_t getMiniBars(float* out) const;
 
@@ -55,4 +59,10 @@ private:
 
     SpectrumPipeline m_spectrum;
     WaveformPipeline m_waveform;
+    // ADC rate: the divider in use, and the per-channel rate the start-up
+    // self-calibration measured (0 until it has) -- see runCore1().
+    float m_adcDiv = 544.0f;
+    volatile float m_measuredRateHz = 0.0f;
+public:
+    float measuredSampleRateHz() const { return m_measuredRateHz; }
 };

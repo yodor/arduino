@@ -404,9 +404,9 @@ bool DaughterBoardLink::parseVerLine(const char* line) {
     v.receivedMs = millis();
     m_version    = v;
     if (first) {
-        Serial.printf("[Daughter] Firmware %s (built %s), %s %s rev %s, protocol %u\n",
+        Serial.printf("[Daughter] Firmware %s (built %s), %s %s rev %s, protocol %u\r\n",
                       v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
-        if (v.note[0]) Serial.printf("[Daughter] Release note: %s\n", v.note);
+        if (v.note[0]) Serial.printf("[Daughter] Release note: %s\r\n", v.note);
     }
     return true;
 }

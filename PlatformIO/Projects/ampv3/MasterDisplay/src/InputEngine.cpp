@@ -111,10 +111,16 @@ UIEvent InputEngine::pollEvents() {
         IrReceiver.resume();
         m_lastIrWasRepeat = isRepeat;
 
-        // Prints every decoded code regardless of whether it matches a
-        // known mapping below -- useful for reading raw codes off a new
-        // remote to map later, without needing to guess hex values blind.
-        Serial.printf("[IR] cmd=0x%02X%s\n", cmd, isRepeat ? " (repeat)" : "");
+        // With the button monitor on (USB console BUTTONS): every decoded
+        // code, mapped or not -- for reading a new remote's codes. Quiet
+        // otherwise.
+        if (m_monitor) {
+            const char* what = "unmapped";
+            for (const auto& mapping : kIrMappings) {
+                if (mapping.code == cmd) { what = uiEventName(mapping.event); break; }
+            }
+            Serial.printf("[IR]  cmd=0x%02X%s -> %s\r\n", cmd, isRepeat ? " (repeat)" : "", what);
+        }
 
         for (const auto& mapping : kIrMappings) {
             if (mapping.code != cmd) continue;

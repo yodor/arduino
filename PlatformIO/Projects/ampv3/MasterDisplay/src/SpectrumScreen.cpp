@@ -1,4 +1,5 @@
 #include "SpectrumScreen.hpp"
+#include "DebugFlags.hpp"
 #include "Renderer.hpp"
 #include "AudioEngine.hpp"
 #include "AudioLevel.hpp"
@@ -150,7 +151,7 @@ void SpectrumScreen::render() {
     }
 
     uint32_t nowMs = millis();
-    if (DEBUG_AUDIO_DIAGNOSTICS && nowMs - s_lastDebugMs >= 1000) {
+    if (DebugFlags::audio && nowMs - s_lastDebugMs >= 1000) {
         s_lastDebugMs = nowMs;
         float db = (s_debugMaxMag > 0.0001f) ? 20.0f * log10f(s_debugMaxMag) : -100.0f;
         Serial.print("[Spectrum] loudest bin -> band ");

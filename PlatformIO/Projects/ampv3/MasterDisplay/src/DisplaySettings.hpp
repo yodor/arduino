@@ -118,6 +118,10 @@ public:
     uint16_t getAutoStandbyThreshold() const    { return m_autoStandbyThreshold; }
     void     setAutoStandbyThreshold(uint16_t t) { m_autoStandbyThreshold = t; }
 
+    // Waveform screen auto-gain (Theme > Wave > Auto Gain), off by default.
+    bool getWaveformAutoGain() const   { return m_waveformAutoGain; }
+    void setWaveformAutoGain(bool on)  { m_waveformAutoGain = on; }
+
     VolumeDisplay getVolumeDisplay() const          { return m_volumeDisplay; }
     void          setVolumeDisplay(VolumeDisplay v) { m_volumeDisplay = v; }
     bool getClock24h() const         { return m_clock24h; }
@@ -141,4 +145,5 @@ private:
     uint8_t      m_autoStandbyMin      = 0;      // off
     uint16_t     m_autoStandbyThreshold = AUTO_STANDBY_AUDIO_THRESHOLD;
     VolumeDisplay m_volumeDisplay      = VolumeDisplay::DB;
+    bool         m_waveformAutoGain    = false;
 };

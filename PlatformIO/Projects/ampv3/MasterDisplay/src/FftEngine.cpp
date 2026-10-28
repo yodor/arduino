@@ -47,7 +47,7 @@ FftEngine::FftEngine(size_t fftSize)
         m_rfftOk = (initRfft<FFT_SIZE>(&m_rfft) == ARM_MATH_SUCCESS);
     }
     if (!m_rfftOk) {
-        Serial.printf("[FFT] CMSIS-DSP real FFT setup failed for %u points\n", static_cast<unsigned>(m_fftSize));
+        Serial.printf("[FFT] CMSIS-DSP real FFT setup failed for %u points\r\n", static_cast<unsigned>(m_fftSize));
         return;
     }
 
