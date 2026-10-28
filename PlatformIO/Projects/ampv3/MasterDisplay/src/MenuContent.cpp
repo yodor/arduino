@@ -671,6 +671,10 @@ size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
                                                    : e.why;
         addLine(lines, n, maxLines, "Resync ADVISED");
         addLine(lines, n, maxLines, "  %s", why);
+    } else if (e.resync == 0 && !strcmp(e.why, "WARMING")) {
+        // rev 17: a resync would apply, but the temperature is still settling.
+        addLine(lines, n, maxLines, "Resync after warm-up");
+        addLine(lines, n, maxLines, "  temperature settling");
     } else if (e.resync == 0) {
         addLine(lines, n, maxLines, "Resync not needed");
     }
@@ -1078,8 +1082,25 @@ const MenuValueOption kVolumeDisplayOptions[] = {
     { "Steps", menuSet_VolSteps, menuIsActive_VolSteps },
 };
 
+// Settings -> Balance (rev 18 BAL): -16..+16 in 0.25 dB (+-4 dB). The slider
+// shows where the sound sits: right of centre lowers the LEFT channel
+// (positive BAL), left of centre the right one. Applied live; saved with the
+// settings (written when the menu closes) and sent at the daughter's power-up.
+int16_t balanceGet()          { return VolumeControl::instance().balance(); }
+void    balanceSet(int16_t v) {
+    VolumeControl::instance().setBalance(static_cast<int8_t>(v));
+    PersistentSettings::instance().markDirty();
+}
+void    balanceFormat(int16_t v, char* out, size_t n) {
+    if (v == 0) { snprintf(out, n, "Center"); return; }
+    int a = (v < 0 ? -v : v) * 25; // hundredths of a dB
+    snprintf(out, n, "%s -%d.%02d dB", v > 0 ? "Left" : "Right", a / 100, a % 100);
+}
+const MenuSlider kBalanceSlider = { -16, 16, balanceGet, balanceSet, balanceFormat, "L", "R" };
+
 const MenuItem kSettingsSubmenuItems[] = {
     { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr, kBrightnessOptions,  4 },
+    { "Balance",         MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kBalanceSlider },
     { "Volume Display",  MenuItemType::VALUE_CHOICE, nullptr, kVolumeDisplayOptions, 2 },
     { "Clock",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kClockSubmenuItems,       kClockSubmenuItemCount },
     { "Power",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kPowerSubmenuItems,       kPowerSubmenuItemCount },

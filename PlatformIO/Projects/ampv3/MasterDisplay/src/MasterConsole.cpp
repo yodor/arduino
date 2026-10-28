@@ -3,6 +3,7 @@
 #include "Version.hpp"
 #include "RtcClock.hpp"
 #include "InputEngine.hpp"
+#include "PersistentSettings.hpp"
 #include <cstdio>
 #include <cctype>
 #include <cstring>
@@ -21,6 +22,8 @@ void MasterConsole::printHelp() {
     Serial.println("  HELP       this list");
     Serial.println("  DAUGHTER   pass-through to the daughter board's bench console");
     Serial.println("             (type ~. at the start of a line to come back)");
+    Serial.println("  SETTINGS   print the settings file (/settings.txt)");
+    Serial.println("  SETTINGS RESET   delete it: defaults from the next boot");
     Serial.println("  BUTTONS    button monitor on/off: logs every raw edge on the");
     Serial.println("             four button pins and each debounced press/release");
     Serial.println("  TIME       show the clock module's time");
@@ -103,6 +106,12 @@ void MasterConsole::handleLine(char* line) {
         printHelp();
     } else if (!strcmp(line, "DAUGHTER") || !strcmp(line, "D")) {
         enterPassthrough();
+    } else if (!strcmp(line, "SETTINGS")) {
+        PersistentSettings::instance().printFile();
+    } else if (!strcmp(line, "SETTINGS RESET")) {
+        Serial.println(PersistentSettings::instance().resetFile()
+                       ? "[Console] Settings file deleted -- defaults from the next boot (a change before then saves again)"
+                       : "[Console] No settings file to delete");
     } else if (!strcmp(line, "BUTTONS") || !strcmp(line, "BTN")) {
         InputEngine& in = InputEngine::instance();
         in.setMonitor(!in.monitor());

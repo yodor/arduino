@@ -1,72 +1,45 @@
 #pragma once
 #include <Arduino.h>
 
-// Persists the menu-driven settings (color preset, channel mode, starting
-// screen, stereo layout, mirror-left-bars, FFT band layout, FFT energy
-// mode) across reboots, stored in the last flash sector.
+// Settings, saved as a plain text file on LittleFS: /settings.txt, one
+// "key=value" per line ('#' starts a comment). Version-independent by design:
+// unknown keys are ignored, missing ones keep their defaults, and enums are
+// stored by NAME -- so firmware updates never need a migration, and the file
+// can be read, edited, or flashed from a data/settings.txt with the
+// Arduino-Pico filesystem uploader.
 //
-// Deliberately does NOT use Arduino-Pico's EEPROM library. That library's
-// commit() internally calls rp2040.idleOtherCore() to pause core1 during
-// the flash erase/write (RP-series chips can't execute from flash while
-// it's being modified), and that pausing mechanism has multiple
-// documented hangs specifically when the OTHER core is genuinely busy
-// (github.com/earlephilhower/arduino-pico issues #719, #1561, #1745,
-// #2485) -- exactly our situation, since core1 runs a continuously-busy
-// audio loop with no natural idle points. The library maintainer has
-// acknowledged this as an open architectural gap (discussion #83): "If
-// either core tries to update the flash... the whole board will crash
-// hard... we need an interlock between both cores... not something I've
-// had time to hack on."
+// Needs a Flash Size option with an FS partition (Tools menu, e.g.
+// "4MB (Sketch: 3MB, FS: 1MB)"); without one, LittleFS can't mount and
+// settings simply aren't saved (logged at boot).
 //
-// Instead, this builds a small COOPERATIVE interlock of our own: core0
-// (about to write) sets a flag; core1 checks it once per main loop
-// iteration (AudioEngine::runCore1(), at a safe point between chunk
-// dispatches) and, if set, parks itself in a tight spin loop that lives
-// entirely in RAM (checkAndPauseForFlashWrite() is marked
-// __not_in_flash_func for exactly this reason -- it must not fetch any
-// instruction from flash while core0 is mid-erase/program, so it cannot
-// call anything else that lives in flash, not even Serial.print). Core0
-// waits for that confirmation, then calls the Pico SDK's
-// flash_range_erase()/flash_range_program() directly (bypassing the
-// EEPROM library's own commit() and its idleOtherCore() call entirely),
-// then releases core1.
-//
-// Saves are triggered by markDirty() (called from every menu setter) plus
-// saveIfDirty() (called once, when the menu closes) -- not a periodic
-// debounce timer, so a flash write only ever happens right after the user
-// finishes adjusting settings and steps away from the menu.
+// Flash writes are safe with core 1 running: Arduino-Pico's LittleFS pauses
+// the other core itself (rp2040.idleOtherCore()) during erases and writes.
 class PersistentSettings {
 public:
     static PersistentSettings& instance();
 
-    // Called once at boot (core0's setup(), before anything reads the
-    // settings singletons) -- if the stored magic/version/checksum are
-    // valid, applies each field to its owning singleton (DisplaySettings,
-    // ColorTheme, AudioEngine/SpectrumPipeline); otherwise leaves current
-    // (default) values untouched and logs why.
+    // Mounts LittleFS and applies /settings.txt. If there's no file yet but
+    // the old binary settings (layout v13, last flash sector) are there,
+    // they're imported once and written out as the file.
     void loadAndApply();
 
-    // Called by every menu setter that changes a persisted setting.
     void markDirty() { m_dirty = true; m_lastDirtyMs = millis(); }
     bool isDirty() const { return m_dirty; }
-    // For deferred saves (screen, volume): how long since the last change.
+    // For deferred saves: how long since the last change.
     uint32_t msSinceDirty() const { return millis() - m_lastDirtyMs; }
-
-    // Called when the menu closes (main.cpp's closeMenu()) -- commits to
-    // flash via the interlocked raw-flash-write path if anything changed
-    // since the last save; a no-op otherwise.
     void saveIfDirty();
 
-    // Called from AudioEngine::runCore1()'s loop, once per iteration at a
-    // safe checkpoint between chunk dispatches. MUST remain a true RAM-
-    // resident leaf -- see this method's definition for the constraints
-    // that follow from that.
-    static void checkAndPauseForFlashWrite();
+    // USB console: print the file / delete it (defaults from the next boot).
+    void printFile();
+    bool resetFile();
 
 private:
     PersistentSettings() = default;
-    void commitToFlash();
+    void save();
+    bool importLegacy();
+    void applyLine(char* line, int lineNo);
 
     uint32_t m_lastDirtyMs = 0;
-    bool m_dirty = false;
+    bool     m_dirty       = false;
+    bool     m_mounted     = false;
 };

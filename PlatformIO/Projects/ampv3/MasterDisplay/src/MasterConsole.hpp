@@ -4,6 +4,7 @@
 // The master's USB serial console. Line-based commands:
 //   HELP       list commands
 //   DAUGHTER   pass-through to the daughter board's bench console
+//   SETTINGS [RESET]  print / delete the settings file
 //   BUTTONS    button monitor on/off (raw edges + debounced presses)
 //   TIME [YYYY-MM-DD HH:MM:SS]   show / set the DS3231 clock
 //

@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "../lib/kissfft/kiss_fftr.h"
+#include "dsp/transform_functions.h" // CMSIS-DSP (lib/CMSISDSP): arm_rfft_fast_f32
 
 // Reusable real-FFT engine: sliding-window capture + DC removal + Hann
 // windowing + FFT + magnitude computation, parameterized by window size
@@ -22,8 +22,7 @@ public:
     explicit FftEngine(size_t fftSize);
     ~FftEngine();
 
-    // Not copyable -- owns raw malloc'd buffers and a kissfft config with
-    // no defined copy semantics.
+    // Not copyable -- owns raw malloc'd buffers.
     FftEngine(const FftEngine&) = delete;
     FftEngine& operator=(const FftEngine&) = delete;
 
@@ -50,12 +49,19 @@ private:
     size_t m_fftSize;
     size_t m_halfWindowThreshold; // m_fftSize/2 -- samples/channel needed to trigger a refresh (50% overlap)
 
-    kiss_fftr_cfg    m_fftCfgL = nullptr;
-    kiss_fft_scalar* m_fftInL  = nullptr;
-    kiss_fft_cpx*    m_fftOutL = nullptr;
-    kiss_fftr_cfg    m_fftCfgR = nullptr;
-    kiss_fft_scalar* m_fftInR  = nullptr;
-    kiss_fft_cpx*    m_fftOutR = nullptr;
+    // The FFT: ARM's CMSIS-DSP real FFT (arm_rfft_fast_f32), hand-optimised
+    // for Cortex-M with an FPU. One instance serves both channels (it only
+    // holds pointers to constant tables), and the two transforms share one
+    // output buffer: each channel's magnitudes are taken before the next runs.
+    arm_rfft_fast_instance_f32 m_rfft{};
+    bool    m_rfftOk = false;
+    float*  m_fftInL = nullptr;   // windowed input; the FFT also uses it as scratch
+    float*  m_fftInR = nullptr;
+    float*  m_fftOut = nullptr;   // packed real-FFT output, m_fftSize floats
+    // RAM copies of the FFT's constant tables (see the constructor).
+    float*    m_ramTwRfft = nullptr;
+    float*    m_ramTwCfft = nullptr;
+    uint16_t* m_ramBitRev = nullptr;
 
     float* m_fftBinsL     = nullptr;
     float* m_fftBinsR     = nullptr;

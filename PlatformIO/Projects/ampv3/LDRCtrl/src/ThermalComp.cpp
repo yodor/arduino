@@ -16,6 +16,11 @@ float gEma = NAN;                 // block, 1-minute average
 float gApplied[2] = {0.0f, 0.0f}; // offsets currently in the driver, counts
 bool gFrozen = false, gEnabled = true;
 float gSpanC = 0.0f;              // the largest block change the fit learned from
+// The block's trend: one sample of the 1-minute average per minute, the last 11 (10 minutes).
+constexpr uint8_t HIST = 11;
+float gHist[HIST];
+uint8_t gHistN = 0;
+uint32_t gHistMs = 0;
 uint32_t gLastMs = 0;
 
 void refit() {
@@ -69,6 +74,11 @@ void tick() {
   }
   gEma = isnan(gEma) ? t : RailComp::emaStep(gEma, t);
   apply(false);
+  if (gHistN == 0 || millis() - gHistMs >= 60000UL) {
+    gHistMs = millis();
+    if (gHistN == HIST) { for (uint8_t i = 1; i < HIST; i++) gHist[i - 1] = gHist[i]; gHistN--; }
+    gHist[gHistN++] = gEma;
+  }
 }
 
 void suspend() { gFrozen = true; apply(true); }
@@ -88,21 +98,34 @@ float blockAtCalibration() { return gRef; }
 bool sideActive(uint8_t side) { return side < 2 && gEnabled && !gFrozen && gUse[side] && !isnan(gEma); }
 bool ntcOk() { return Board::ntcState() == BoardSensors::NtcState::OK; }
 
+float blockRatePer10Min() { return gHistN == HIST ? gHist[HIST - 1] - gHist[0] : NAN; }
+
 Hint hint() {
   const float dT = (isnan(gEma) || isnan(gRef)) ? NAN : gEma - gRef;
   const bool compOn = sideActive(0) && sideActive(1);
-  return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed());
+  const float rate = blockRatePer10Min();
+  const bool warming = Board::msSinceAmpOn() < HINT_WARMUP_MS || isnan(rate) || fabsf(rate) > HINT_STEADY_C;
+  return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed(), Board::ampCommandedMuted(), warming);
 }
 
 void printHint(Print &out) {
   const Hint h = hint();
   if (h == Hint::NONE) return;
+  if (h == Hint::WARMING) {
+    out.print(F("  resync: not yet -- the temperature is still settling after power-up (block "));
+    const float r = blockRatePer10Min();
+    if (isnan(r)) out.print(F("trend not known yet"));
+    else { if (r >= 0) out.print('+'); out.print(r, 2); out.print(F(" C per 10 min")); }
+    out.println(F("); it is recommended once steady"));
+    return;
+  }
   out.print(F("  resync recommended: "));
   switch (h) {
     case Hint::SPAN:   out.println(F("the block is outside the range the compensation has learned -- a CAL makes it exact and teaches it this range")); break;
     case Hint::LIMIT:  out.println(F("the block is 30 C or more from the calibration temperature, beyond the compensation's range")); break;
     case Hint::NOCOMP: out.println(F("the block has moved since the last calibration and the compensation is not active")); break;
     case Hint::SEEK:   out.println(F("the last calibration's quiet-point seek did not converge")); break;
+    case Hint::WARMING: break;
     default: break;
   }
 }

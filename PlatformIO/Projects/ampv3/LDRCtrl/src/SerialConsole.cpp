@@ -8,6 +8,7 @@
 #include "Config.hpp"
 #include "VersionInfo.hpp"
 #include "AutoPref.hpp"
+#include "Balance.hpp"
 #include "DualCalibration.hpp"
 #include "CalArgs.hpp"
 #include "BusyHook.hpp"
@@ -364,6 +365,7 @@ void SerialConsole::printHelp() {
   stream_.println(F("  SET AUTO SNAPPY|BALANCED|DEEP  AUTO's depth vs settling preference; stored; CAL re-solves"));
   stream_.println(F("  MODEL                   the source/load in use and what the calibration was solved for"));
   stream_.println(F("  VER | FW                firmware version, build, chip, flash ID, core and SDK versions"));
+  stream_.println(F("  BAL [-16..16]           balance in 0.25 dB units (negative lowers R); not stored"));
   stream_.println(F("  READ                    one sensor reading per side (after RELAY ON)"));
   stream_.println(F("  DIAG                    snapshot: firmware, state, stored calibration, capabilities"));
   stream_.println(F("  DIAG ALL                + cell check, verify up/down, dark-end walk, creep (~8-9 min)"));
@@ -895,6 +897,7 @@ void SerialConsole::handleLine(String line) {
       stream_.println(F("OK"));
     } else if (cmd == "AMP_MUTE") {
       board_.setAmpMute(on);   // during a calibration's hold an unmute waits for its end
+      Board::noteAmpCommand(on);
       stream_.println(F("OK"));
     } else {
       if (on) { for (uint8_t c = 0; c < 2; c++) both[c]->relayEnergize(true); }
@@ -932,6 +935,19 @@ void SerialConsole::handleLine(String line) {
       stream_.println(F("k: for the full depth of this preference, FORGET CAL then CAL (a full characterization walks deeper)"));
     }
     printModel();
+
+  } else if (cmd == "BAL") {
+    if (n >= 2) {
+      const long v = tok[1].toInt();
+      if (v < -Balance::MAX_UNITS || v > Balance::MAX_UNITS || (v == 0 && tok[1] != "0" && tok[1] != "+0" && tok[1] != "-0")) {
+        stream_.println(F("ERR usage: BAL [-16..16]  (0.25 dB units; negative lowers R, positive lowers L)"));
+        return;
+      }
+      Balance::set((int8_t)v, left_, right_);
+    }
+    stream_.print(F("OK BAL=")); stream_.print(Balance::get());
+    stream_.print(F("  (L -")); stream_.print(left_.balanceAttDb(), 2);
+    stream_.print(F(" dB, R -")); stream_.print(right_.balanceAttDb(), 2); stream_.println(F(" dB)"));
 
   } else if (cmd == "MODEL") {
     printModel();

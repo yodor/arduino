@@ -106,6 +106,7 @@ void MenuScreen::onEnter() {
     m_inInfo              = false;
     m_inEditor            = false;
     m_inColor             = false;
+    m_inSlider            = false;
     m_dirty               = true;
 }
 
@@ -120,6 +121,19 @@ void MenuScreen::clampEditorFields() {
 }
 
 void MenuScreen::moveFocus(int delta) {
+    if (m_inSlider) {
+        // Up (delta -1) moves right, Down left; stops at the ends; live.
+        const MenuSlider* sl = focusedItem().slider;
+        int16_t v = static_cast<int16_t>(m_sliderValue - delta);
+        if (v < sl->min) v = sl->min;
+        if (v > sl->max) v = sl->max;
+        if (v != m_sliderValue) {
+            m_sliderValue = v;
+            if (sl->set) sl->set(v);
+            if (!m_dirty) drawSliderBody();
+        }
+        return;
+    }
     if (m_inColor) {
         // Up (delta -1) moves right along the bar, Down left; wraps.
         int16_t old = m_colorIdx;
@@ -189,6 +203,11 @@ void MenuScreen::enter() {
     StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) return;
     if (m_inInfo) return; // read-only page -- nothing to select
+    if (m_inSlider) {
+        m_inSlider = false; // Right = keep the value (already applied)
+        m_dirty    = true;
+        return;
+    }
     if (m_inColor) {
         const MenuItem& it = frame.items[frame.focusedIdx];
         if (it.color && it.color->set) it.color->set(menuPaletteColor(static_cast<uint8_t>(m_colorIdx)));
@@ -261,6 +280,13 @@ void MenuScreen::enter() {
             clampEditorFields();
             m_dirty       = true;
             break;
+        case MenuItemType::SLIDER:
+            if (!item.slider) return;
+            m_inSlider       = true;
+            m_sliderValue    = item.slider->get ? item.slider->get() : 0;
+            m_sliderOriginal = m_sliderValue;
+            m_dirty          = true;
+            break;
         case MenuItemType::COLOR:
             if (!item.color) return;
             m_inColor  = true;
@@ -288,6 +314,13 @@ void MenuScreen::enter() {
 }
 
 bool MenuScreen::back() {
+    if (m_inSlider) {
+        const MenuSlider* sl = focusedItem().slider;
+        if (sl->set && m_sliderValue != m_sliderOriginal) sl->set(m_sliderOriginal); // Left = cancel
+        m_inSlider = false;
+        m_dirty    = true;
+        return true;
+    }
     if (m_inColor) {
         m_inColor = false; // Left = cancel, nothing set
         m_dirty   = true;
@@ -365,6 +398,7 @@ void MenuScreen::drawFull() {
     if (m_inInfo)   { drawInfo();       return; }
     if (m_inEditor) { drawEditorFull(); return; }
     if (m_inColor)  { drawColorFull();  return; }
+    if (m_inSlider) { drawSliderFull(); return; }
 
     gfx->fillScreen(COLOR_BLACK);
 
@@ -439,6 +473,16 @@ void MenuScreen::drawFull() {
             }
             case MenuItemType::ACTION:  hint = item.onAction ? "run >" : ""; break;
             case MenuItemType::COLOR:   hint = ""; break; // a swatch is drawn instead, below
+            case MenuItemType::SLIDER: {
+                static char sliderHint[32];
+                hint = "";
+                if (item.slider && item.slider->format && item.slider->get) {
+                    item.slider->format(item.slider->get(), sliderHint, sizeof(sliderHint));
+                    hint      = sliderHint;
+                    hintColor = COLOR_YELLOW;
+                }
+                break;
+            }
         }
     }
 
@@ -590,4 +634,59 @@ void MenuScreen::drawColorFocus(int16_t oldIdx) {
 
     gfx->fillRect(12, kSwatchY, SCREEN_WIDTH - 24, kSwatchH, menuPaletteColor(static_cast<uint8_t>(m_colorIdx)));
     m_colorDrawnIdx = m_colorIdx;
+}
+
+// --- SLIDER -----------------------------------------------------------------
+
+namespace {
+constexpr int16_t kSlTrackX0 = 44, kSlTrackX1 = SCREEN_WIDTH - 44; // the track's ends
+constexpr int16_t kSlTrackY  = 58, kSlTrackH = 8;
+constexpr int16_t kSlKnobW   = 10, kSlKnobH  = 28;
+constexpr int16_t kSlTop     = kSlTrackY + kSlTrackH / 2 - kSlKnobH / 2 - 2; // the redrawn band
+constexpr int16_t kSlValueY  = 92;
+constexpr uint16_t kSlTrackColor = 0x4208;
+constexpr uint16_t kSlFillColor  = 0x07FF; // cyan: from the centre to the knob
+} // namespace
+
+void MenuScreen::drawSliderFull() {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    gfx->fillScreen(COLOR_BLACK);
+    const MenuSlider* sl = focusedItem().slider;
+    drawHeader(focusedItem().label, 0, 0);
+    gfx->setTextSize(2);
+    gfx->setTextColor(kHintColor, COLOR_BLACK);
+    gfx->setCursor(14, kSlTrackY - 4);
+    gfx->print(sl->leftLabel ? sl->leftLabel : "");
+    gfx->setCursor(SCREEN_WIDTH - 14 - 12 * static_cast<int16_t>(strlen(sl->rightLabel ? sl->rightLabel : "")), kSlTrackY - 4);
+    gfx->print(sl->rightLabel ? sl->rightLabel : "");
+    drawCentered(gfx, "UP/DOWN adjust   RIGHT keep   LEFT cancel", 1, SCREEN_HEIGHT - 10, kHintColor);
+    drawSliderBody();
+}
+
+// The track with a centre mark, the part between the centre and the knob
+// filled, the knob, and the readout below.
+void MenuScreen::drawSliderBody() {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    const MenuSlider* sl = focusedItem().slider;
+    int16_t range = sl->max - sl->min;
+    if (range <= 0) range = 1;
+    auto xOf = [&](int16_t v) {
+        return static_cast<int16_t>(kSlTrackX0 + static_cast<int32_t>(v - sl->min) * (kSlTrackX1 - kSlTrackX0) / range);
+    };
+    int16_t centreV = (sl->min <= 0 && sl->max >= 0) ? 0 : sl->min;
+    int16_t xc = xOf(centreV), xk = xOf(m_sliderValue);
+
+    gfx->fillRect(kSlTrackX0 - kSlKnobW, kSlTop, (kSlTrackX1 - kSlTrackX0) + 2 * kSlKnobW, kSlKnobH + 4, COLOR_BLACK);
+    gfx->fillRect(kSlTrackX0, kSlTrackY, kSlTrackX1 - kSlTrackX0, kSlTrackH, kSlTrackColor);
+    if (xk != xc) {
+        int16_t a = xk < xc ? xk : xc, b = xk < xc ? xc : xk;
+        gfx->fillRect(a, kSlTrackY, b - a, kSlTrackH, kSlFillColor);
+    }
+    gfx->fillRect(xc - 1, kSlTop, 2, kSlKnobH + 4, COLOR_WHITE);           // centre mark
+    gfx->fillRect(xk - kSlKnobW / 2, kSlTrackY + kSlTrackH / 2 - kSlKnobH / 2, kSlKnobW, kSlKnobH, COLOR_WHITE); // knob
+
+    char text[32] = "";
+    if (sl->format) sl->format(m_sliderValue, text, sizeof(text));
+    gfx->fillRect(0, kSlValueY, SCREEN_WIDTH, 24, COLOR_BLACK);
+    drawCentered(gfx, text, 3, kSlValueY, COLOR_WHITE);
 }

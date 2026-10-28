@@ -249,6 +249,13 @@ public:
     return fixed;
   }
 
+  // Balance: this channel plays attDb below its step (between steps; see Balance.hpp). 0 = the
+  // table exactly. Applied at once (or to what MUTE OFF restores, while muted).
+  void setBalanceAttDb(float attDb);
+  float balanceAttDb() const { return balanceAttDb_; }
+  // The duties step `step` plays at, balance included.
+  void stepDutiesFine(uint8_t step, uint32_t &ser, uint32_t &shu) const;
+
   void setStepSeriesFine(uint8_t i, uint32_t fine) {
     if (!hasLut() || i >= numSteps()) return;
     cal_.setLutStepDuty(i, fine, lut().step(i).shuntFine);
@@ -362,4 +369,5 @@ private:
 
   // One reading of the series (wantSeries) or shunt resistance; false if unreadable.
   bool readElement(bool wantSeries, float &ohms);
+  float balanceAttDb_ = 0.0f;
 };

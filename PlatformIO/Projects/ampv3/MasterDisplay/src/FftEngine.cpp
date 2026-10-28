@@ -4,18 +4,31 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace {
+// The CMSIS-DSP real-FFT setup for FFT_SIZE -- chosen at compile time (a
+// template, so the other sizes' calls are never instantiated), so only that
+// size's twiddle and bit-reversal tables end up in flash.
+template <size_t N>
+arm_status initRfft(arm_rfft_fast_instance_f32* s) {
+    if constexpr (N == 4096)      return arm_rfft_fast_init_4096_f32(s);
+    else if constexpr (N == 2048) return arm_rfft_fast_init_2048_f32(s);
+    else if constexpr (N == 1024) return arm_rfft_fast_init_1024_f32(s);
+    else if constexpr (N == 512)  return arm_rfft_fast_init_512_f32(s);
+    else {
+        static_assert(N == 256, "FFT_SIZE must be 256, 512, 1024, 2048 or 4096");
+        return arm_rfft_fast_init_256_f32(s);
+    }
+}
+} // namespace
+
 FftEngine::FftEngine(size_t fftSize)
     : m_fftSize(fftSize)
     , m_halfWindowThreshold(fftSize / 2)
 {
-    m_fftCfgL  = kiss_fftr_alloc(static_cast<int>(m_fftSize), 0, nullptr, nullptr);
-    m_fftInL   = static_cast<kiss_fft_scalar*>(malloc(sizeof(kiss_fft_scalar) * m_fftSize));
-    m_fftOutL  = static_cast<kiss_fft_cpx*>(malloc(sizeof(kiss_fft_cpx) * (m_fftSize / 2 + 1)));
+    m_fftInL   = static_cast<float*>(malloc(sizeof(float) * m_fftSize));
+    m_fftInR   = static_cast<float*>(malloc(sizeof(float) * m_fftSize));
+    m_fftOut   = static_cast<float*>(malloc(sizeof(float) * m_fftSize));
     m_fftBinsL = static_cast<float*>(malloc(sizeof(float) * (m_fftSize / 2)));
-
-    m_fftCfgR  = kiss_fftr_alloc(static_cast<int>(m_fftSize), 0, nullptr, nullptr);
-    m_fftInR   = static_cast<kiss_fft_scalar*>(malloc(sizeof(kiss_fft_scalar) * m_fftSize));
-    m_fftOutR  = static_cast<kiss_fft_cpx*>(malloc(sizeof(kiss_fft_cpx) * (m_fftSize / 2 + 1)));
     m_fftBinsR = static_cast<float*>(malloc(sizeof(float) * (m_fftSize / 2)));
 
     m_hanningTable = static_cast<float*>(malloc(sizeof(float) * m_fftSize));
@@ -26,18 +39,46 @@ FftEngine::FftEngine(size_t fftSize)
     m_stagingR = static_cast<uint16_t*>(malloc(sizeof(uint16_t) * m_halfWindowThreshold));
 
     initHanningWindow();
+
+    // Only the configured size's init is called, so only its tables are
+    // linked (CMSIS-DSP has one init per size; the generic one would pull in
+    // every size's tables).
+    if (m_fftSize == FFT_SIZE) {
+        m_rfftOk = (initRfft<FFT_SIZE>(&m_rfft) == ARM_MATH_SUCCESS);
+    }
+    if (!m_rfftOk) {
+        Serial.printf("[FFT] CMSIS-DSP real FFT setup failed for %u points\n", static_cast<unsigned>(m_fftSize));
+        return;
+    }
+
+    // Copy the FFT's constant tables (twiddles and bit reversal, ~20 KB at
+    // 2048 points) into RAM and point the instance at the copies. In flash
+    // they'd be read through the 16 KB XIP cache that core 1's code also
+    // runs through -- streaming more than the cache holds on every FFT costs
+    // misses. (If RAM ran short they'd simply stay in flash.)
+    size_t cfftLen = m_rfft.Sint.fftLen;
+    m_ramTwRfft = static_cast<float*>(malloc(sizeof(float) * m_fftSize));
+    m_ramTwCfft = static_cast<float*>(malloc(sizeof(float) * 2 * cfftLen));
+    m_ramBitRev = static_cast<uint16_t*>(malloc(sizeof(uint16_t) * m_rfft.Sint.bitRevLength));
+    if (m_ramTwRfft && m_ramTwCfft && m_ramBitRev) {
+        memcpy(m_ramTwRfft, m_rfft.pTwiddleRFFT,      sizeof(float) * m_fftSize);
+        memcpy(m_ramTwCfft, m_rfft.Sint.pTwiddle,     sizeof(float) * 2 * cfftLen);
+        memcpy(m_ramBitRev, m_rfft.Sint.pBitRevTable, sizeof(uint16_t) * m_rfft.Sint.bitRevLength);
+        m_rfft.pTwiddleRFFT      = m_ramTwRfft;
+        m_rfft.Sint.pTwiddle     = m_ramTwCfft;
+        m_rfft.Sint.pBitRevTable = m_ramBitRev;
+    }
 }
 
 FftEngine::~FftEngine() {
-    if (m_fftCfgL)  kiss_fftr_free(m_fftCfgL);
-    if (m_fftInL)   free(m_fftInL);
-    if (m_fftOutL)  free(m_fftOutL);
-    if (m_fftBinsL) free(m_fftBinsL);
-
-    if (m_fftCfgR)  kiss_fftr_free(m_fftCfgR);
-    if (m_fftInR)   free(m_fftInR);
-    if (m_fftOutR)  free(m_fftOutR);
-    if (m_fftBinsR) free(m_fftBinsR);
+    if (m_fftInL)    free(m_fftInL);
+    if (m_fftInR)    free(m_fftInR);
+    if (m_fftOut)    free(m_fftOut);
+    if (m_fftBinsL)  free(m_fftBinsL);
+    if (m_fftBinsR)  free(m_fftBinsR);
+    if (m_ramTwRfft) free(m_ramTwRfft);
+    if (m_ramTwCfft) free(m_ramTwCfft);
+    if (m_ramBitRev) free(m_ramBitRev);
 
     if (m_hanningTable) free(m_hanningTable);
     if (m_slideL) free(m_slideL);
@@ -97,27 +138,40 @@ void FftEngine::runFft() {
         m_fftInR[i] = (sampleR / 2048.0f) * m_hanningTable[i];
     }
 
-    uint32_t fftStartUs = micros();
-    kiss_fftr(m_fftCfgL, m_fftInL, m_fftOutL);
-    kiss_fftr(m_fftCfgR, m_fftInR, m_fftOutR);
-    m_lastFftUs = micros() - fftStartUs;
+    // lastFftDurationUs() times the two transforms only (as before the
+    // switch from kissfft, so the numbers compare); each channel's
+    // magnitudes are taken from the shared output buffer before the next
+    // transform overwrites it.
+    //
+    // Output format of arm_rfft_fast_f32: out[0] = bin 0 (DC, real),
+    // out[1] = the Nyquist bin (real), then re/im pairs for bins 1..N/2-1 --
+    // the same unnormalised transform as before, so the scaling is unchanged.
+    constexpr float kHannCoherentGain = 0.5f;
+    const float scale = 2.0f / (static_cast<float>(m_fftSize) * kHannCoherentGain);
+    auto magnitudes = [&](float* bins) {
+        bins[0] = fabsf(m_fftOut[0]) * scale;
+        for (size_t k = 1; k < m_fftSize / 2; ++k) {
+            float re = m_fftOut[2 * k], im = m_fftOut[2 * k + 1];
+            bins[k] = sqrtf(re * re + im * im) * scale;
+        }
+    };
+
+    if (m_rfftOk) {
+        uint32_t t0 = micros();
+        arm_rfft_fast_f32(&m_rfft, m_fftInL, m_fftOut, 0);
+        uint32_t fftUs = micros() - t0;
+        magnitudes(m_fftBinsL);
+        t0 = micros();
+        arm_rfft_fast_f32(&m_rfft, m_fftInR, m_fftOut, 0);
+        fftUs += micros() - t0;
+        magnitudes(m_fftBinsR);
+        m_lastFftUs = fftUs;
+    } else {
+        memset(m_fftBinsL, 0, sizeof(float) * (m_fftSize / 2));
+        memset(m_fftBinsR, 0, sizeof(float) * (m_fftSize / 2));
+    }
 
     uint32_t nowUs = micros();
     if (m_lastRunUs != 0) m_refreshHz = 1000000.0f / static_cast<float>(nowUs - m_lastRunUs);
     m_lastRunUs = nowUs;
-
-    // 2/N standard single-sided amplitude scale, corrected for the Hann
-    // window's coherent gain (0.5) -- without this correction a genuine
-    // full-scale input reads back ~6dB low and never quite reaches 0dBFS.
-    constexpr float kHannCoherentGain = 0.5f;
-    const float scale = 2.0f / (static_cast<float>(m_fftSize) * kHannCoherentGain);
-    for (size_t i = 0; i < m_fftSize / 2; ++i) {
-        float realL = m_fftOutL[i].r;
-        float imagL = m_fftOutL[i].i;
-        m_fftBinsL[i] = sqrtf(realL * realL + imagL * imagL) * scale;
-
-        float realR = m_fftOutR[i].r;
-        float imagR = m_fftOutR[i].i;
-        m_fftBinsR[i] = sqrtf(realR * realR + imagR * imagR) * scale;
-    }
 }

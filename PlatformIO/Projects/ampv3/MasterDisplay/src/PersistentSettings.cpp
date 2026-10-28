@@ -1,4 +1,5 @@
 #include "PersistentSettings.hpp"
+#include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
 #include "AudioEngine.hpp"
@@ -6,190 +7,131 @@
 #include "WaveformPipeline.hpp"
 #include "Renderer.hpp"
 #include "BarPhysics.hpp"
+#include "Version.hpp"
 #include "hardware/flash.h"
-#include "pico/platform.h"
+#include <LittleFS.h>
 #include <cstring>
+#include <cstdlib>
+#include <cctype>
 
 namespace {
 
-constexpr uint32_t kMagic   = 0x53504B31; // arbitrary sentinel ("SPK1"), confirms this flash region was ever written by us
-constexpr uint8_t  kVersion = 12;         // bump whenever PersistentData's layout changes -- 5: clock options, 6: standby display,
-                                           // 7: + volume step (dropped again), 8: = the v6 layout, 9: clock mode + color,
-                                           // auto standby, 10: auto standby silence level, 11: Info screen volume display,
-                                           // 12: clock colour source (theme / custom). 4-11 are still read, see loadAndApply().
+const char* const kPath    = "/settings.txt";
+const char* const kTmpPath = "/settings.tmp";
 
-// Last flash sector -- same convention the Arduino-Pico EEPROM library
-// itself uses, chosen so this doesn't collide with program flash or a
-// filesystem region if one is ever added later. Offset is flash-relative
-// (as flash_range_erase()/flash_range_program() expect), not an absolute
-// memory address.
-constexpr uint32_t kFlashOffset = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;
+// --- Enum <-> name ---------------------------------------------------------
+// Names, in enum order. Stored by name, so reordering an enum in code can
+// never change what a saved setting means.
+const char* const kChannelModes[]   = { "STEREO", "MONO" };
+const char* const kStereoLayouts[]  = { "SIDE_BY_SIDE", "TOP_BOTTOM" };
+const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT" };
+const char* const kBandLayouts[]    = { "DOUBLING", "FIXED_BANDS", "FULL" };
+const char* const kEnergyModes[]    = { "PEAK", "QUADRATURE_SUM" };
+const char* const kWindowModes[]    = { "OSCILLOSCOPE", "TRACK_PREVIEW" };
+const char* const kPeakDecays[]     = { "SLOW", "NORMAL", "FAST", "OFF" };
+const char* const kStandbyDisplays[] = { "CLOCK", "DIM_CLOCK", "OFF" };
+const char* const kClockModes[]     = { "CLOCK_ONLY", "SECONDS", "DATE" };
+const char* const kVolumeDisplays[] = { "DB", "STEPS" };
+const char* const kColorSources[]   = { "CUSTOM", "THEME" };
+
+template <size_t N>
+int nameIndex(const char* const (&names)[N], const char* value) {
+    for (size_t i = 0; i < N; ++i) if (!strcasecmp(names[i], value)) return static_cast<int>(i);
+    return -1;
+}
+template <size_t N>
+const char* nameOf(const char* const (&names)[N], unsigned i) { return i < N ? names[i] : "?"; }
+
+bool parseInt(const char* v, long lo, long hi, long& out) {
+    char* end = nullptr;
+    long x = strtol(v, &end, 0);
+    if (end == v || *end != '\0' || x < lo || x > hi) return false;
+    out = x;
+    return true;
+}
+
+// --- The keys ---------------------------------------------------------------
+// One entry per setting: how to write its current value, and how to apply a
+// value read from the file (false = not valid; the default stays).
+struct Key {
+    const char* name;
+    void (*write)(char* out, size_t n);
+    bool (*read)(const char* v);
+};
+
+#define ENUM_KEY(keyName, names, getExpr, setStmt)                                           \
+    { keyName,                                                                               \
+      [](char* o, size_t n) { snprintf(o, n, "%s", nameOf(names, static_cast<unsigned>(getExpr))); }, \
+      [](const char* v) { int i = nameIndex(names, v); if (i < 0) return false; setStmt; return true; } }
+#define BOOL_KEY(keyName, getExpr, setStmt)                                                  \
+    { keyName,                                                                               \
+      [](char* o, size_t n) { snprintf(o, n, "%d", (getExpr) ? 1 : 0); },                    \
+      [](const char* v) { long x; if (!parseInt(v, 0, 1, x)) return false; bool b = x != 0; setStmt; return true; } }
+#define INT_KEY(keyName, lo, hi, getExpr, setStmt)                                           \
+    { keyName,                                                                               \
+      [](char* o, size_t n) { snprintf(o, n, "%ld", static_cast<long>(getExpr)); },          \
+      [](const char* v) { long x; if (!parseInt(v, lo, hi, x)) return false; setStmt; return true; } }
+
+DisplaySettings& ds() { return DisplaySettings::instance(); }
+
+const Key kKeys[] = {
+    ENUM_KEY("theme",           kThemes,         ColorTheme::instance().getPreset(),
+             ColorTheme::instance().setPreset(static_cast<ColorPreset>(i))),
+    INT_KEY ("brightness",      1, 100,          ds().getBrightnessPercent(),
+             { ds().setBrightnessPercent(static_cast<uint8_t>(x)); Renderer::instance().setBacklightPercent(static_cast<uint8_t>(x)); }),
+    ENUM_KEY("channel_mode",    kChannelModes,   ds().getChannelMode(),
+             ds().setChannelMode(static_cast<ChannelMode>(i))),
+    ENUM_KEY("stereo_layout",   kStereoLayouts,  ds().getStereoLayout(),
+             ds().setStereoLayout(static_cast<StereoLayout>(i))),
+    BOOL_KEY("mirror_left",     ds().getMirrorLeftBars(), ds().setMirrorLeftBars(b)),
+    ENUM_KEY("spectrum_bands",  kBandLayouts,    AudioEngine::instance().getSpectrumBandLayoutMode(),
+             AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(i))),
+    ENUM_KEY("spectrum_energy", kEnergyModes,    AudioEngine::instance().getSpectrumEnergyMode(),
+             AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(i))),
+    ENUM_KEY("waveform_window", kWindowModes,    AudioEngine::instance().getWaveformWindowMode(),
+             AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(i))),
+    BOOL_KEY("peaks",           ds().getPeaksEnabled(), ds().setPeaksEnabled(b)),
+    ENUM_KEY("peak_decay",      kPeakDecays,     BarPhysics::instance().getPeakDecaySpeed(),
+             BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(i))),
+    ENUM_KEY("volume_display",  kVolumeDisplays, ds().getVolumeDisplay(),
+             ds().setVolumeDisplay(static_cast<VolumeDisplay>(i))),
+    INT_KEY ("balance",         -16, 16,         VolumeControl::instance().balance(),
+             VolumeControl::instance().restoreBalance(static_cast<int8_t>(x))),
+    ENUM_KEY("clock_mode",      kClockModes,     ds().getClockMode(),
+             ds().setClockMode(static_cast<ClockMode>(i))),
+    BOOL_KEY("clock_24h",       ds().getClock24h(), ds().setClock24h(b)),
+    ENUM_KEY("clock_color_source", kColorSources, ds().getClockFollowTheme() ? 1 : 0,
+             ds().setClockFollowTheme(i == 1)),
+    { "clock_color",   // RGB565 as hex, e.g. 07E0 (green)
+      [](char* o, size_t n) { snprintf(o, n, "%04X", static_cast<unsigned>(ds().getClockColor())); },
+      [](const char* v) { char* e = nullptr; unsigned long c = strtoul(v, &e, 16);
+                          if (e == v || *e != '\0' || c > 0xFFFF) return false;
+                          ds().setClockColor(static_cast<uint16_t>(c)); return true; } },
+    ENUM_KEY("standby_display", kStandbyDisplays, ds().getStandbyDisplay(),
+             ds().setStandbyDisplay(static_cast<StandbyDisplay>(i))),
+    INT_KEY ("auto_standby_min", 0, 60,          ds().getAutoStandbyMinutes(),
+             ds().setAutoStandbyMinutes(static_cast<uint8_t>(x))),
+    INT_KEY ("silence_level",   1, 2047,         ds().getAutoStandbyThreshold(),
+             ds().setAutoStandbyThreshold(static_cast<uint16_t>(x))),
+};
+
+char* trim(char* s) {
+    while (isspace(static_cast<unsigned char>(*s))) ++s;
+    char* e = s + strlen(s);
+    while (e > s && isspace(static_cast<unsigned char>(e[-1]))) --e;
+    *e = '\0';
+    return s;
+}
+
+// --- The old binary settings, read once for the import -----------------------
+// Layout v13 in the last flash sector (the Arduino-Pico EEPROM sector,
+// outside the LittleFS area), exactly as the previous firmware wrote it.
+constexpr uint32_t kLegacyMagic   = 0x53504B31;
+constexpr uint8_t  kLegacyVersion = 13;
+constexpr uint32_t kLegacyOffset  = PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE;
 
 #pragma pack(push, 1)
-// Version 4 layout, kept so an older save is migrated instead of discarded.
-struct PersistentDataV4 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  checksum;
-};
-
-// Version 5 layout (v4 + the clock options), likewise kept for migration.
-struct PersistentDataV5 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  checksum;
-};
-
-// Version 6 layout (v5 + standby display), likewise kept for migration.
-struct PersistentDataV6 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  standbyDisplay;
-    uint8_t  checksum;
-};
-
-// Version 7 layout: v6 + a volume step that is no longer used (the volume
-// is the daughter's alone) -- kept only so such a save is still read.
-struct PersistentDataV7 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  standbyDisplay;
-    uint8_t  volumeStep;
-    uint8_t  checksum;
-};
-
-// Version 9 layout (clock mode/color, auto standby minutes), kept for migration.
-struct PersistentDataV9 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  standbyDisplay;
-    uint8_t  clockMode;        // ClockMode (clockShowDate/clockShowSeconds above are no longer used)
-    uint16_t clockColor;       // RGB565
-    uint8_t  autoStandbyMin;   // 0 = off
-    uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
-};
-
-// Version 10 layout (+ auto standby silence level), kept for migration.
-struct PersistentDataV10 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  standbyDisplay;
-    uint8_t  clockMode;        // ClockMode (clockShowDate/clockShowSeconds above are no longer used)
-    uint16_t clockColor;       // RGB565
-    uint8_t  autoStandbyMin;   // 0 = off
-    uint16_t autoStandbyThreshold; // input peak, ADC counts
-    uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
-};
-
-// Version 11 layout (+ Info screen volume display), kept for migration.
-struct PersistentDataV11 {
-    uint32_t magic;
-    uint8_t  version;
-    uint8_t  channelMode;
-    uint8_t  startingScreenIndex;
-    uint8_t  stereoLayout;
-    uint8_t  mirrorLeftBars;
-    uint8_t  colorPreset;
-    uint8_t  bandLayoutMode;
-    uint8_t  energyMode;
-    uint8_t  waveformWindowMode;
-    uint8_t  brightnessPercent;
-    uint8_t  peaksEnabled;
-    uint8_t  peakDecaySpeed;
-    uint8_t  clockShowDate;
-    uint8_t  clockShowSeconds;
-    uint8_t  clock24h;
-    uint8_t  standbyDisplay;
-    uint8_t  clockMode;        // ClockMode (clockShowDate/clockShowSeconds above are no longer used)
-    uint16_t clockColor;       // RGB565
-    uint8_t  autoStandbyMin;   // 0 = off
-    uint16_t autoStandbyThreshold; // input peak, ADC counts
-    uint8_t  volumeDisplay;        // VolumeDisplay (Info screen: dB or steps)
-    uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
-};
-
-struct PersistentData {
+struct LegacyV13 {
     uint32_t magic;
     uint8_t  version;
     uint8_t  channelMode;
@@ -213,56 +155,17 @@ struct PersistentData {
     uint16_t autoStandbyThreshold; // input peak, ADC counts
     uint8_t  volumeDisplay;        // VolumeDisplay (Info screen: dB or steps)
     uint8_t  clockFollowTheme;     // 1 = clock colour from the theme, 0 = clockColor
+    int8_t   balance;              // -16..+16 (0.25 dB, positive lowers the left) -- sent to the daughter at its power-up
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)
 
-// Additive checksum over every byte but the last (the checksum field itself).
-template <typename T>
-uint8_t computeChecksum(const T& d) {
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&d);
+uint8_t legacyChecksum(const LegacyV13& d) {
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(&d);
     uint8_t sum = 0;
-    for (size_t i = 0; i < sizeof(T) - 1; ++i) sum += bytes[i];
+    for (size_t i = 0; i < offsetof(LegacyV13, checksum); ++i) sum = static_cast<uint8_t>(sum + p[i]);
     return sum;
 }
-
-template <typename T>
-const T* storedAs() {
-    return reinterpret_cast<const T*>(XIP_BASE + kFlashOffset);
-}
-
-// Fields every layout version shares (v4 and v5 agree on all of these).
-template <typename T>
-void applyCommon(const T* stored) {
-    DisplaySettings::instance().setChannelMode(static_cast<ChannelMode>(stored->channelMode));
-    DisplaySettings::instance().setStereoLayout(static_cast<StereoLayout>(stored->stereoLayout));
-    DisplaySettings::instance().setMirrorLeftBars(stored->mirrorLeftBars != 0);
-    ColorTheme::instance().setPreset(static_cast<ColorPreset>(stored->colorPreset));
-    AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(stored->bandLayoutMode));
-    AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(stored->energyMode));
-    AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(stored->waveformWindowMode));
-    DisplaySettings::instance().setBrightnessPercent(stored->brightnessPercent);
-    Renderer::instance().setBacklightPercent(stored->brightnessPercent); // Renderer::init() already ran with a temporary default -- this pushes the real saved value to the pin
-    DisplaySettings::instance().setPeaksEnabled(stored->peaksEnabled != 0);
-    BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(stored->peakDecaySpeed));
-}
-
-// The clock options (v5 and v6).
-template <typename T>
-void applyClock(const T* stored) {
-    // Layouts 5-8 had two switches; Seconds won over Date if both were on.
-    DisplaySettings::instance().setClockMode(stored->clockShowSeconds ? ClockMode::SECONDS
-                                             : stored->clockShowDate  ? ClockMode::DATE
-                                                                      : ClockMode::CLOCK_ONLY);
-    DisplaySettings::instance().setClock24h(stored->clock24h != 0);
-}
-
-// The cross-core interlock's two flags. File-local since both sides that
-// touch them (commitToFlash() below and checkAndPauseForFlashWrite())
-// live in this one translation unit -- AudioEngine only ever calls the
-// static method, never these directly.
-volatile bool g_core0WantsFlashPause = false;
-volatile bool g_core1Paused          = false;
 
 } // namespace
 
@@ -271,231 +174,135 @@ PersistentSettings& PersistentSettings::instance() {
     return inst;
 }
 
+void PersistentSettings::applyLine(char* line, int lineNo) {
+    char* hash = strchr(line, '#');
+    if (hash) *hash = '\0';
+    char* s = trim(line);
+    if (!*s) return;
+    char* eq = strchr(s, '=');
+    if (!eq) {
+        Serial.printf("[Settings] line %d ignored (no '=')\n", lineNo);
+        return;
+    }
+    *eq = '\0';
+    char* key = trim(s);
+    char* val = trim(eq + 1);
+    for (const Key& k : kKeys) {
+        if (strcasecmp(k.name, key)) continue;
+        if (!k.read(val)) Serial.printf("[Settings] %s=%s: not a valid value -- default kept\n", key, val);
+        return;
+    }
+    Serial.printf("[Settings] unknown key '%s' ignored\n", key);
+}
+
 void PersistentSettings::loadAndApply() {
-    const PersistentData* stored = storedAs<PersistentData>();
-
-    if (stored->magic != kMagic) {
-        Serial.println("[Settings] No saved settings found (fresh device) -- using defaults");
+    m_mounted = LittleFS.begin();
+    if (!m_mounted) {
+        Serial.println("[Settings] LittleFS not available -- defaults in use, nothing will be saved. "
+                       "Choose a Flash Size with an FS partition (Tools menu).");
         return;
     }
 
-    if (stored->version == kVersion) {
-        if (computeChecksum(*stored) != stored->checksum) {
-            Serial.println("[Settings] Saved settings failed checksum -- using defaults");
-            return;
+    File f = LittleFS.open(kPath, "r");
+    if (!f) {
+        if (importLegacy()) {
+            Serial.println("[Settings] Imported the old binary settings (v13) into " "/settings.txt");
+            save();
+        } else {
+            Serial.println("[Settings] No settings file yet -- defaults in use");
         }
-        applyCommon(stored);
-        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(stored->clockMode));
-        DisplaySettings::instance().setClock24h(stored->clock24h != 0);
-        DisplaySettings::instance().setClockColor(stored->clockColor);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(stored->standbyDisplay));
-        DisplaySettings::instance().setAutoStandbyMinutes(stored->autoStandbyMin <= 60 ? stored->autoStandbyMin : 0);
-        if (stored->autoStandbyThreshold >= 1 && stored->autoStandbyThreshold <= 2047) {
-            DisplaySettings::instance().setAutoStandbyThreshold(stored->autoStandbyThreshold);
-        }
-        DisplaySettings::instance().setVolumeDisplay(stored->volumeDisplay == 1 ? VolumeDisplay::STEPS : VolumeDisplay::DB);
-        DisplaySettings::instance().setClockFollowTheme(stored->clockFollowTheme != 0);
-        Serial.println("[Settings] Loaded saved settings from flash");
         return;
     }
 
-    if (stored->version == 11) {
-        // Previous layout: no colour source yet -- keep the custom colour
-        // the user had (so the clock looks exactly as before).
-        const PersistentDataV11* old = storedAs<PersistentDataV11>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v11) failed checksum -- using defaults");
-            return;
+    char line[128];
+    size_t len = 0;
+    int lineNo = 0, applied = 0;
+    while (true) {
+        int c = f.read();
+        if (c < 0 || c == '\n') {
+            line[len] = '\0';
+            ++lineNo;
+            if (len) { applyLine(line, lineNo); ++applied; }
+            len = 0;
+            if (c < 0) break;
+        } else if (c != '\r' && len < sizeof(line) - 1) {
+            line[len++] = static_cast<char>(c);
         }
-        applyCommon(old);
-        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(old->clockMode));
-        DisplaySettings::instance().setClock24h(old->clock24h != 0);
-        DisplaySettings::instance().setClockColor(old->clockColor);
-        DisplaySettings::instance().setClockFollowTheme(false);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
-        DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
-        if (old->autoStandbyThreshold >= 1 && old->autoStandbyThreshold <= 2047) {
-            DisplaySettings::instance().setAutoStandbyThreshold(old->autoStandbyThreshold);
-        }
-        DisplaySettings::instance().setVolumeDisplay(old->volumeDisplay == 1 ? VolumeDisplay::STEPS : VolumeDisplay::DB);
-        Serial.println("[Settings] Loaded v11 settings from flash (clock keeps its custom colour)");
-        return;
     }
+    f.close();
+    Serial.printf("[Settings] Loaded %s (%d lines)\n", kPath, lineNo);
+    (void)applied;
+}
 
-    if (stored->version == 10) {
-        // Previous layout: everything but the volume display (dB, the default).
-        const PersistentDataV10* old = storedAs<PersistentDataV10>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v10) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(old->clockMode));
-        DisplaySettings::instance().setClock24h(old->clock24h != 0);
-        DisplaySettings::instance().setClockColor(old->clockColor);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
-        DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
-        if (old->autoStandbyThreshold >= 1 && old->autoStandbyThreshold <= 2047) {
-            DisplaySettings::instance().setAutoStandbyThreshold(old->autoStandbyThreshold);
-        }
-        DisplaySettings::instance().setClockFollowTheme(false); // keeps the custom colour it had
-        Serial.println("[Settings] Loaded v10 settings from flash (volume display at default)");
-        return;
-    }
+bool PersistentSettings::importLegacy() {
+    const LegacyV13* d = reinterpret_cast<const LegacyV13*>(XIP_BASE + kLegacyOffset);
+    if (d->magic != kLegacyMagic || d->version != kLegacyVersion || legacyChecksum(*d) != d->checksum) return false;
 
-    if (stored->version == 9) {
-        // Previous layout: everything but the silence level (default).
-        const PersistentDataV9* old = storedAs<PersistentDataV9>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v9) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        DisplaySettings::instance().setClockMode(static_cast<ClockMode>(old->clockMode));
-        DisplaySettings::instance().setClock24h(old->clock24h != 0);
-        DisplaySettings::instance().setClockColor(old->clockColor);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
-        DisplaySettings::instance().setAutoStandbyMinutes(old->autoStandbyMin <= 60 ? old->autoStandbyMin : 0);
-        DisplaySettings::instance().setClockFollowTheme(false); // keeps the custom colour it had
-        Serial.println("[Settings] Loaded v9 settings from flash (silence level at default)");
-        return;
-    }
-
-    if (stored->version == 7) {
-        // Short-lived layout with a volume step -- everything else is used.
-        const PersistentDataV7* old = storedAs<PersistentDataV7>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v7) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        applyClock(old);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
-        Serial.println("[Settings] Loaded v7 settings from flash");
-        return;
-    }
-
-    if (stored->version == 6 || stored->version == 8) {
-        // The v6 layout (v8 used it too): no clock color / auto standby yet.
-        const PersistentDataV6* old = storedAs<PersistentDataV6>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v6) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        applyClock(old);
-        DisplaySettings::instance().setStandbyDisplay(static_cast<StandbyDisplay>(old->standbyDisplay));
-        Serial.printf("[Settings] Loaded v%u settings from flash (clock color, auto standby at defaults)\n", stored->version);
-        return;
-    }
-
-    if (stored->version == 5) {
-        // Previous layout: everything but the standby display, which starts
-        // at its default; the next save writes v6.
-        const PersistentDataV5* old = storedAs<PersistentDataV5>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v5) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        applyClock(old);
-        Serial.println("[Settings] Loaded v5 settings from flash (standby display at default)");
-        return;
-    }
-
-    if (stored->version == 4) {
-        // Previous layout: everything but the clock options. Keep it; the
-        // clock options start at their defaults, and the next save writes v5.
-        const PersistentDataV4* old = storedAs<PersistentDataV4>();
-        if (computeChecksum(*old) != old->checksum) {
-            Serial.println("[Settings] Saved settings (v4) failed checksum -- using defaults");
-            return;
-        }
-        applyCommon(old);
-        Serial.println("[Settings] Loaded v4 settings from flash (clock options at defaults)");
-        return;
-    }
-
-    Serial.println("[Settings] Saved settings are from an incompatible firmware version -- using defaults");
+    DisplaySettings& s = ds();
+    s.setChannelMode(static_cast<ChannelMode>(d->channelMode));
+    s.setStereoLayout(static_cast<StereoLayout>(d->stereoLayout));
+    s.setMirrorLeftBars(d->mirrorLeftBars != 0);
+    ColorTheme::instance().setPreset(static_cast<ColorPreset>(d->colorPreset));
+    AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(d->bandLayoutMode));
+    AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(d->energyMode));
+    AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(d->waveformWindowMode));
+    s.setBrightnessPercent(d->brightnessPercent);
+    Renderer::instance().setBacklightPercent(d->brightnessPercent);
+    s.setPeaksEnabled(d->peaksEnabled != 0);
+    BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(d->peakDecaySpeed));
+    s.setClock24h(d->clock24h != 0);
+    s.setStandbyDisplay(static_cast<StandbyDisplay>(d->standbyDisplay));
+    s.setClockMode(static_cast<ClockMode>(d->clockMode));
+    s.setClockColor(d->clockColor);
+    s.setAutoStandbyMinutes(d->autoStandbyMin <= 60 ? d->autoStandbyMin : 0);
+    if (d->autoStandbyThreshold >= 1 && d->autoStandbyThreshold <= 2047) s.setAutoStandbyThreshold(d->autoStandbyThreshold);
+    s.setVolumeDisplay(d->volumeDisplay == 1 ? VolumeDisplay::STEPS : VolumeDisplay::DB);
+    s.setClockFollowTheme(d->clockFollowTheme != 0);
+    if (d->balance >= -16 && d->balance <= 16) VolumeControl::instance().restoreBalance(d->balance);
+    return true;
 }
 
 void PersistentSettings::saveIfDirty() {
     if (!m_dirty) return;
-    commitToFlash();
+    save();
+}
+
+// Written to a temporary file, then renamed over the real one: a power cut
+// mid-write leaves the previous file intact.
+void PersistentSettings::save() {
     m_dirty = false;
+    if (!m_mounted) return;
+    File f = LittleFS.open(kTmpPath, "w");
+    if (!f) {
+        Serial.println("[Settings] Could not write the settings file");
+        return;
+    }
+    f.print("# " FW_NAME " settings -- key=value; unknown keys are ignored, missing ones use defaults\n");
+    f.print("# saved by firmware " FW_VERSION "\n");
+    char value[24], line[64];
+    for (const Key& k : kKeys) {
+        k.write(value, sizeof(value));
+        snprintf(line, sizeof(line), "%s=%s\n", k.name, value);
+        f.print(line);
+    }
+    f.close();
+    if (!LittleFS.rename(kTmpPath, kPath)) {
+        Serial.println("[Settings] Could not replace the settings file");
+        return;
+    }
+    Serial.println("[Settings] Saved");
 }
 
-void PersistentSettings::commitToFlash() {
-    PersistentData data{};
-    data.magic               = kMagic;
-    data.version             = kVersion;
-    data.channelMode         = static_cast<uint8_t>(DisplaySettings::instance().getChannelMode());
-    data.startingScreenIndex = 0;   // unused since the unit always boots on the Clock (kept so the layout stays put)
-    data.stereoLayout        = static_cast<uint8_t>(DisplaySettings::instance().getStereoLayout());
-    data.mirrorLeftBars      = DisplaySettings::instance().getMirrorLeftBars() ? 1 : 0;
-    data.colorPreset         = static_cast<uint8_t>(ColorTheme::instance().getPreset());
-    data.bandLayoutMode      = static_cast<uint8_t>(AudioEngine::instance().getSpectrumBandLayoutMode());
-    data.energyMode          = static_cast<uint8_t>(AudioEngine::instance().getSpectrumEnergyMode());
-    data.waveformWindowMode  = static_cast<uint8_t>(AudioEngine::instance().getWaveformWindowMode());
-    data.brightnessPercent   = DisplaySettings::instance().getBrightnessPercent();
-    data.peaksEnabled        = DisplaySettings::instance().getPeaksEnabled() ? 1 : 0;
-    data.peakDecaySpeed      = static_cast<uint8_t>(BarPhysics::instance().getPeakDecaySpeed());
-    data.clockShowDate       = 0;   // unused since v9 (clockMode)
-    data.clockShowSeconds    = 0;
-    data.clock24h            = DisplaySettings::instance().getClock24h() ? 1 : 0;
-    data.standbyDisplay      = static_cast<uint8_t>(DisplaySettings::instance().getStandbyDisplay());
-    data.clockMode           = static_cast<uint8_t>(DisplaySettings::instance().getClockMode());
-    data.clockColor          = DisplaySettings::instance().getClockColor();
-    data.autoStandbyMin      = DisplaySettings::instance().getAutoStandbyMinutes();
-    data.autoStandbyThreshold = DisplaySettings::instance().getAutoStandbyThreshold();
-    data.volumeDisplay       = static_cast<uint8_t>(DisplaySettings::instance().getVolumeDisplay());
-    data.clockFollowTheme    = DisplaySettings::instance().getClockFollowTheme() ? 1 : 0;
-    data.checksum            = computeChecksum(data);
-
-    // flash_range_program() requires a page-aligned, page-sized source --
-    // pad with zeros; the padding is never read back as meaningful data.
-    alignas(4) uint8_t page[FLASH_PAGE_SIZE] = {};
-    memcpy(page, &data, sizeof(data));
-
-    Serial.println("[Settings] Saving to flash...");
-
-    // Signal core1 and wait for its confirmation that it's actually
-    // parked, before touching flash at all.
-    g_core0WantsFlashPause = true;
-    while (!g_core1Paused) {
-        tight_loop_contents();
-    }
-
-    noInterrupts();
-    flash_range_erase(kFlashOffset, FLASH_SECTOR_SIZE);
-    flash_range_program(kFlashOffset, page, sizeof(page));
-    interrupts();
-
-    // Release core1 and wait for it to actually resume before returning,
-    // so nothing downstream assumes the pause is over prematurely.
-    g_core0WantsFlashPause = false;
-    while (g_core1Paused) {
-        tight_loop_contents();
-    }
-
-    Serial.println("[Settings] Save complete");
+void PersistentSettings::printFile() {
+    if (!m_mounted) { Serial.println("[Settings] LittleFS not available"); return; }
+    File f = LittleFS.open(kPath, "r");
+    if (!f) { Serial.println("[Settings] No settings file -- defaults in use"); return; }
+    while (f.available()) Serial.write(static_cast<uint8_t>(f.read()));
+    f.close();
 }
 
-// Deliberately a true leaf function living entirely in RAM
-// (__not_in_flash_func): while core0 is mid-erase/program, flash cannot
-// be read at all -- neither for data nor for instruction fetch -- so
-// EVERYTHING this function touches while core0's pause flag is set must
-// already be in RAM. That rules out calling any other flash-resident
-// function from inside the wait loop below, including Serial.print, or
-// referencing any const data that the compiler placed in flash. The only
-// things read/written here are the two volatile flags themselves and the
-// SDK's own tight_loop_contents() (an inline hint, not a flash-resident
-// call).
-void __not_in_flash_func(PersistentSettings::checkAndPauseForFlashWrite)() {
-    if (!g_core0WantsFlashPause) return; // fast path: true on every call except the rare moment a save is actually happening
-    g_core1Paused = true;
-    while (g_core0WantsFlashPause) {
-        tight_loop_contents();
-    }
-    g_core1Paused = false;
+bool PersistentSettings::resetFile() {
+    if (!m_mounted) return false;
+    m_dirty = false;
+    return LittleFS.remove(kPath);
 }

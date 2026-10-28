@@ -186,6 +186,10 @@ public:
     // settling. Stored on the daughter; may make it CAL=STALE (AUTO mode).
     enum class AutoPref : uint8_t { SNAPPY, BALANCED, DEEP };
     bool sendSetAuto(AutoPref pref);
+    // rev 18 "BAL <n>", n = -16..+16 in 0.25 dB: negative lowers the right
+    // channel, positive the left. Not stored on the daughter (0 after reset);
+    // refused during a calibration.
+    bool sendBal(int8_t n);
     bool sendModel();                        // rev 12, read-only, answered at any time
     bool sendVer();                          // rev 15, read-only, answered at any time
     void requestVer() { m_verWantedUntilMs = millis() + 3000; } // polled while wanted (a page reads it)
@@ -240,7 +244,7 @@ private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL, VER
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL, VER, BAL
     };
 
     bool sendLine(const char* line, PendingCmd cmd);

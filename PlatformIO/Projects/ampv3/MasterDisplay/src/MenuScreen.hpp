@@ -43,7 +43,7 @@ public:
 
     // True while an editor is open -- main.cpp then lets held buttons and IR
     // repeat frames auto-repeat Up/Down, so values can be run up quickly.
-    bool acceptsRepeats() const { return m_inEditor || m_inColor; }
+    bool acceptsRepeats() const { return m_inEditor || m_inColor || m_inSlider; }
 
 private:
     // Root -> Settings -> Clock -> (overlay) needs 3; one spare level.
@@ -66,6 +66,8 @@ private:
     void drawEditorFields();  // just the value row -- no screen clear, so adjusting doesn't flicker
     void clampEditorFields();
     void drawColorFull();
+    void drawSliderFull();
+    void drawSliderBody(); // the bar, the knob and the readout
     void drawColorFocus(int16_t oldIdx); // move the focus marker, refresh the swatch
 
     StackFrame m_stack[kMaxDepth];
@@ -89,6 +91,10 @@ private:
 
     // COLOR overlay: the color chooser.
     bool    m_inColor  = false;
+    // SLIDER overlay.
+    bool    m_inSlider       = false;
+    int16_t m_sliderValue    = 0;
+    int16_t m_sliderOriginal = 0;
     int16_t m_colorIdx = 0;
     int16_t m_colorDrawnIdx = -1;
 

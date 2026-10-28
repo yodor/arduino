@@ -1,6 +1,7 @@
 #include "MasterLink.hpp"
 #include "VersionInfo.hpp"
 #include "AutoPref.hpp"
+#include "Balance.hpp"
 #include "BoardSensors.hpp"
 #include "ThermalLog.hpp"
 #include "ThermalFit.hpp"
@@ -154,6 +155,8 @@ void MasterLink::serviceWhileBusy() {
       reportModel();
     } else if (line == "VER" || line == "FW") {
       VersionInfo::printLine(stream_);
+    } else if (line == "BAL") {
+      stream_.print(F("OK BAL=")); stream_.println(Balance::get());
     } else {
       // Everything else must wait until STATUS reads IDLE -- but say so,
       // rather than leaving the master's command timing out.
@@ -194,7 +197,7 @@ void MasterLink::reportEnv() {
   kv(stream_, F("MATCH"), DualCalibration::lastQuietMatchDb(), 2, true);
   stream_.print(F(" NTC=")); stream_.print(BoardSensors::ntcStateName(Board::ntcState()));   // protocol 13
   const ThermalComp::Hint h = ThermalComp::hint();                                           // protocol 14
-  stream_.print(F(" RESYNC=")); stream_.print(h == ThermalComp::Hint::NONE ? '0' : '1');
+  stream_.print(F(" RESYNC=")); stream_.print(ThermalComp::hintRecommends(h) ? '1' : '0');   // WARMING: 0
   stream_.print(F(" WHY=")); stream_.print(ThermalComp::hintName(h));
   stream_.println();
 }
@@ -380,6 +383,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
   if (upper == "LEARN") { reportLearn(); return; }
   if (upper == "MODEL") { reportModel(); return; }
   if (upper == "VER" || upper == "FW") { VersionInfo::printLine(stream_); return; }   // protocol 15
+  if (upper == "BAL") { stream_.print(F("OK BAL=")); stream_.println(Balance::get()); return; }   // protocol 18
   // Protocol 10: no boot hold. Volume is refused until the attenuator is calibrated for
   // these cells (CAL=OK): the LDR mute stays on, so nothing plays uncalibrated.
   auto needCal = [&]() -> bool {
@@ -395,6 +399,7 @@ void MasterLink::handleStrictLine(const String &lineIn) {
       upper == "AMP_MUTE OFF" || upper == "AMP_MUTE 0") {
     bool wantMuted = (upper == "AMP_MUTE ON" || upper == "AMP_MUTE 1");
     board_.setAmpMute(wantMuted);   // during a calibration's hold an unmute waits for its end
+    Board::noteAmpCommand(wantMuted);
     stream_.println(F("OK"));
 
   } else if (upper == "MUTE ON") {
@@ -466,6 +471,18 @@ void MasterLink::handleStrictLine(const String &lineIn) {
       return;
     }
     DualCalibration::onModelChanged(left_, right_);
+    stream_.println(F("OK"));
+
+  } else if (upper.startsWith("BAL ")) {
+    // Protocol 18: balance -16..+16 in 0.25 dB units; negative lowers the right channel.
+    const String arg = upper.substring(4);
+    char *end;
+    const long v = strtol(arg.c_str(), &end, 10);
+    if (end == arg.c_str() || v < -Balance::MAX_UNITS || v > Balance::MAX_UNITS) {
+      stream_.println(F("ERR usage: BAL <-16..16>"));
+      return;
+    }
+    Balance::set((int8_t)v, left_, right_);
     stream_.println(F("OK"));
 
   } else if (upper.startsWith("SET AUTO ")) {

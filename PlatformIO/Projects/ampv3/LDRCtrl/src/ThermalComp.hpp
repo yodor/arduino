@@ -40,11 +40,10 @@ inline bool trusted(bool usable, float r2, float k = 0.0f) {
 // When a resync would help (protocol 14: ENV RESYNC= WHY=; TEMP/DIAG). dT = block now minus at
 // the last calibration (NAN if unknown, e.g. a faulty NTC -- ENV NTC= reports that itself);
 // spanC = the largest change the fit learned from; compOn = the compensation is applying offsets.
-enum class Hint : uint8_t { NONE, SPAN, LIMIT, NOCOMP, SEEK };
+enum class Hint : uint8_t { NONE, SPAN, LIMIT, NOCOMP, SEEK, WARMING };
 constexpr float HINT_NOCOMP_C = 1.0f;   // moved this much with nothing correcting it
 constexpr float HINT_MIN_SPAN_C = 1.5f; // below this the learned span is too small to judge by
-inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed) {
-  if (seekFailed) return Hint::SEEK;
+inline Hint resyncHintBase(bool compOn, float dT, float spanC) {
   if (isnan(dT)) return Hint::NONE;
   const float a = fabsf(dT);
   if (a >= MAX_SPAN_C) return Hint::LIMIT;
@@ -52,8 +51,23 @@ inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed) {
   const float span = spanC > HINT_MIN_SPAN_C ? spanC : HINT_MIN_SPAN_C;
   return a > span ? Hint::SPAN : Hint::NONE;
 }
+
+// standby: the amp is muted by command (nobody listens; the temperature will change once it is
+// on). warming: the amp was switched on less than HINT_WARMUP_MS ago, or the block still moves
+// faster than HINT_STEADY_C per 10 min: a resync now would be out of date within minutes, so a
+// hint that would apply is reported as WARMING (not a recommendation yet). SEEK is never delayed.
+constexpr uint32_t HINT_WARMUP_MS = 15UL * 60UL * 1000UL;
+constexpr float    HINT_STEADY_C = 0.25f;     // per 10 minutes
+inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed, bool standby = false, bool warming = false) {
+  if (standby) return Hint::NONE;
+  if (seekFailed) return Hint::SEEK;
+  const Hint h = resyncHintBase(compOn, dT, spanC);
+  return (h != Hint::NONE && warming) ? Hint::WARMING : h;
+}
+inline bool hintRecommends(Hint h) { return h == Hint::SPAN || h == Hint::LIMIT || h == Hint::NOCOMP || h == Hint::SEEK; }
 inline const char *hintName(Hint h) {
-  return h == Hint::SPAN ? "SPAN" : h == Hint::LIMIT ? "LIMIT" : h == Hint::NOCOMP ? "NOCOMP" : h == Hint::SEEK ? "SEEK" : "-";
+  return h == Hint::SPAN ? "SPAN" : h == Hint::LIMIT ? "LIMIT" : h == Hint::NOCOMP ? "NOCOMP" : h == Hint::SEEK ? "SEEK"
+       : h == Hint::WARMING ? "WARMING" : "-";
 }
 
 // ---- runtime ----
@@ -74,6 +88,7 @@ float sideOffsetCounts(uint8_t side); // the offset in the driver now
 float sideSlope(uint8_t side);        // counts per C (NAN if no fit)
 bool ntcOk();                         // the block NTC reads (not OPEN / SHORT / BAD)
 Hint hint();                          // whether a resync is recommended now, and why
+float blockRatePer10Min();            // the block's change over the last 10 min, C (NAN until known)
 void printHint(Print &out);           // the same as a sentence (TEMP / DIAG)
 
 } // namespace ThermalComp

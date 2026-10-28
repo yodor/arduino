@@ -1,4 +1,4 @@
-Firmware source package: 2026-10-28a
+Firmware source package: 2026-10-28d
 
 6ebee75731a34c9f  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
@@ -7,8 +7,10 @@ e9da838abadb246c  src/Ads1115.hpp
 d43e5790c8c2f59c  src/AudioModel.hpp
 8a093dc3f3640d7a  src/AutoPref.cpp
 331358028709be5d  src/AutoPref.hpp
-79c362184914115c  src/Board.cpp
-68fb87db28ba62f2  src/Board.hpp
+ee71f2ed2fc18709  src/Balance.cpp
+be354f9421646e59  src/Balance.hpp
+2e8d1aa5657eb832  src/Board.cpp
+b19946d4bc8ac371  src/Board.hpp
 f80ffcb7486378c4  src/BoardSensors.hpp
 4777e5059c2b42b5  src/BusyHook.cpp
 76bf40aaaac4da80  src/BusyHook.hpp
@@ -22,7 +24,7 @@ f80ffcb7486378c4  src/BoardSensors.hpp
 71e3096f4aef0635  src/Calibration.hpp
 0979a546f0de1714  src/Capabilities.hpp
 7949ca88cdd1c6a6  src/CellCheck.hpp
-ea2364570a9a2ad0  src/Config.hpp
+46afb11b02d3e47b  src/Config.hpp
 2662c0dee07705c5  src/DarkProfile.hpp
 290c3971502681e9  src/Dither.hpp
 b4baf1bc76555548  src/DividerMath.hpp
@@ -30,11 +32,11 @@ b4baf1bc76555548  src/DividerMath.hpp
 cb1bef29bbdc790f  src/DriverChannels.hpp
 81597630198e0079  src/DualCalibration.cpp
 eab2a8e3574fbf08  src/DualCalibration.hpp
-471a711fa058bd02  src/LDRVolume.cpp
-4bd0e46a572dbe3a  src/LDRVolume.hpp
+d0dfae64adf860f8  src/LDRVolume.cpp
+fd32ba3ccaf7fdc4  src/LDRVolume.hpp
 66767703db573871  src/LdrSensor.cpp
 c07877e97b036893  src/LdrSensor.hpp
-c32175782adaf0fa  src/MasterLink.cpp
+4e988d9ccf292298  src/MasterLink.cpp
 69399575e5f30ae8  src/MasterLink.hpp
 299921d4b3b90ad0  src/Pins.hpp
 2503c15f8c52eee8  src/QuietSeek.hpp
@@ -42,16 +44,16 @@ c32175782adaf0fa  src/MasterLink.cpp
 b98d4370ae1f66c9  src/RailComp.hpp
 902053dc399a01b6  src/Relay.cpp
 1518a7d671993e89  src/Relay.hpp
-1cba046e74e8bd29  src/SerialConsole.cpp
+5309c7aad51eb9f5  src/SerialConsole.cpp
 a71de271747734d2  src/SerialConsole.hpp
 f908c7e9f7a97b11  src/SweepLadder.hpp
-db1d0b212b4c9f73  src/ThermalComp.cpp
-ebeac24664833152  src/ThermalComp.hpp
-90779a51cc050e19  src/ThermalFit.hpp
-aacda82b16bc9bdd  src/ThermalLog.cpp
+bd0b85d63340d4b1  src/ThermalComp.cpp
+b9ef8506bce7f660  src/ThermalComp.hpp
+4958d7426c3cc8ee  src/ThermalFit.hpp
+61e41d5a240a053f  src/ThermalLog.cpp
 fe9bdc98124f5694  src/ThermalLog.hpp
 6e71fac86e21cfac  src/TrimSearch.hpp
-24d7b591fb40f265  src/Version.hpp
+eafbfd1ca210e9dd  src/Version.hpp
 62cec520f5825c86  src/VersionInfo.cpp
 728888a3d5f4e733  src/VersionInfo.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
@@ -59,4 +61,4 @@ cac5e982d3f1974f  src/VolumeRamp.hpp
 a4e7d2e41e4a8ef8  src/main.cpp
 95049793a06fd5d6  tools/check_float_printf.sh
 1bba7cee96dcc5e8  platformio.ini
-daf32b42ed90f4ad  firmware.uf2
+14d2f5e8d1eb88f1  firmware.uf2

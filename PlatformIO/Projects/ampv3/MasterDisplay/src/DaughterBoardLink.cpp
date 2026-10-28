@@ -149,6 +149,14 @@ bool DaughterBoardLink::sendSetAuto(AutoPref pref) {
     return sent;
 }
 
+bool DaughterBoardLink::sendBal(int8_t n) {
+    if (n < -16) n = -16;
+    if (n > 16)  n = 16;
+    char line[16];
+    snprintf(line, sizeof(line), "BAL %d", static_cast<int>(n));
+    return sendLine(line, PendingCmd::BAL);
+}
+
 bool DaughterBoardLink::sendModel() { return sendLine("MODEL", PendingCmd::MODEL); }
 
 bool DaughterBoardLink::sendVer() { return sendLine("VER", PendingCmd::VER); }
@@ -481,7 +489,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         // e.g. "ERR busy" (a calibration is running -- the command was
         // dropped, not queued) or "ERR step limit or no calibration loaded".
         setError(line);
-        if (cmd == PendingCmd::COMP || cmd == PendingCmd::FORGET || cmd == PendingCmd::SET_MODEL ||
+        if (cmd == PendingCmd::COMP || cmd == PendingCmd::FORGET || cmd == PendingCmd::SET_MODEL || cmd == PendingCmd::BAL ||
             cmd == PendingCmd::AMP_MUTE_ON || cmd == PendingCmd::AMP_MUTE_OFF) {
             Serial.print("[Daughter] Command refused: ");
             Serial.println(line);

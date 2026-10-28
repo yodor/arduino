@@ -1,17 +1,12 @@
-LDR daughter board firmware -- 2026-10-28a  (driver v1b, 2nd-edition LDR boards)
+LDR daughter board firmware -- 2026-10-28d  (driver v1b, 2nd-edition LDR boards)
 
-* AUTO preference (protocol 16): SET AUTO SNAPPY | BALANCED | DEEP, stored. Sets how deep the
-  dark-end walk measures, AUTO's memory/slope limits and a cap on its pick:
-    SNAPPY   600 k, memory <= x1.06      BALANCED (default) 1.0 M, x1.12      DEEP 1.6 M, x1.20
-  So AUTO's depth is consistent (it used to follow wherever the walk's doubling steps landed:
-  844 k this time, 1431 k before). A changed AUTO pick makes the calibration STALE; a plain CAL
-  re-solves. A deeper preference beyond the stored walk (MODEL: REACH=) needs FORGET CAL, CAL.
-  MODEL ends with AUTO=<pref> REACH=<ohms>.
-* Cell check: the tolerance widens with the die-temperature difference since the fingerprint
-  (5 % + 1.5 %/C, at most 20 %), so a cool start no longer looks like new cells (the cause of
-  the unexpected full characterization). A real swap at a similar temperature: still 5 %.
-
-Default BALANCED keeps your current 844.5 k (the stored walk reaches no deeper). For more depth:
-SET AUTO DEEP, then FORGET CAL, CAL (a full characterization walks to 1.6 M).
+Balance (protocol 18): BAL <-16..16> in 0.25 dB units (+-4 dB); negative lowers the right channel,
+positive the left; BAL alone replies OK BAL=<n>. At 0 both channels play exactly their calibrated
+steps. The lowered channel plays between its steps, solved for the exact level under the table's
+own rules (within ~0.01 dB of the requested level on your table). Applies to volume changes, the
+ramp, MUTE OFF and after calibrations. Not stored: the master sends it after power-up.
+The volume ramp stays: 2 ms per step (a full-range jump ~60 ms), a free guard against pops.
+Everything from 2026-10-28c (temperature-spread learning log) included.
 
 firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
+No recalibration needed. NEW FILES: Balance.cpp / Balance.hpp -- copy the whole src/ folder.

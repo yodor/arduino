@@ -1,6 +1,7 @@
 #include "LDRVolume.hpp"
 #include "AudioModel.hpp"
 #include "CalProgress.hpp"
+#include "Balance.hpp"
 #include "DualCalibration.hpp"
 #include "BusyHook.hpp"
 #include "Board.hpp"
@@ -262,10 +263,7 @@ void LDRVolume::reapplyCurrentStepOrDefault() {
     // trim/sweep drove raw duty past it) and refresh what unmute() restores.
     driver_.setDuty(seriesCh_, 0);
     driver_.setDuty(shuntCh_, DriverChannels::WRAP);
-    if (currentOk) {
-      savedSeriesFine_ = lut().step(currentStep_).seriesFine;
-      savedShuntFine_ = lut().step(currentStep_).shuntFine;
-    }
+    if (currentOk) stepDutiesFine(currentStep_, savedSeriesFine_, savedShuntFine_);
     return;
   }
   if (currentOk) {
@@ -437,11 +435,53 @@ void LDRVolume::applyDuties(uint32_t seriesFine, uint32_t shuntFine) {
   }
 }
 
+namespace {
+// Duty for resistance rX between two steps: the curve's duty for rX plus the interpolated
+// offsets the two steps' trimmed duties have from the curve (exact at f = 0 and f = 1).
+// Falls back to plain duty interpolation if the curve cannot answer.
+uint32_t mapBetween(const LdrCurve &curve, float rU, float rL, float rX, uint32_t dU, uint32_t dL, float f) {
+  uint32_t cU, cL, cX;
+  if (curve.dutyForResistanceFine(rU, cU) && curve.dutyForResistanceFine(rL, cL) && curve.dutyForResistanceFine(rX, cX)) {
+    const float x = (float)cX + ((float)dU - (float)cU) * (1.0f - f) + ((float)dL - (float)cL) * f;
+    return x > 0.0f ? (uint32_t)lroundf(x) : 0;
+  }
+  return (uint32_t)lroundf((float)dU + f * ((float)dL - (float)dU));
+}
+} // namespace
+
+void LDRVolume::stepDutiesFine(uint8_t step, uint32_t &ser, uint32_t &shu) const {
+  const VolumeLut::Entry &e = lut().step(step);
+  ser = e.seriesFine; shu = e.shuntFine;
+  if (!(balanceAttDb_ > 0.0f)) return;
+  constexpr uint8_t MAXS = 64;
+  const uint8_t n = numSteps() < MAXS ? numSteps() : MAXS;
+  float db[MAXS]; bool ok[MAXS];
+  for (uint8_t i = 0; i < n; i++) { db[i] = lut().step(i).targetDb; ok[i] = lut().step(i).valid; }
+  uint8_t up, lo; float f;
+  Balance::locate(db, ok, n, step, balanceAttDb_, up, lo, f);
+  const VolumeLut::Entry &U = lut().step(up), &L = lut().step(lo);
+  if (up == lo) { ser = U.seriesFine; shu = U.shuntFine; return; }
+  const bool topT = lut().isTransparent(up);
+  float rsX, rshX;
+  Balance::solveBetween(e.targetDb - balanceAttDb_, U.targetRs, U.targetRsh, topT, L.targetRs, L.targetRsh,
+                        AudioModel::sourceOhms(), AudioModel::loadOhms(), rsX, rshX);
+  ser = mapBetween(cal_.seriesCurve(), U.targetRs, L.targetRs, rsX, U.seriesFine, L.seriesFine, f);
+  if (topT) shu = L.shuntFine;                        // shunt "off" above, dark below: dark either way
+  else shu = mapBetween(cal_.shuntCurve(), U.targetRsh, L.targetRsh, rshX, U.shuntFine, L.shuntFine, f);
+}
+
+void LDRVolume::setBalanceAttDb(float attDb) {
+  balanceAttDb_ = attDb > 0.0f ? attDb : 0.0f;
+  if (hasLut() && currentStep_ < numSteps() && lut().step(currentStep_).valid) setStep(currentStep_);
+}
+
 bool LDRVolume::setStep(uint8_t step) {
   if (!hasLut() || step >= numSteps()) return false;
   const VolumeLut::Entry &e = lut().step(step);
   if (!e.valid) return false;
-  applyDuties(e.seriesFine, e.shuntFine);
+  uint32_t ser, shu;
+  stepDutiesFine(step, ser, shu);
+  applyDuties(ser, shu);
   currentStep_ = step;
   return true;
 }

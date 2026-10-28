@@ -22,7 +22,18 @@ enum class MenuItemType : uint8_t {
     EDITOR,       // drilling in shows a row of numeric fields (`editor`) to adjust and save, e.g. a date or a time;
                   // if the item also has `options`, they're offered right after the save (e.g. Cancel / Start),
                   // and an option with an action then opens `fillInfo`'s page, as for VALUE_CHOICE
-    COLOR         // drilling in shows the color chooser (`color`): a spectrum bar to pick from, Right sets it
+    COLOR,        // drilling in shows the color chooser (`color`): a spectrum bar to pick from, Right sets it
+    SLIDER        // drilling in shows a horizontal slider (`slider`): Up/Down move it (applied live), Right keeps, Left restores
+};
+
+// SLIDER items: an integer range around a centre, applied live while it moves.
+struct MenuSlider {
+    int16_t     min, max;
+    int16_t   (*get)();
+    void      (*set)(int16_t);                       // called on every step (live) and on cancel (the start value)
+    void      (*format)(int16_t, char*, size_t);     // the readout, e.g. "Left -1.50 dB" / "Center"
+    const char* leftLabel;                           // at the bar's ends, e.g. "L" / "R"
+    const char* rightLabel;
 };
 
 // COLOR items: the chooser offers kMenuPaletteSize colors -- the hue circle at
@@ -96,4 +107,6 @@ struct MenuItem {
     const MenuEditor* editor     = nullptr; // EDITOR only
 
     const MenuColor*  color      = nullptr; // COLOR only
+
+    const MenuSlider* slider     = nullptr; // SLIDER only
 };

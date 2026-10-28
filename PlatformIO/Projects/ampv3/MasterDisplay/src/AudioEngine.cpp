@@ -1,6 +1,5 @@
 #include "AudioEngine.hpp"
 #include "BeatDetector.hpp"
-#include "PersistentSettings.hpp"
 
 namespace {
 // Computes log2(n) for a power-of-two n at compile time -- used to derive
@@ -91,14 +90,17 @@ void AudioEngine::runCore1() {
     uint32_t maxBacklogChunks = 0, overruns = 0, totalOverruns = 0;
     uint32_t lastReportMs = 0;
 
+    uint32_t lastLoopUs = micros();
     while (true) {
-        // Settings save on core0 parks core1 here (see PersistentSettings).
-        // A long pause can let the DMA lap us; if so, skip to fresh audio.
-        uint32_t pauseStartUs = micros();
-        PersistentSettings::checkAndPauseForFlashWrite();
-        if (micros() - pauseStartUs > 10000) {
+        // A settings save pauses this core during flash writes (LittleFS
+        // does it via rp2040.idleOtherCore()). After a long gap the DMA may
+        // have lapped us, so skip to fresh audio rather than read
+        // overwritten chunks.
+        uint32_t nowUs = micros();
+        if (nowUs - lastLoopUs > 10000) {
             readPos = ((writePos() / kChunk) * kChunk + kRingSamples - kChunk) % kRingSamples;
         }
+        lastLoopUs = nowUs;
 
         uint32_t avail = (writePos() + kRingSamples - readPos) % kRingSamples;
         if (avail < kChunk) {

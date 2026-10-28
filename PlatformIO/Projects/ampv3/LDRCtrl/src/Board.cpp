@@ -233,6 +233,14 @@ float adcAverage(uint8_t pin) {
 
 float Board::blockTempC() { return BoardSensors::ntcCelsius(adcAverage(ADC_NTC_PIN)); }
 BoardSensors::NtcState Board::ntcState() { return BoardSensors::ntcState(adcAverage(ADC_NTC_PIN)); }
+
+namespace { bool gAmpCmdMuted = true; uint32_t gAmpOnMs = 0; }   // power-up: muted (standby)
+void Board::noteAmpCommand(bool muted) {
+  if (gAmpCmdMuted && !muted) gAmpOnMs = millis();
+  gAmpCmdMuted = muted;
+}
+bool Board::ampCommandedMuted() { return gAmpCmdMuted; }
+uint32_t Board::msSinceAmpOn() { return gAmpCmdMuted ? 0 : millis() - gAmpOnMs; }
 float Board::railVolts()  { return BoardSensors::railVolts(adcAverage(ADC_REF_PIN)); }
 
 uint32_t Board::uptimeSeconds() { return millis() / 1000UL; }

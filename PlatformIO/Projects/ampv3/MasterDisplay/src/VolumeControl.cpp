@@ -56,6 +56,14 @@ void VolumeControl::setModelSource(uint32_t ohms) {
     retryPendingCommands();
 }
 
+void VolumeControl::setBalance(int8_t n) {
+    if (n < -16) n = -16;
+    if (n > 16)  n = 16;
+    m_balance    = n;
+    m_balPending = true;
+    retryPendingCommands();
+}
+
 void VolumeControl::setAutoPref(DaughterBoardLink::AutoPref pref) {
     m_autoPref        = pref;
     m_autoPrefPending = true;
@@ -99,6 +107,12 @@ void VolumeControl::calibrate(CalR mode, uint32_t ohms) {
 
 void VolumeControl::retryPendingCommands() {
     DaughterBoardLink& link = DaughterBoardLink::instance();
+    // Balance first: after a daughter power-up it must be in place before
+    // the MUTE OFF that follows (one command in flight, so the order holds).
+    // Not while the daughter is busy -- it would answer ERR busy.
+    if (m_balPending && !link.isBusy() && link.isStatusFresh() && !link.status().busy) {
+        if (link.sendBal(m_balance)) m_balPending = false;
+    }
     if (m_mutePending && !link.isBusy()) {
         bool sent = m_muted ? link.sendMuteOn() : link.sendMuteOff();
         if (sent) m_mutePending = false;
@@ -154,6 +168,17 @@ void VolumeControl::syncFromDaughterStatus() {
     }
     m_wasCalibrating = calibratingNow;
 
+    // A daughter restart (its uptime went backwards: a brownout, its reset
+    // button, a firmware flash) brings it up muted, balance 0: run the
+    // power-up steps again once it reports CAL=OK -- even though its busy
+    // start-up statuses never show CAL leaving OK.
+    if (m_haveUp && s.upSeconds + 2 < m_lastUp) {
+        m_ready = false;
+        Serial.println("[Volume] Daughter restarted -- will restore balance and unmute once it's calibrated");
+    }
+    m_lastUp = s.upSeconds;
+    m_haveUp = true;
+
     if (s.busy) return;
 
     // Adopt the daughter's amp mute unless our own request is still on its way.
@@ -163,7 +188,9 @@ void VolumeControl::syncFromDaughterStatus() {
     if (!m_ready) {
         if (!calOk) return; // still muted by the daughter; m_muted keeps the user's intent
         // CAL=OK: unmute -- unless the user muted meanwhile. The daughter
-        // keeps its own step (0 on a first power-up).
+        // keeps its own step (0 on a first power-up). A non-centre balance
+        // goes over first (the daughter starts at 0 after a reset).
+        if (m_balance != 0) m_balPending = true;
         if (!m_muted) {
             m_mutePending      = true; // sends MUTE OFF (m_muted is false)
             m_lastMuteChangeMs = millis();
@@ -189,8 +216,12 @@ void VolumeControl::syncFromDaughterStatus() {
 
 void VolumeControl::update(bool wantVolUpHeld, bool wantVolDownHeld) {
     DaughterBoardLink& link = DaughterBoardLink::instance();
-    link.holdPolls(m_mutePending || m_calPending || m_ampMutePending || m_forgetPending || m_compPending ||
-                   m_srcPending || m_loadPending || m_autoPrefPending);
+    // Queued user commands go ahead of background polls -- but never while
+    // the status is stale: some commands (BAL) wait for a fresh STATUS, and
+    // holding the STATUS poll for them would deadlock the link (NO LINK).
+    bool anyPending = m_mutePending || m_calPending || m_ampMutePending || m_forgetPending || m_compPending ||
+                      m_srcPending || m_loadPending || m_autoPrefPending || m_balPending;
+    link.holdPolls(anyPending && link.isStatusFresh());
     link.update();
     syncFromDaughterStatus();
     retryPendingCommands();

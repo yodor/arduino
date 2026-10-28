@@ -44,6 +44,18 @@ public:
     // CAL=STALE (volume muted) until a calibration re-solves.
     void setModelSource(uint32_t ohms);
     void setModelLoad(uint32_t ohms);
+    // rev 18 balance (Settings -> Balance): -16..+16 in 0.25 dB, positive
+    // lowers the left channel, negative the right. Kept here (and saved with
+    // the settings -- the daughter doesn't store it): sent whenever it
+    // changes (the latest value wins if it changes faster than the link), and
+    // again after every daughter power-up (where it's 0) -- before the
+    // unmute. Not sent while the daughter is busy.
+    void   setBalance(int8_t n);
+    // At boot, from the settings: only remembers the value -- it goes to the
+    // daughter with its power-up steps (once CAL=OK, before the unmute).
+    void   restoreBalance(int8_t n) { m_balance = (n < -16) ? -16 : (n > 16 ? 16 : n); }
+    int8_t balance() const { return m_balance; }
+
     // rev 16 AUTO preference (Calibration -> Auto Depth), retried likewise.
     void setAutoPref(DaughterBoardLink::AutoPref pref);
 
@@ -94,6 +106,10 @@ private:
     uint32_t m_srcOhms           = 0;
     uint32_t m_loadOhms          = 0;
     bool     m_autoPrefPending   = false;
+    int8_t   m_balance           = 0;
+    uint32_t m_lastUp            = 0;     // the daughter's uptime in its last STATUS (restart detection)
+    bool     m_haveUp            = false;
+    bool     m_balPending        = false;
     DaughterBoardLink::AutoPref m_autoPref = DaughterBoardLink::AutoPref::BALANCED;
     bool     m_compOn            = true;
     bool     m_compRequested     = false; // a COMP command was ever sent

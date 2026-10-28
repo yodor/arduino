@@ -8,8 +8,10 @@ namespace {
 constexpr const char *STATE_PATH = "/thermal_state.txt";
 constexpr const char *LOG_PATH   = "/thermal_log.csv";
 constexpr uint8_t MAX_ENTRIES = 48;
-constexpr size_t ROTATE_BYTES = 6000;   // past this, keep the newest 30 lines
-constexpr uint8_t KEEP_LINES = 30;
+// Trimmed to MAX_ENTRIES lines whenever it grows past that, so everything kept is also what
+// the fit reads; WHICH lines stay is chosen by temperature (ThermalFit::selectKeep).
+constexpr uint8_t KEEP_NEWEST = 12;     // always the newest resyncs
+constexpr uint8_t KEEP_PER_BAND = 2;    // and the newest two in every 1 C band of block temperature
 
 // The RP2040's ROM float routines do NOT propagate NaN: NaN - NaN comes out as infinity.
 // So "unknown" must be checked BEFORE any arithmetic, never after.
@@ -88,24 +90,64 @@ uint8_t loadEntries(ThermalFit::Entry *e, uint8_t maxN) {
 }
 
 void rotateIfLarge() {
+  constexpr uint16_t MAXL = 160;            // lines considered at once (an older, larger log: its newest)
+  static bool usable[MAXL];
+  static float blockC[MAXL];
+  static bool keep[MAXL];
   File f = LittleFS.open(LOG_PATH, "r");
   if (!f) return;
-  const size_t size = f.size();
-  if (size <= ROTATE_BYTES) { f.close(); return; }
-  // count lines, then copy the last KEEP_LINES into a new file
-  uint16_t lines = 0;
-  while (f.available()) if (f.read() == '\n') lines++;
-  f.seek(0);
-  File g = LittleFS.open("/thermal_log.tmp", "w");
-  uint16_t seen = 0;
+  // pass 1: what each line is
+  uint16_t total = 0, n = 0;
+  bool prevFailed = false;
+  char line[160]; size_t len = 0;
+  auto classify = [&]() {
+    line[len] = 0;
+    if (len) {
+      ThermalFit::Entry e;
+      const bool isEntry = ThermalFit::parseLogLine(line, e);
+      const bool failed = isEntry && ThermalFit::seekFailed(e);
+      const bool ok = isEntry && !failed && !prevFailed;
+      if (isEntry) prevFailed = failed;
+      if (n == MAXL) { for (uint16_t i = 1; i < MAXL; i++) { usable[i - 1] = usable[i]; blockC[i - 1] = blockC[i]; } n--; }
+      usable[n] = ok; blockC[n] = ThermalFit::parseLogBlock(line); n++;
+      total++;
+    }
+    len = 0;
+  };
   while (f.available()) {
     const int ch = f.read();
     if (ch < 0) break;
-    if (seen + KEEP_LINES >= lines && g) g.write((uint8_t)ch);
-    if (ch == '\n') seen++;
+    if (ch == '\n') classify();
+    else if (len < sizeof(line) - 1) line[len++] = (char)ch;
   }
+  classify();
+  if (total <= MAX_ENTRIES) { f.close(); return; }
+  ThermalFit::selectKeep(usable, blockC, n, keep, KEEP_NEWEST, KEEP_PER_BAND, MAX_ENTRIES);
+  // pass 2: copy the kept lines, in order
+  f.seek(0);
+  File g = LittleFS.open("/thermal_log.tmp", "w");
+  if (!g) { f.close(); return; }
+  const uint16_t skip = total - n;          // lines older than the window: dropped
+  uint16_t idx = 0; len = 0;
+  auto copy = [&]() {
+    line[len] = 0;
+    if (len) {
+      if (idx >= skip && keep[idx - skip]) { g.print(line); g.print('\n'); }
+      idx++;
+    }
+    len = 0;
+  };
+  while (f.available()) {
+    const int ch = f.read();
+    if (ch < 0) break;
+    if (ch == '\n') copy();
+    else if (len < sizeof(line) - 1) line[len++] = (char)ch;
+  }
+  copy();
   f.close();
-  if (g) { g.close(); LittleFS.remove(LOG_PATH); LittleFS.rename("/thermal_log.tmp", LOG_PATH); }
+  g.close();
+  LittleFS.remove(LOG_PATH);
+  LittleFS.rename("/thermal_log.tmp", LOG_PATH);
 }
 } // namespace
 

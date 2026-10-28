@@ -89,4 +89,75 @@ inline bool parseLogLine(const char *s, Entry &x) {
   return true;
 }
 
+// The absolute block temperature of a log line (field 5 of 7, field 7 of 11), NAN otherwise.
+inline float parseLogBlock(const char *s) {
+  float v[11];
+  uint8_t k = 0;
+  while (*s && k < 11) {
+    while (*s == ',' || *s == ' ' || *s == '\r') s++;
+    if (!*s) break;
+    char *end;
+    const double d = strtod(s, &end);
+    if (end == s) break;
+    v[k++] = (float)d;
+    s = end;
+  }
+  return k == 7 ? v[4] : k == 11 ? v[6] : NAN;
+}
+
+// Which log lines to keep when the log is trimmed: a spread over the TEMPERATURES seen, not
+// just the newest, so a winter morning's resync still counts in summer. usable[i]: line i is an
+// entry the fit uses (not a failed seek, not the catch-up after one). Kept: the newest
+// `newest` usable entries, plus the newest `perBand` in every 1 C band of block temperature;
+// while more than `cap`, the oldest kept entry of the most crowded band goes (never one of the
+// newest). Returns how many are kept; keep[] says which (order is preserved by the caller).
+inline uint16_t selectKeep(const bool *usable, const float *blockC, uint16_t n, bool *keep,
+                           uint16_t newest = 12, uint8_t perBand = 2, uint16_t cap = 48) {
+  constexpr uint8_t MAXB = 96;
+  int16_t bandKey[MAXB]; uint8_t bandCnt[MAXB]; uint8_t nb = 0;
+  auto bandOf = [&](float t) -> int16_t { return (int16_t)floorf(t); };
+  auto slot = [&](int16_t key) -> int16_t {
+    for (uint8_t i = 0; i < nb; i++) if (bandKey[i] == key) return i;
+    if (nb == MAXB) return -1;
+    bandKey[nb] = key; bandCnt[nb] = 0; return nb++;
+  };
+  for (uint16_t i = 0; i < n; i++) keep[i] = false;
+  // newest usable entries
+  uint16_t seen = 0;
+  for (int32_t i = (int32_t)n - 1; i >= 0 && seen < newest; i--) if (usable[i]) { keep[i] = true; seen++; }
+  // newest perBand per 1 C band (newest first); the newest-kept ones count towards their band
+  for (int32_t i = (int32_t)n - 1; i >= 0; i--) {
+    if (!usable[i] || isnan(blockC[i])) continue;
+    const int16_t b = slot(bandOf(blockC[i]));
+    if (b < 0) continue;
+    if (keep[i]) { bandCnt[b]++; continue; }
+    if (bandCnt[b] < perBand) { keep[i] = true; bandCnt[b]++; }
+  }
+  // cap: drop the oldest kept non-newest entry of the most crowded band
+  uint16_t kept = 0;
+  for (uint16_t i = 0; i < n; i++) kept += keep[i];
+  uint16_t newestFrom = n;                            // index of the oldest "newest" entry
+  { uint16_t c = 0; for (int32_t i = (int32_t)n - 1; i >= 0 && c < newest; i--) if (usable[i]) { c++; newestFrom = (uint16_t)i; } }
+  while (kept > cap) {
+    int16_t bestB = -1; uint8_t bestC = 0;
+    for (uint8_t b = 0; b < nb; b++) {
+      bool removable = false;
+      for (uint16_t i = 0; i < newestFrom && !removable; i++)
+        if (keep[i] && !isnan(blockC[i]) && bandOf(blockC[i]) == bandKey[b]) removable = true;
+      if (removable && bandCnt[b] > bestC) { bestC = bandCnt[b]; bestB = (int16_t)b; }
+    }
+    int32_t drop = -1;
+    if (bestB >= 0) {
+      for (uint16_t i = 0; i < newestFrom; i++)
+        if (keep[i] && !isnan(blockC[i]) && bandOf(blockC[i]) == bandKey[bestB]) { drop = i; break; }
+      if (drop >= 0) bandCnt[bestB]--;
+    } else {
+      for (uint16_t i = 0; i < n; i++) if (keep[i]) { drop = i; break; }
+    }
+    if (drop < 0) break;
+    keep[drop] = false; kept--;
+  }
+  return kept;
+}
+
 } // namespace ThermalFit

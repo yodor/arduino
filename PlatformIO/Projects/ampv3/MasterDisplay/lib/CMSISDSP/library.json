@@ -1,0 +1,13 @@
+{
+  "name": "CMSISDSP",
+  "version": "1.16.2",
+  "description": "Subset of ARM CMSIS-DSP 1.16.2: the single-precision real FFT (arm_rfft_fast_f32) and what it needs, with the CMSIS 6.1 compiler headers.",
+  "license": "Apache-2.0",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": ["-O3", "-DARM_MATH_LOOPUNROLL"]
+  }
+}

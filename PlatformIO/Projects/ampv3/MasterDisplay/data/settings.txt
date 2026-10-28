@@ -1,0 +1,22 @@
+# RP2350 amp controller settings -- key=value; unknown keys are ignored, missing ones use defaults
+# Example file for the Arduino-Pico filesystem uploader (sketch folder: data/settings.txt).
+# Remove any line to keep that setting's default.
+theme=SUNSET
+brightness=80
+channel_mode=STEREO
+stereo_layout=SIDE_BY_SIDE
+mirror_left=1
+spectrum_bands=DOUBLING
+spectrum_energy=QUADRATURE_SUM
+waveform_window=OSCILLOSCOPE
+peaks=1
+peak_decay=NORMAL
+volume_display=DB
+balance=0
+clock_mode=DATE
+clock_24h=1
+clock_color_source=THEME
+clock_color=07E0
+standby_display=CLOCK
+auto_standby_min=0
+silence_level=24

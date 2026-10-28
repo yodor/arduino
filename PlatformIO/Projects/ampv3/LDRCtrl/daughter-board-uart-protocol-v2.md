@@ -1,8 +1,8 @@
-# Master Board <-> Daughter Board UART Protocol — revision 16
+# Master Board <-> Daughter Board UART Protocol — revision 18
 
 Supersedes the original `daughter-board-uart-protocol.md` (and revisions 2 and 3
 of this file; the file name keeps its `-v2` for continuity). The daughter
-reports its revision in every `STATUS` reply (`PROTO=16`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`, revision 13 the NTC state in `ENV`, revision 14 the resync hint in `ENV`, revision 15 the `VER` query, revision 16 the AUTO preference) so a master can detect a
+reports its revision in every `STATUS` reply (`PROTO=18`; revision 8 added the `ENV` and `PROGRESS` queries, revision 9 the `LEARN` query and `FORGET`, revision 10 the master-controlled power-up -- see "Power-up and standby", revision 11 removed `CELLL`/`CELLR` from `ENV`, revision 12 added `SET SRC`/`SET LOAD`, `MODEL` and `COMP`, revision 13 the NTC state in `ENV`, revision 14 the resync hint in `ENV`, revision 15 the `VER` query, revision 16 the AUTO preference, revision 17 `WHY=WARMING`, revision 18 balance) so a master can detect a
 mismatch — **a master written for an earlier revision will misbehave** (see the
 migration table at the end).
 
@@ -84,7 +84,7 @@ so a master that shows the raw line on a narrow display, or clips it, still gets
 the useful part:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=OK VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=18
 ```
 
 A rejected `CAL R=…` on a unit whose calibration is fine — the reply carries the
@@ -92,13 +92,13 @@ reason, the volume fields keep their real values, and the next `STATUS` is back 
 `CAL=OK`:
 
 ```
-OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16 ERR=no ADS1115 detected on either channel
+OK STATUS=IDLE TEMP=28.0 UP=3725 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=ERR VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=18 ERR=no ADS1115 detected on either channel
 ```
 
 And the reply to a `CAL` that started — the same line while it runs:
 
 ```
-OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=16
+OK STATUS=BUSY TEMP=28.5 UP=44 VOL=0 DB=-54.0 MUTE=0 AMP_MUTE=0 CAL=PROCESSING VOLMIN=0 VOLMAX=31 RANGE=54.0 R=95000 RMIN=10000 RMAX=127000 RAUTO=1 LASTCAL=FULL PROTO=18
 ```
 
 | Key | Meaning |
@@ -151,6 +151,7 @@ OK ENV BLOCK=22.81 RAIL=3.3341 COMP=ON OFFL=-0.97 OFFR=-1.08 KL=-5.40 KR=-5.21 D
 | `NTC` | revision 13: the block NTC's state: `OK`, `OPEN` (missing or broken wire), `SHORT`, `BAD` (implausible reading, outside -20..+100 C). Anything but `OK` switches the compensation off (`COMP=NONTC`, no offsets) until it reads again. Appended at the end: masters parsing the older keys are unaffected |
 | `RESYNC` | revision 14: `1` = a resync (`CAL`) is recommended now, `0` = not needed |
 | `WHY` | the reason: `SPAN` (the block is further from the calibration temperature than the compensation has learned, and more than 1.5 C: it is extrapolating; a resync makes it exact and teaches the new range), `LIMIT` (30 C or more from the calibration temperature), `NOCOMP` (the compensation is not active -- learning, or switched off -- and the block moved more than 1 C), `SEEK` (the last calibration's quiet-point seek did not converge), `-` (none). Based on the block's 1-minute average, so it does not flicker. A faulty NTC gives no hint (`NTC=` reports it) |
+| (revision 17) | **`RESYNC=0 WHY=WARMING`**: a resync *would* apply, but the temperature is still settling after power-up (the amp was switched on less than 15 minutes ago, or the driver block still changes more than 0.25 C per 10 minutes). A resync now would be out of date within minutes; it becomes `RESYNC=1` once steady. **In standby** (the amp muted by the master's `AMP_MUTE ON`) there is no hint at all. `WHY=SEEK` is never delayed. Only the master's own `AMP_MUTE` commands count, not the firmware's brief mutes around calibrations. A display can show "temperature settling" for `WARMING` |
 
 The reply is instant: everything comes from running averages. **Revision 11 removed `CELLL` and `CELLR`** (the DS18B20 cell sensors are no longer supported: the drift follows the driver block). A master that parsed them must drop them; every other key keeps its order.
 
@@ -262,7 +263,7 @@ A read-only query (`VER` and `FW` are the same), answered at any time, also duri
 
 ```
 VER
-OK VER FW=2026-10-27e PROTO=16 BUILD=2026-10-27T10:31:49 HW=v1b HWREV=4 CALREV=4 CHIP=RP2040 CHIPREV=2 MHZ=150 FLASH=2048K UID=E6614103E73F2B25 BOARD=rpipicow CORE=6.1.0 SDK=2.3.0 NOTE=version info: VER / FW query, Version.hpp
+OK VER FW=2026-10-27e PROTO=18 BUILD=2026-10-27T10:31:49 HW=v1b HWREV=4 CALREV=4 CHIP=RP2040 CHIPREV=2 MHZ=150 FLASH=2048K UID=E6614103E73F2B25 BOARD=rpipicow CORE=6.1.0 SDK=2.3.0 NOTE=version info: VER / FW query, Version.hpp
 ```
 
 | Key | Meaning |
@@ -305,6 +306,21 @@ it becomes **`CAL=STALE`** (LDR mute on, volume refused) and a plain `CAL` re-so
 ```
 OK MODEL SRC=300 LOAD=10000 SOLVED_SRC=300 SOLVED_LOAD=10000 AUTO=BALANCED REACH=844600
 ```
+
+## Revision 18: balance (`BAL`)
+
+| Command | Reply |
+|---|---|
+| `BAL <n>`, n = -16..+16 | `OK` / `ERR usage: BAL <-16..16>` |
+| `BAL` (query, answered at any time) | `OK BAL=<n>` |
+
+Units of **0.25 dB** (+-4 dB). **Negative lowers the right channel, positive the left**; `0` is
+centre, where both channels play exactly their calibrated steps. The lowered channel plays
+between its table's steps, solved for the exact level under the same rules as the table (within
+about 0.01 dB of the requested level); at the quietest step it cannot go lower and stays there.
+It applies to every volume change, ramp, `MUTE OFF` and the return after a calibration; the
+temperature and rail compensation work on top. **Not stored**: like the volume, the master keeps
+it and sends it after power-up (it is 0 after a reset). Refused during a calibration (`ERR busy`).
 
 ## Calibration
 

@@ -34,6 +34,11 @@ public:
   // Returns false only for an unmute asked while a calibration holds the amp muted.
   bool setAmpMute(bool muted);
   bool ampMuted() const { return ampMuted_; }
+  // The amp state as COMMANDED by the master or the console (AMP_MUTE), not the firmware's
+  // own brief holds around calibrations: muted = standby. For the resync hint (warm-up).
+  static void noteAmpCommand(bool muted);
+  static bool ampCommandedMuted();
+  static uint32_t msSinceAmpOn();          // since the last commanded unmute (0 while muted)
 
   // Calibration mute hold: while at least one CalHold is alive the amp is held MUTED,
   // whatever its state was. During a calibration the audio path is disconnected anyway, so
