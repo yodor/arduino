@@ -6,4 +6,4 @@
 // A macro (not constexpr) so it can be glued into string literals, e.g. the
 // menu label "FW " FW_VERSION.
 #define FW_NAME    "RP2350 amp controller"
-#define FW_VERSION "2026.11.06d"
+#define FW_VERSION "2026.11.12a"

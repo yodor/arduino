@@ -1,4 +1,5 @@
 #include "Renderer.hpp"
+#include "Console.hpp"
 
 bool     NV3007Display::alignPairs = DISPLAY_ALIGN_PIXEL_PAIRS;
 uint8_t  NV3007Display::minRows    = DISPLAY_MIN_WINDOW_ROWS;
@@ -38,9 +39,7 @@ void Renderer::init() {
     }
 
     uint32_t actualHz = spi_get_baudrate(spi0);
-    Serial.print("[SPI] Speed: ");
-    Serial.print(actualHz);
-    Serial.println(" Hz");
+    Console::log("SPI", "Speed: %lu Hz", static_cast<unsigned long>(actualHz));
 
     // Menu wiring done (root-level "Brightness" item, see MenuContent.cpp);
     // IR control for brightness is still a possible future addition.

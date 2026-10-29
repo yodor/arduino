@@ -1,4 +1,5 @@
 #include "MasterConsole.hpp"
+#include "Console.hpp"
 #include "DaughterBoardLink.hpp"
 #include "Version.hpp"
 #include "RtcClock.hpp"
@@ -14,25 +15,25 @@ MasterConsole& MasterConsole::instance() {
 }
 
 void MasterConsole::begin() {
-    Serial.println("[Console] Type HELP for console commands.");
+    Console::log("Console", "Type HELP for console commands.");
 }
 
 void MasterConsole::printHelp() {
-    Serial.println("--- " FW_NAME " " FW_VERSION " console ---");
-    Serial.println("  HELP       this list");
-    Serial.println("  DAUGHTER   pass-through to the daughter board's bench console");
-    Serial.println("             (type ~. at the start of a line to come back)");
-    Serial.println("  SETTINGS   print the settings file (/settings.txt)");
-    Serial.println("  SETTINGS RESET   delete it: defaults from the next boot");
-    Serial.println("  BUTTONS    input monitor on/off: logs every raw edge on the four");
-    Serial.println("             button pins, each debounced press/release, and every");
-    Serial.println("             IR remote code with the action it maps to");
-    Serial.println("  TIME       show the clock module's time");
-    Serial.println("  TIME YYYY-MM-DD HH:MM:SS   set it");
+    Console::line("--- " FW_NAME " " FW_VERSION " console ---");
+    Console::line("  HELP       this list");
+    Console::line("  DAUGHTER   pass-through to the daughter board's bench console");
+    Console::line("             (type ~. at the start of a line to come back)");
+    Console::line("  SETTINGS   print the settings file (/settings.txt)");
+    Console::line("  SETTINGS RESET   delete it: defaults from the next boot");
+    Console::line("  BUTTONS    input monitor on/off: logs every raw edge on the four");
+    Console::line("             button pins, each debounced press/release, and every");
+    Console::line("             IR remote code with the action it maps to");
+    Console::line("  TIME       show the clock module's time");
+    Console::line("  TIME YYYY-MM-DD HH:MM:SS   set it");
 }
 
 void MasterConsole::enterPassthrough() {
-    Serial.println("[Console] Pass-through to the daughter console. Type ~. at the start of a line to return.");
+    Console::log("Console", "Pass-through to the daughter console. Type ~. at the start of a line to return.");
     m_atLineStart = true;
     m_heldTilde   = false;
     DaughterBoardLink::instance().enterPassthrough(); // sends DEBUG
@@ -41,8 +42,8 @@ void MasterConsole::enterPassthrough() {
 void MasterConsole::leavePassthrough() {
     DaughterBoardLink::instance().exitPassthrough(); // sends EXIT
     m_len = 0;
-    Serial.println();
-    Serial.println("[Console] Back on the master console (daughter returned to strict protocol).");
+    Console::blank();
+    Console::log("Console", "Back on the master console (daughter returned to strict protocol).");
 }
 
 // TIME                         -> print the RTC time
@@ -50,7 +51,7 @@ void MasterConsole::leavePassthrough() {
 void MasterConsole::handleTime(const char* args) {
     RtcClock& rtc = RtcClock::instance();
     if (!rtc.isPresent()) {
-        Serial.println("[Console] No DS3231 clock module found");
+        Console::log("Console", "No DS3231 clock module found");
         return;
     }
 
@@ -60,17 +61,16 @@ void MasterConsole::handleTime(const char* args) {
         RtcDateTime now;
         if (rtc.read(now)) {
             RtcClock::format(now, buf, sizeof(buf));
-            Serial.print("[Console] Time: ");
-            Serial.println(buf);
+            Console::log("Console", "Time: %s", buf);
         } else {
-            Serial.println("[Console] Reading the clock failed");
+            Console::log("Console", "Reading the clock failed");
         }
         return;
     }
 
     int y, mo, d, h, mi, s;
     if (sscanf(args, "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) != 6) {
-        Serial.println("[Console] Usage: TIME YYYY-MM-DD HH:MM:SS");
+        Console::log("Console", "Usage: TIME YYYY-MM-DD HH:MM:SS");
         return;
     }
     static const uint8_t kDays[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -79,7 +79,7 @@ void MasterConsole::handleTime(const char* args) {
               d <= (mo == 2 ? (leap ? 29 : 28) : kDays[mo - 1]) &&
               h >= 0 && h <= 23 && mi >= 0 && mi <= 59 && s >= 0 && s <= 59;
     if (!ok) {
-        Serial.println("[Console] That date/time isn't valid (years 2000-2099, 24h clock)");
+        Console::log("Console", "That date/time isn't valid (years 2000-2099, 24h clock)");
         return;
     }
 
@@ -88,10 +88,9 @@ void MasterConsole::handleTime(const char* args) {
     t.hour = static_cast<uint8_t>(h);  t.minute = static_cast<uint8_t>(mi); t.second = static_cast<uint8_t>(s);
     if (rtc.set(t)) {
         RtcClock::format(t, buf, sizeof(buf));
-        Serial.print("[Console] Clock set to ");
-        Serial.println(buf);
+        Console::log("Console", "Clock set to %s", buf);
     } else {
-        Serial.println("[Console] Setting the clock failed");
+        Console::log("Console", "Setting the clock failed");
     }
 }
 
@@ -110,20 +109,18 @@ void MasterConsole::handleLine(char* line) {
     } else if (!strcmp(line, "SETTINGS")) {
         PersistentSettings::instance().printFile();
     } else if (!strcmp(line, "SETTINGS RESET")) {
-        Serial.println(PersistentSettings::instance().resetFile()
-                       ? "[Console] Settings file deleted -- defaults from the next boot (a change before then saves again)"
-                       : "[Console] No settings file to delete");
+        Console::log("Console", "%s", PersistentSettings::instance().resetFile()
+                     ? "Settings file deleted -- defaults from the next boot (a change before then saves again)"
+                     : "No settings file to delete");
     } else if (!strcmp(line, "BUTTONS") || !strcmp(line, "BTN")) {
         InputEngine& in = InputEngine::instance();
         in.setMonitor(!in.monitor());
-        Serial.printf("[Console] Button monitor %s\r\n", in.monitor() ? "ON -- press the buttons or the remote; BUTTONS again to stop" : "OFF");
+        Console::log("Console", "Button monitor %s", in.monitor() ? "ON -- press the buttons or the remote; BUTTONS again to stop" : "OFF");
         in.printRawStates();
     } else if (!strncmp(line, "TIME", 4) && (line[4] == '\0' || line[4] == ' ')) {
         handleTime(line + 4);
     } else {
-        Serial.print("[Console] Unknown command '");
-        Serial.print(line);
-        Serial.println("' -- type HELP");
+        Console::log("Console", "Unknown command '%s' -- type HELP", line);
     }
 }
 

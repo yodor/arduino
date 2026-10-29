@@ -128,6 +128,9 @@ void DigitalVuMeterScreen::processAndDrawBar(BarPhysicsState& state, float val, 
 
     // 2. Extract clean, integer-synchronized drawable boundaries
     uint16_t w     = static_cast<uint16_t>(state.decay * maxBarWidth);
+    // A bar never goes fully dark: at silence it keeps a 1 px floor in its
+    // colour -- a short vertical line at the left of each meter.
+    if (w < 1) w = 1;
     uint16_t peakW = static_cast<uint16_t>(state.peak);
     if (peakW > maxBarWidth) peakW = maxBarWidth; // defensive: stay inside the meter
 

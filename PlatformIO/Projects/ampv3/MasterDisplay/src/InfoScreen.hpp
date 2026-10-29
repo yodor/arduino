@@ -33,6 +33,14 @@ public:
     void poke();                    // show / extend (volume or mute touched)
     void update();                  // call every loop: change detection + expiry
     bool isActive() const { return m_active; }
+
+    // The first volume press is passive: if the info isn't on the panel yet
+    // (neither this screen nor its popup), it only brings the popup up --
+    // the volume changes from the next press, while the info is visible. A
+    // press still held (or an IR key still repeating) stays passive until
+    // it's released. Clears up/down while passive; returns whether there was
+    // any volume input at all (the popup is poked for it).
+    bool filterFirstVolumePress(bool& up, bool& down, bool onThisScreen);
     void dismiss() { m_active = false; }
 
     // The middle-right readout, stepped with the remote's Options key on this
@@ -61,6 +69,7 @@ private:
     void drawSlot(uint8_t slot, int16_t x, uint8_t widthChars, const char* text, uint16_t color);
 
     bool     m_active     = false;
+    bool     m_volPassive = false;    // filterFirstVolumePress()
     RightInfo m_rightInfo = RightInfo::BPM;
     uint32_t m_lastPokeMs = 0;
 

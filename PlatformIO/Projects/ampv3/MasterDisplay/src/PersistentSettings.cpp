@@ -1,4 +1,5 @@
 #include "PersistentSettings.hpp"
+#include "Console.hpp"
 #include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
 #include "ColorTheme.hpp"
@@ -182,7 +183,7 @@ void PersistentSettings::applyLine(char* line, int lineNo) {
     if (!*s) return;
     char* eq = strchr(s, '=');
     if (!eq) {
-        Serial.printf("[Settings] line %d ignored (no '=')\r\n", lineNo);
+        Console::log("Settings", "line %d ignored (no '=')", lineNo);
         return;
     }
     *eq = '\0';
@@ -190,27 +191,26 @@ void PersistentSettings::applyLine(char* line, int lineNo) {
     char* val = trim(eq + 1);
     for (const Key& k : kKeys) {
         if (strcasecmp(k.name, key)) continue;
-        if (!k.read(val)) Serial.printf("[Settings] %s=%s: not a valid value -- default kept\r\n", key, val);
+        if (!k.read(val)) Console::log("Settings", "%s=%s: not a valid value -- default kept", key, val);
         return;
     }
-    Serial.printf("[Settings] unknown key '%s' ignored\r\n", key);
+    Console::log("Settings", "unknown key '%s' ignored", key);
 }
 
 void PersistentSettings::loadAndApply() {
     m_mounted = LittleFS.begin();
     if (!m_mounted) {
-        Serial.println("[Settings] LittleFS not available -- defaults in use, nothing will be saved. "
-                       "Choose a Flash Size with an FS partition (Tools menu).");
+        Console::log("Settings", "LittleFS not available -- defaults in use, nothing will be saved. Choose a Flash Size with an FS partition (Tools menu).");
         return;
     }
 
     File f = LittleFS.open(kPath, "r");
     if (!f) {
         if (importLegacy()) {
-            Serial.println("[Settings] Imported the old binary settings (v13) into " "/settings.txt");
+            Console::log("Settings", "Imported the old binary settings (v13) into /settings.txt");
             save();
         } else {
-            Serial.println("[Settings] No settings file yet -- defaults in use");
+            Console::log("Settings", "No settings file yet -- defaults in use");
         }
         return;
     }
@@ -231,7 +231,7 @@ void PersistentSettings::loadAndApply() {
         }
     }
     f.close();
-    Serial.printf("[Settings] Loaded %s (%d lines)\r\n", kPath, lineNo);
+    Console::log("Settings", "Loaded %s (%d lines)", kPath, lineNo);
     (void)applied;
 }
 
@@ -275,7 +275,7 @@ void PersistentSettings::save() {
     if (!m_mounted) return;
     File f = LittleFS.open(kTmpPath, "w");
     if (!f) {
-        Serial.println("[Settings] Could not write the settings file");
+        Console::log("Settings", "Could not write the settings file");
         return;
     }
     f.print("# " FW_NAME " settings -- key=value; unknown keys are ignored, missing ones use defaults\n");
@@ -288,21 +288,21 @@ void PersistentSettings::save() {
     }
     f.close();
     if (!LittleFS.rename(kTmpPath, kPath)) {
-        Serial.println("[Settings] Could not replace the settings file");
+        Console::log("Settings", "Could not replace the settings file");
         return;
     }
-    Serial.println("[Settings] Saved");
+    Console::log("Settings", "Saved");
 }
 
 void PersistentSettings::printFile() {
-    if (!m_mounted) { Serial.println("[Settings] LittleFS not available"); return; }
+    if (!m_mounted) { Console::log("Settings", "LittleFS not available"); return; }
     File f = LittleFS.open(kPath, "r");
-    if (!f) { Serial.println("[Settings] No settings file -- defaults in use"); return; }
+    if (!f) { Console::log("Settings", "No settings file -- defaults in use"); return; }
     // The file uses plain \n line ends; the terminal gets \r\n.
     while (f.available()) {
         int c = f.read();
-        if (c == '\n') Serial.write('\r');
-        Serial.write(static_cast<uint8_t>(c));
+        if (c == '\n') Console::write('\r');
+        Console::write(static_cast<char>(c));
     }
     f.close();
 }

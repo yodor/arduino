@@ -1,4 +1,5 @@
 #include "PowerControl.hpp"
+#include "Console.hpp"
 #include "Config.hpp"
 #include "VolumeControl.hpp"
 
@@ -29,7 +30,7 @@ void PowerControl::setRelay(bool on) {
     m_relayOn = on;
     digitalWrite(RELAY_CTRL_PIN, on ? HIGH : LOW);
     digitalWrite(PWR_BTN_LED_PIN, on ? HIGH : LOW);
-    Serial.printf("[Power] Mains relay %s\r\n", on ? "ON" : "OFF");
+    Console::log("Power", "Mains relay %s", on ? "ON" : "OFF");
 }
 
 void PowerControl::enter(State s) {
@@ -39,15 +40,15 @@ void PowerControl::enter(State s) {
 
 void PowerControl::toggle() {
     if (inTransition()) {
-        Serial.println("[Power] Power key ignored -- a power sequence is running");
+        Console::log("Power", "Power key ignored -- a power sequence is running");
         return;
     }
     if (isStandby()) {
-        Serial.println("[Power] Switching on");
+        Console::log("Power", "Switching on");
         VolumeControl::instance().ampMuteOn();
         enter(State::MUTING_FOR_ON);
     } else {
-        Serial.println("[Power] Switching to standby");
+        Console::log("Power", "Switching to standby");
         VolumeControl::instance().ampMuteOn();
         enter(State::MUTING_FOR_OFF);
     }
@@ -72,14 +73,14 @@ void PowerControl::update() {
             if (elapsed >= POWER_ON_SETTLE_MS) {
                 VolumeControl::instance().ampMuteOff();
                 enter(State::ON);
-                Serial.println("[Power] On");
+                Console::log("Power", "On");
             }
             break;
         case State::MUTING_FOR_OFF:
             if (muted) {
                 setRelay(false);
                 enter(State::STANDBY);
-                Serial.println("[Power] Standby");
+                Console::log("Power", "Standby");
             }
             break;
         default:

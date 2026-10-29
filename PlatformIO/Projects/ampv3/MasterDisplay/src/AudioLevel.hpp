@@ -1,4 +1,5 @@
 #pragma once
+#include "FastMath.hpp"
 #include <Arduino.h>
 #include <cmath>
 
@@ -24,7 +25,7 @@ inline float computeRms(const int16_t* samples, size_t count) {
         float s = samples[i] / 2048.0f; // normalize against the same +/-2048 full-scale used elsewhere
         sumSq += s * s;
     }
-    return sqrtf(sumSq / static_cast<float>(count));
+    return fastSqrt(sumSq / static_cast<float>(count));
 }
 
 inline float dbNormalize(float rms) {

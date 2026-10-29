@@ -1,4 +1,5 @@
 #include "MenuScreen.hpp"
+#include "InputEngine.hpp"
 #include "Renderer.hpp"
 #include <cstdio>
 #include <cstring>
@@ -689,4 +690,25 @@ void MenuScreen::drawSliderBody() {
     if (sl->format) sl->format(m_sliderValue, text, sizeof(text));
     gfx->fillRect(0, kSlValueY, SCREEN_WIDTH, 24, COLOR_BLACK);
     drawCentered(gfx, text, 3, kSlValueY, COLOR_WHITE);
+}
+
+// --- The physical Up/Down buttons ----------------------------------------------
+
+void MenuScreen::handleUpDownButtons() {
+    InputEngine& in = InputEngine::instance();
+    bool upPressed   = in.volUpJustPressed();
+    bool downPressed = in.volDownJustPressed();
+    if (upPressed)   moveFocus(-1);
+    if (downPressed) moveFocus(1);
+
+    int heldDir = in.isVolUpHeld() ? -1 : in.isVolDownHeld() ? 1 : 0;
+    uint32_t now = millis();
+    if (heldDir == 0 || upPressed || downPressed) {
+        m_holdStartMs = m_lastRepeatMs = now;
+    } else if (acceptsRepeats() &&
+               now - m_holdStartMs >= MENU_REPEAT_DELAY_MS &&
+               now - m_lastRepeatMs >= MENU_REPEAT_RATE_MS) {
+        moveFocus(heldDir);
+        m_lastRepeatMs = now;
+    }
 }

@@ -116,6 +116,12 @@ public:
     // getBars()); returns that count.
     size_t getMiniBars(float* out) const;
 
+    // Diagnostics: did the last pushChunk() run an FFT, the stage times of
+    // that run, and the band building after it (us).
+    bool                     ranFft() const       { return m_ranFft; }
+    const FftEngine::Stages& fftStages() const    { return m_engine.lastStages(); }
+    uint32_t                 bandsUs() const      { return m_bandsUs; }
+
     // How many of getBars()'s output slots are actually valid right now --
     // DOUBLING_BAND_COUNT, FIXED_BAND_COUNT, or FULL_BAND_COUNT depending
     // on the active BandLayoutMode. Callers should never read past this
@@ -151,4 +157,6 @@ private:
     float m_miniBars[DOUBLING_BAND_COUNT] = {};
     float m_barsL[MAX_BAND_COUNT] = {};
     float m_barsR[MAX_BAND_COUNT] = {};
+    bool     m_ranFft  = false;
+    uint32_t m_bandsUs = 0;
 };

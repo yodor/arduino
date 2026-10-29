@@ -1,5 +1,6 @@
 #pragma once
 #include "Config.hpp"
+#include "Console.hpp"
 #include "UIEvent.hpp"
 
 // Debounce state for one physical button. Supports three ways to read it:
@@ -51,8 +52,7 @@ struct DebouncedButton {
             if (rawEdges == 0) firstEdgeMs = now;
             ++rawEdges;
             if (monitor) {
-                Serial.printf("[Btn] %-5s raw %s  (+%lums)\r\n", name, reading == LOW ? "LOW " : "HIGH",
-                              static_cast<unsigned long>(now - firstEdgeMs));
+                Console::log("Btn", "%-5s raw %s  (+%lums)", name, reading == LOW ? "LOW " : "HIGH", static_cast<unsigned long>(now - firstEdgeMs));
             }
             lastChangeMs = now;
             lastRawState = reading;
@@ -63,8 +63,7 @@ struct DebouncedButton {
             // real, settled state change.
             stableState = reading;
             if (monitor) {
-                Serial.printf("[Btn] %-5s %s after %u raw edge%s\r\n", name, stableState == LOW ? "PRESSED " : "released",
-                              rawEdges, rawEdges == 1 ? "" : "s");
+                Console::log("Btn", "%-5s %s after %u raw edge%s", name, stableState == LOW ? "PRESSED " : "released", rawEdges, rawEdges == 1 ? "" : "s");
             }
             rawEdges = 0;
             if (stableState == LOW) {
@@ -78,8 +77,7 @@ struct DebouncedButton {
             // Raw edges that settled back where they started (a contact
             // that blipped shorter than the debounce time): no press.
             if (monitor) {
-                Serial.printf("[Btn] %-5s glitch ignored (%u raw edge%s, shorter than %lums)\r\n", name, rawEdges,
-                              rawEdges == 1 ? "" : "s", static_cast<unsigned long>(debounceMs));
+                Console::log("Btn", "%-5s glitch ignored (%u raw edge%s, shorter than %lums)", name, rawEdges, rawEdges == 1 ? "" : "s", static_cast<unsigned long>(debounceMs));
             }
             rawEdges = 0;
         }
@@ -111,6 +109,13 @@ public:
     // re-debounce or touch the pin itself. Call pollEvents() once per loop
     // iteration as usual before relying on these.
     bool isVolUpHeld() const   { return m_btnVolUp.isHeld(); }
+    // Volume intent from ANY source: a held button, or a GAIN_UP / GAIN_DOWN
+    // event (the remote's key and its repeat train, DOWN's single tap) seen
+    // within IR_VOLUME_HOLD_MS -- the remote only reports a held key as a
+    // train of repeat codes, so it counts as held until the train stops.
+    bool volUpRequested() const   { return isVolUpHeld()   || (millis() - m_lastGainUpMs   < IR_VOLUME_HOLD_MS); }
+    bool volDownRequested() const { return isVolDownHeld() || (millis() - m_lastGainDownMs < IR_VOLUME_HOLD_MS); }
+
     // DOWN counts as "held" (volume stepping down) only after DOWN_HOLD_MS
     // while the double-click gesture is on -- a quick tap is held back to see
     // whether a second one follows (see setDownGestures()).
@@ -179,6 +184,8 @@ private:
     bool m_leftConsumedByLongPress  = false;
     bool m_rightConsumedByLongPress = false;
     bool m_monitor = false;
+    uint32_t m_lastGainUpMs   = 0x80000000u; // when GAIN_UP / GAIN_DOWN last went out (volUp/DownRequested())
+    uint32_t m_lastGainDownMs = 0x80000000u;
     bool     m_downGestures   = false;
     bool     m_downTapPending = false; // a tap waiting to see if a second one follows
     uint32_t m_downTapMs      = 0;

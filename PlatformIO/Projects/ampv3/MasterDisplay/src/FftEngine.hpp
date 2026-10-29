@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
-#include "dsp/transform_functions.h" // CMSIS-DSP (lib/CMSISDSP): arm_rfft_fast_f32
+#include "dsp/transform_functions.h"     // CMSIS-DSP (lib/CMSISDSP): arm_rfft_fast_f32
+#include "dsp/complex_math_functions.h"  // arm_cmplx_mag_f32
+#include "dsp/basic_math_functions.h"    // arm_scale_f32
 
 // Reusable real-FFT engine: sliding-window capture + DC removal + Hann
 // windowing + FFT + magnitude computation, parameterized by window size
@@ -21,6 +23,11 @@ class FftEngine {
 public:
     explicit FftEngine(size_t fftSize);
     ~FftEngine();
+
+    // Where the last FFT run's time went (diagnostics): the window shift,
+    // DC removal + Hann windowing, the two transforms, the magnitudes. us.
+    struct Stages { uint32_t shift = 0, window = 0, fft = 0, mags = 0; };
+    const Stages& lastStages() const { return m_stages; }
 
     // Not copyable -- owns raw malloc'd buffers.
     FftEngine(const FftEngine&) = delete;
@@ -92,4 +99,5 @@ private:
     // real rate -- jitter from timer resolution, not a genuine rate
     // change.
     uint32_t m_lastRunUs = 0;
+    Stages m_stages;
 };

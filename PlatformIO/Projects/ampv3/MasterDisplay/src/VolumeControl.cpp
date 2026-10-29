@@ -1,4 +1,7 @@
 #include "VolumeControl.hpp"
+#include "Console.hpp"
+#include <cstdio>
+#include <cstring>
 #include <cstring>
 #include "DaughterBoardLink.hpp"
 
@@ -159,12 +162,12 @@ void VolumeControl::syncFromDaughterStatus() {
     // completion is STATUS going back to IDLE).
     bool calibratingNow = s.calibrating();
     if (calibratingNow && !m_wasCalibrating) {
-        Serial.println("[Calibration] Daughter reports CAL=PROCESSING");
+        Console::log("Calibration", "Daughter reports CAL=PROCESSING");
     } else if (!calibratingNow && m_wasCalibrating && !s.busy) {
-        Serial.printf("[Calibration] Finished: %s", calStateText(s.cal));
-        if (s.cal == DaughterCalState::OK) Serial.printf(", LASTCAL=%s", s.lastCal);
-        if (s.hasErr) Serial.printf(" (%s)", s.err);
-        Serial.println();
+        char extra[96] = "";
+        if (s.cal == DaughterCalState::OK) snprintf(extra, sizeof(extra), ", LASTCAL=%s", s.lastCal);
+        if (s.hasErr) snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), " (%s)", s.err);
+        Console::log("Calibration", "Finished: %s%s", calStateText(s.cal), extra);
     }
     m_wasCalibrating = calibratingNow;
 
@@ -174,7 +177,7 @@ void VolumeControl::syncFromDaughterStatus() {
     // start-up statuses never show CAL leaving OK.
     if (m_haveUp && s.upSeconds + 2 < m_lastUp) {
         m_ready = false;
-        Serial.println("[Volume] Daughter restarted -- will restore balance and unmute once it's calibrated");
+        Console::log("Volume", "Daughter restarted -- will restore balance and unmute once it's calibrated");
     }
     m_lastUp = s.upSeconds;
     m_haveUp = true;
@@ -196,15 +199,14 @@ void VolumeControl::syncFromDaughterStatus() {
             m_lastMuteChangeMs = millis();
         }
         m_ready = true;
-        Serial.printf("[Volume] Calibrated -- %s (step %d)\r\n",
-                      m_muted ? "staying muted (user mute)" : "unmuting", s.vol);
+        Console::log("Volume", "Calibrated -- %s (step %d)", m_muted ? "staying muted (user mute)" : "unmuting", s.vol);
         retryPendingCommands();
         return;
     }
 
     if (!calOk) {
         m_ready = false;
-        Serial.printf("[Volume] Calibration needed (%s) -- the daughter keeps the volume muted\r\n", calStateText(s.cal));
+        Console::log("Volume", "Calibration needed (%s) -- the daughter keeps the volume muted", calStateText(s.cal));
         return;
     }
 

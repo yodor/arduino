@@ -1,8 +1,7 @@
 #include "MenuContent.hpp"
+#include "Console.hpp"
+#include "SystemInfo.hpp"
 #include "DebugFlags.hpp"
-#if defined(PICO_RP2350) && PICO_RP2350
-#include "hardware/structs/sysinfo.h"
-#endif
 #include "MenuScreen.hpp"
 #include "Version.hpp"
 #include "ScreenRegistry.hpp"
@@ -29,7 +28,7 @@ namespace {
 
 void menuAction_Calibrate() {
     VolumeControl::instance().calibrate();
-    Serial.println("[Menu] Calibration requested");
+    Console::log("Menu", "Calibration requested");
 }
 
 // --- INFO page helpers -------------------------------------------------
@@ -170,7 +169,7 @@ bool saveTime(const int16_t* v) {
     bool ok = RtcClock::instance().set(t);
     char buf[20];
     RtcClock::format(t, buf, sizeof(buf));
-    Serial.printf("[Clock] %s %s\r\n", ok ? "Time set:" : "Setting the time failed:", buf);
+    Console::log("Clock", "%s %s", ok ? "Time set:" : "Setting the time failed:", buf);
     return ok;
 }
 
@@ -196,7 +195,7 @@ bool saveDate(const int16_t* v) {
     bool ok = RtcClock::instance().set(t);
     char buf[20];
     RtcClock::format(t, buf, sizeof(buf));
-    Serial.printf("[Clock] %s %s\r\n", ok ? "Date set:" : "Setting the date failed:", buf);
+    Console::log("Clock", "%s %s", ok ? "Date set:" : "Setting the date failed:", buf);
     return ok;
 }
 
@@ -570,13 +569,13 @@ void menuAction_StartCalibration() {
     bool same = s.valid && (g_rSelAuto ? s.rAuto : (!s.rAuto && s.rOhms == g_rSelOhms));
     if (same) {
         vc.calibrate(VolumeControl::CalR::KEEP_R);
-        Serial.println("[Menu] Calibration requested");
+        Console::log("Menu", "Calibration requested");
     } else if (g_rSelAuto) {
         vc.calibrate(VolumeControl::CalR::AUTO_R);
-        Serial.println("[Menu] Calibration requested, Rtotal AUTO");
+        Console::log("Menu", "Calibration requested, Rtotal AUTO");
     } else {
         vc.calibrate(VolumeControl::CalR::SET_R, g_rSelOhms);
-        Serial.printf("[Menu] Calibration requested, Rtotal %lu ohm\r\n", static_cast<unsigned long>(g_rSelOhms));
+        Console::log("Menu", "Calibration requested, Rtotal %lu ohm", static_cast<unsigned long>(g_rSelOhms));
     }
 }
 
@@ -727,9 +726,9 @@ size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
 // Calibration -> Forget (rev 9 FORGET). Cancel is first and
 // focused; picking one of the others shows the Status page, where the ~3 s
 // of BUSY and the resulting state can be watched.
-void menuAction_ForgetCal()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::CAL);  Serial.println("[Menu] FORGET CAL requested"); }
-void menuAction_ForgetComp() { VolumeControl::instance().forget(DaughterBoardLink::Forget::COMP); Serial.println("[Menu] FORGET COMP requested"); }
-void menuAction_ForgetAll()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::ALL);  Serial.println("[Menu] FORGET ALL requested"); }
+void menuAction_ForgetCal()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::CAL);  Console::log("Menu", "FORGET CAL requested"); }
+void menuAction_ForgetComp() { VolumeControl::instance().forget(DaughterBoardLink::Forget::COMP); Console::log("Menu", "FORGET COMP requested"); }
+void menuAction_ForgetAll()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::ALL);  Console::log("Menu", "FORGET ALL requested"); }
 
 const MenuValueOption kForgetOptions[] = {
     { "Cancel",      nullptr,               nullptr },
@@ -796,12 +795,12 @@ void describeLoad(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink:
 void menuAction_ApplySrc() {
     if (static_cast<int32_t>(g_editSrc) == DaughterBoardLink::instance().model().src) return; // unchanged
     VolumeControl::instance().setModelSource(g_editSrc);
-    Serial.printf("[Menu] Source impedance -> %lu ohm\r\n", static_cast<unsigned long>(g_editSrc));
+    Console::log("Menu", "Source impedance -> %lu ohm", static_cast<unsigned long>(g_editSrc));
 }
 void menuAction_ApplyLoad() {
     if (static_cast<int32_t>(g_editLoad) == DaughterBoardLink::instance().model().load) return;
     VolumeControl::instance().setModelLoad(g_editLoad);
-    Serial.printf("[Menu] Load impedance -> %lu ohm\r\n", static_cast<unsigned long>(g_editLoad));
+    Console::log("Menu", "Load impedance -> %lu ohm", static_cast<unsigned long>(g_editLoad));
 }
 
 const MenuEditor kSrcEditor  = { 4, {1, 1, 1, 1},       '\0', loadSrc,  limitsDigit, saveSrc,  nullptr, describeSrc  };
@@ -849,9 +848,9 @@ size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
 // settling -- deeper Rtotal sits the series cell darker at the quiet steps,
 // where it's slowest. Shown from MODEL's AUTO=; choosing one sends SET AUTO
 // and shows the Model overview (CAL may go STALE: a calibration re-solves).
-void menuSet_AutoSnappy()   { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::SNAPPY);   Serial.println("[Menu] SET AUTO SNAPPY"); }
-void menuSet_AutoBalanced() { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::BALANCED); Serial.println("[Menu] SET AUTO BALANCED"); }
-void menuSet_AutoDeep()     { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::DEEP);     Serial.println("[Menu] SET AUTO DEEP"); }
+void menuSet_AutoSnappy()   { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::SNAPPY);   Console::log("Menu", "SET AUTO SNAPPY"); }
+void menuSet_AutoBalanced() { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::BALANCED); Console::log("Menu", "SET AUTO BALANCED"); }
+void menuSet_AutoDeep()     { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::DEEP);     Console::log("Menu", "SET AUTO DEEP"); }
 bool autoPrefIs(const char* p) { DaughterBoardLink::instance().requestModel(); return !strcmp(DaughterBoardLink::instance().model().autoPref, p); }
 bool menuIsActive_AutoSnappy()   { return autoPrefIs("SNAPPY"); }
 bool menuIsActive_AutoBalanced() { return autoPrefIs("BALANCED"); }
@@ -898,8 +897,8 @@ void menuAction_DisplayTest() { DisplayTestScreen::requestStart(); }
 // Amp Mute: the daughter's AMP_MUTE, by hand. The power sequence drives it
 // too (muted in standby, released at the end of power-on), so this is for
 // checks while the unit is on.
-void menuSet_AmpMuteOn()  { VolumeControl::instance().ampMuteOn();  Serial.println("[Menu] AMP_MUTE ON"); }
-void menuSet_AmpMuteOff() { VolumeControl::instance().ampMuteOff(); Serial.println("[Menu] AMP_MUTE OFF"); }
+void menuSet_AmpMuteOn()  { VolumeControl::instance().ampMuteOn();  Console::log("Menu", "AMP_MUTE ON"); }
+void menuSet_AmpMuteOff() { VolumeControl::instance().ampMuteOff(); Console::log("Menu", "AMP_MUTE OFF"); }
 bool menuIsActive_AmpMuteOn()  { return VolumeControl::instance().isAmpMuted(); }
 bool menuIsActive_AmpMuteOff() { return !VolumeControl::instance().isAmpMuted(); }
 const MenuValueOption kAmpMuteOptions[] = {
@@ -910,8 +909,8 @@ const MenuValueOption kAmpMuteOptions[] = {
 // Compensation: the daughter's thermal compensation (COMP ON/OFF), e.g. for
 // an A/B listen. The daughter doesn't store it -- it boots ON. Shown from
 // ENV's COMP (ON / PART / LEARNING count as on), polled while the menu reads it.
-void menuSet_CompOn()  { VolumeControl::instance().setCompensation(true);  Serial.println("[Menu] COMP ON"); }
-void menuSet_CompOff() { VolumeControl::instance().setCompensation(false); Serial.println("[Menu] COMP OFF"); }
+void menuSet_CompOn()  { VolumeControl::instance().setCompensation(true);  Console::log("Menu", "COMP ON"); }
+void menuSet_CompOff() { VolumeControl::instance().setCompensation(false); Console::log("Menu", "COMP OFF"); }
 bool menuIsActive_CompOn()  { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 1; }
 bool menuIsActive_CompOff() { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 0; }
 const MenuValueOption kCompOptions[] = {
@@ -928,27 +927,17 @@ size_t fillMasterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
     addLine(lines, n, maxLines, "FW %s", FW_VERSION);
     addLine(lines, n, maxLines, "Built %s", __DATE__);
     addLine(lines, n, maxLines, "  at %s", __TIME__);
-#if defined(PICO_RP2350) && PICO_RP2350
-    unsigned rev = (sysinfo_hw->chip_id >> 28) & 0xF;
-    addLine(lines, n, maxLines, "RP2350 A%u, %lu MHz", rev, static_cast<unsigned long>(rp2040.f_cpu() / 1000000));
-#else
-    addLine(lines, n, maxLines, "RP2040, %lu MHz", static_cast<unsigned long>(rp2040.f_cpu() / 1000000));
-#endif
-#if defined(__riscv) || defined(__riscv__)
-    addLine(lines, n, maxLines, "Arch RISC-V (Hazard3)");
-#else
-    addLine(lines, n, maxLines, "Arch ARM Cortex-M33");
-#endif
-#ifdef PICO_FLASH_SIZE_BYTES
-    addLine(lines, n, maxLines, "Flash %luK", static_cast<unsigned long>(PICO_FLASH_SIZE_BYTES / 1024));
-#endif
-    addLine(lines, n, maxLines, "UID %s", rp2040.getChipID());
-#ifdef ARDUINO_PICO_VERSION_STR
-    addLine(lines, n, maxLines, "Core %s", ARDUINO_PICO_VERSION_STR);
-#endif
-#ifdef PICO_SDK_VERSION_STRING
-    addLine(lines, n, maxLines, "SDK %s", PICO_SDK_VERSION_STRING);
-#endif
+    if (SystemInfo::chipRevision()) {
+        addLine(lines, n, maxLines, "%s A%u, %lu MHz", SystemInfo::chipName(), SystemInfo::chipRevision(),
+                static_cast<unsigned long>(SystemInfo::cpuMHz()));
+    } else {
+        addLine(lines, n, maxLines, "%s, %lu MHz", SystemInfo::chipName(), static_cast<unsigned long>(SystemInfo::cpuMHz()));
+    }
+    addLine(lines, n, maxLines, "Arch %s", SystemInfo::archName());
+    if (SystemInfo::flashKB()) addLine(lines, n, maxLines, "Flash %luK", static_cast<unsigned long>(SystemInfo::flashKB()));
+    addLine(lines, n, maxLines, "UID %s", SystemInfo::uniqueId());
+    if (*SystemInfo::coreVersion()) addLine(lines, n, maxLines, "Core %s", SystemInfo::coreVersion());
+    if (*SystemInfo::sdkVersion())  addLine(lines, n, maxLines, "SDK %s", SystemInfo::sdkVersion());
     addLine(lines, n, maxLines, "Expects protocol %u", DAUGHTER_PROTO_EXPECTED);
     unsigned long up = millis() / 1000;
     addLine(lines, n, maxLines, "Up %lud %02lu:%02lu:%02lu", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
@@ -1002,10 +991,10 @@ const MenuItem kVersionsSubmenuItems[] = {
 };
 
 // Diagnostics > Debug Output: the serial debug lines, at run time (not saved).
-void menuSet_DbgAudioOn()  { DebugFlags::audio = true;  Serial.println("[Menu] Audio debug output on"); }
-void menuSet_DbgAudioOff() { DebugFlags::audio = false; Serial.println("[Menu] Audio debug output off"); }
-void menuSet_DbgPerfOn()   { DebugFlags::perf  = true;  Serial.println("[Menu] Perf debug output on"); }
-void menuSet_DbgPerfOff()  { DebugFlags::perf  = false; Serial.println("[Menu] Perf debug output off"); }
+void menuSet_DbgAudioOn()  { DebugFlags::audio = true;  Console::log("Menu", "Audio debug output on"); }
+void menuSet_DbgAudioOff() { DebugFlags::audio = false; Console::log("Menu", "Audio debug output off"); }
+void menuSet_DbgPerfOn()   { DebugFlags::perf  = true;  Console::log("Menu", "Perf debug output on"); }
+void menuSet_DbgPerfOff()  { DebugFlags::perf  = false; Console::log("Menu", "Perf debug output off"); }
 bool menuIsActive_DbgAudioOn()  { return  DebugFlags::audio; }
 bool menuIsActive_DbgAudioOff() { return !DebugFlags::audio; }
 bool menuIsActive_DbgPerfOn()   { return  DebugFlags::perf; }
@@ -1057,8 +1046,8 @@ void formatAutoStandby(const int16_t* v, uint8_t, char* out, size_t outSize) {
 bool saveAutoStandby(const int16_t* v) {
     DisplaySettings::instance().setAutoStandbyMinutes(static_cast<uint8_t>(v[0]));
     PersistentSettings::instance().markDirty();
-    if (v[0]) Serial.printf("[Menu] Auto standby after %d min of silence\r\n", static_cast<int>(v[0]));
-    else      Serial.println("[Menu] Auto standby off");
+    if (v[0]) Console::log("Menu", "Auto standby after %d min of silence", static_cast<int>(v[0]));
+    else      Console::log("Menu", "Auto standby off");
     return true;
 }
 const MenuEditor kAutoStandbyEditor = { 1, {6}, ' ', loadAutoStandby, limitsAutoStandby, saveAutoStandby, formatAutoStandby };
@@ -1071,7 +1060,7 @@ bool saveSilence(const int16_t* v) {
     if (t < 1) t = 1;
     DisplaySettings::instance().setAutoStandbyThreshold(static_cast<uint16_t>(t));
     PersistentSettings::instance().markDirty();
-    Serial.printf("[Menu] Silence level %lu counts\r\n", static_cast<unsigned long>(t));
+    Console::log("Menu", "Silence level %lu counts", static_cast<unsigned long>(t));
     return true;
 }
 void describeSilence(char* out, size_t n) {

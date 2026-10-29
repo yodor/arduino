@@ -1,4 +1,5 @@
 #include "BeatDetector.hpp"
+#include "FastMath.hpp"
 #include "Config.hpp"
 #include <cmath>
 #include <cstring>
@@ -121,7 +122,7 @@ float BeatDetector::estimate() {
     float r0 = 0.0f;
     for (int i = 0; i < kHistory; ++i) { x[i] -= mean; r0 += x[i] * x[i]; }
     // Practically flat onsets: nothing to correlate. (Bench: real music 0.05-0.09.)
-    if (sqrtf(r0 / kHistory) < 0.02f) return 0.0f;
+    if (fastSqrt(r0 / kHistory) < 0.02f) return 0.0f;
 
     // Autocorrelation over the lags for 60..180 BPM -- and their doubles, for
     // the harmonic check below.

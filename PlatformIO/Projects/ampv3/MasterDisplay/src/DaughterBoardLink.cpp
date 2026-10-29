@@ -1,4 +1,5 @@
 #include "DaughterBoardLink.hpp"
+#include "Console.hpp"
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -82,7 +83,7 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     if (m_passthrough) return false;                          // the console owns the UART
     if (m_status == DaughterCmdStatus::PENDING) return false; // one command in flight at a time
 
-    if (DAUGHTER_LINK_TRACE) { Serial.print("[UART TX] "); Serial.println(line); }
+    if (DAUGHTER_LINK_TRACE) Console::log("UART TX", "%s", line);
 
     // Bare '\n' terminator -- the daughter accepts '\r', '\n' or both.
     Serial1.print(line);
@@ -259,10 +260,8 @@ bool DaughterBoardLink::parseStatusLine(const char* line) {
 
     if (s.proto != DAUGHTER_PROTO_EXPECTED && !m_protoWarned) {
         m_protoWarned = true;
-        Serial.print("[Daughter] WARNING: daughter reports PROTO=");
-        Serial.print(s.proto);
-        Serial.print(", this master is written for PROTO=");
-        Serial.println(DAUGHTER_PROTO_EXPECTED);
+        Console::log("Daughter", "WARNING: daughter reports PROTO=%u, this master is written for PROTO=%u",
+                     static_cast<unsigned>(s.proto), static_cast<unsigned>(DAUGHTER_PROTO_EXPECTED));
     }
     return true;
 }
@@ -404,9 +403,8 @@ bool DaughterBoardLink::parseVerLine(const char* line) {
     v.receivedMs = millis();
     m_version    = v;
     if (first) {
-        Serial.printf("[Daughter] Firmware %s (built %s), %s %s rev %s, protocol %u\r\n",
-                      v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
-        if (v.note[0]) Serial.printf("[Daughter] Release note: %s\r\n", v.note);
+        Console::log("Daughter", "Firmware %s (built %s), %s %s rev %s, protocol %u", v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
+        if (v.note[0]) Console::log("Daughter", "Release note: %s", v.note);
     }
     return true;
 }
@@ -432,7 +430,7 @@ bool DaughterBoardLink::parseModelLine(const char* line) {
 }
 
 void DaughterBoardLink::handleResponseLine(const char* line) {
-    if (DAUGHTER_LINK_TRACE) { Serial.print("[UART RX] "); Serial.println(line); }
+    if (DAUGHTER_LINK_TRACE) Console::log("UART RX", "%s", line);
 
     PendingCmd cmd        = m_pending;
     bool       wasPending = (m_status == DaughterCmdStatus::PENDING);
@@ -450,7 +448,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
                 m_calStart = DaughterCalStart::STARTED;
                 m_progress = DaughterProgress();     // forget the previous run's "DONE"
                 m_lastProgressSentMs = 0;            // ask for progress right away
-                Serial.println("[Daughter] Calibration started");
+                Console::log("Daughter", "Calibration started");
             } else {
                 // Rejected (IDLE + CAL=ERR) or the boot hold -- either way
                 // nothing was changed on the daughter.
@@ -475,8 +473,7 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
     }
 
     if (!wasPending) {
-        Serial.print("[Daughter] Unexpected line (no command in flight): ");
-        Serial.println(line);
+        Console::log("Daughter", "Unexpected line (no command in flight): %s", line);
         return;
     }
 
@@ -491,15 +488,13 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         setError(line);
         if (cmd == PendingCmd::COMP || cmd == PendingCmd::FORGET || cmd == PendingCmd::SET_MODEL || cmd == PendingCmd::BAL ||
             cmd == PendingCmd::AMP_MUTE_ON || cmd == PendingCmd::AMP_MUTE_OFF) {
-            Serial.print("[Daughter] Command refused: ");
-            Serial.println(line);
+            Console::log("Daughter", "Command refused: %s", line);
         }
         requestStatusRefresh();
     } else {
         // Every branch must leave m_status != PENDING, or every later send
         // would be refused until the timeout (a real bug, fixed earlier).
-        Serial.print("[Daughter] Unrecognized reply: ");
-        Serial.println(line);
+        Console::log("Daughter", "Unrecognized reply: %s", line);
         setError(line);
     }
 }
@@ -530,7 +525,7 @@ void DaughterBoardLink::update() {
         if (c == '\r') continue;
         if (c == '\n') {
             if (m_lineOverflow) {
-                Serial.println("[Daughter] Reply longer than the line buffer -- dropped");
+                Console::log("Daughter", "Reply longer than the line buffer -- dropped");
             } else if (m_lineLen > 0) {
                 m_lineBuf[m_lineLen] = '\0';
                 handleResponseLine(m_lineBuf);
@@ -546,14 +541,14 @@ void DaughterBoardLink::update() {
 
     // Should never fire with kRxFifoSize -- if it does, a reply was mangled.
     if (Serial1.overflow()) {
-        Serial.println("[Daughter] UART receive overflow -- bytes were lost");
+        Console::log("Daughter", "UART receive overflow -- bytes were lost");
     }
 
     uint32_t now = millis();
 
     if (m_status == DaughterCmdStatus::PENDING &&
         (now - m_commandSentMs > DAUGHTER_RESPONSE_TIMEOUT_MS)) {
-        if (DAUGHTER_LINK_TRACE) Serial.println("[UART] TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
+        if (DAUGHTER_LINK_TRACE) Console::log("UART", "TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
         if (m_pending == PendingCmd::CAL) {
             m_calStart = DaughterCalStart::REJECTED;
             strncpy(m_calStartError, "no reply from the daughter board", sizeof(m_calStartError) - 1);
@@ -568,10 +563,9 @@ void DaughterBoardLink::update() {
     if (fresh != m_linkUp) {
         m_linkUp = fresh;
         if (fresh) {
-            Serial.print("[Daughter] Link up, PROTO=");
-            Serial.println(m_statusData.proto);
+            Console::log("Daughter", "Link up, PROTO=%u", static_cast<unsigned>(m_statusData.proto));
         } else {
-            Serial.println("[Daughter] Link lost -- no STATUS reply");
+            Console::log("Daughter", "Link lost -- no STATUS reply");
         }
     }
 

@@ -45,6 +45,16 @@ public:
     // repeat frames auto-repeat Up/Down, so values can be run up quickly.
     bool acceptsRepeats() const { return m_inEditor || m_inColor || m_inSlider; }
 
+    // The physical Up/Down buttons, read from InputEngine every loop while
+    // the menu is open: one focus step per press, and -- where the menu
+    // accepts repeats (editors, the colour chooser, sliders) -- one step
+    // every MENU_REPEAT_RATE_MS after MENU_REPEAT_DELAY_MS of holding.
+    void handleUpDownButtons();
+
+    // Redraw from scratch next frame, keeping the place in the menu (onEnter()
+    // starts over at the top) -- for when the menu becomes visible again.
+    void invalidate() { m_dirty = true; }
+
 private:
     // Root -> Settings -> Clock -> (overlay) needs 3; one spare level.
     static constexpr size_t kMaxDepth = 4;
@@ -100,4 +110,6 @@ private:
 
     bool m_dirty             = true; // full redraw needed
     bool m_editorFieldsDirty = false;
+    uint32_t m_holdStartMs  = 0;   // handleUpDownButtons(): the held-key repeat
+    uint32_t m_lastRepeatMs = 0;
 };

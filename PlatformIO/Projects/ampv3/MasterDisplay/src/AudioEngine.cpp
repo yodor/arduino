@@ -1,5 +1,7 @@
 #include "AudioEngine.hpp"
+#include "Console.hpp"
 #include "DebugFlags.hpp"
+#include "Profiler.hpp"
 #include <cmath>
 #include "hardware/clocks.h"
 #include "BeatDetector.hpp"
@@ -47,11 +49,8 @@ void AudioEngine::runCore1() {
         if (div < 95.0f) div = 95.0f; // a conversion takes 96 cycles: the fastest the ADC can go
         adc_set_clkdiv(div);
         m_adcDiv = div;
-        // (Serial.printf here has no float support: tenths as integers.)
-        Serial.printf("[Audio] ADC clock %lu Hz, divider %ld.%ld -> %lu Hz per channel\r\n",
-                      static_cast<unsigned long>(adcHz),
-                      static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10,
-                      static_cast<unsigned long>(lroundf(adcHz / (2.0f * (div + 1.0f)))));
+        Console::log("Audio", "ADC clock %lu Hz, divider %s -> %s Hz per channel", static_cast<unsigned long>(adcHz),
+                     Console::num(div, 1).s, Console::num(adcHz / (2.0f * (div + 1.0f)), 0).s);
     }
 
     // --- Continuous ring capture ---
@@ -103,7 +102,10 @@ void AudioEngine::runCore1() {
 
     // Diagnostics (DebugFlags::audio): per-chunk cost, deepest backlog,
     // overruns -- reported once a second.
-    uint32_t chunkCount = 0, waveformAccumUs = 0, spectrumAccumUs = 0;
+    uint32_t chunkCount = 0;
+    PerfStat waveformStat, spectrumStat, beatStat;   // per chunk
+    // FFT chunks only: the whole chunk and its stages.
+    PerfStat fftChunkStat, stShift, stWindow, stFft, stMags, stBands;
     uint32_t maxBacklogChunks = 0, overruns = 0, totalOverruns = 0;
     uint32_t lastReportMs = 0;
     uint32_t maxGapUs = 0, gapSkips = 0, lostChunks = 0;
@@ -143,15 +145,13 @@ void AudioEngine::runCore1() {
                     if (newDiv < 95.0f) newDiv = 95.0f;
                     adc_set_clkdiv(newDiv);
                     m_adcDiv = newDiv;
-                    Serial.printf("[Audio] measured %lu Hz/ch (target %lu): ADC divider %ld.%ld -> %ld.%ld\r\n",
-                                  static_cast<unsigned long>(lroundf(rate)), static_cast<unsigned long>(AUDIO_SAMPLE_RATE_HZ),
-                                  static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10,
-                                  static_cast<long>(newDiv), static_cast<long>(lroundf(newDiv * 10.0f)) % 10);
+                    Console::log("Audio", "measured %s Hz/ch (target %s): ADC divider %s -> %s",
+                                 Console::num(rate, 0).s, Console::num(AUDIO_SAMPLE_RATE_HZ, 0).s,
+                                 Console::num(div, 1).s, Console::num(newDiv, 1).s);
                     calStage = 2; calSamples = 0; calStartMs = ms;
                 } else {
-                    Serial.printf("[Audio] %s %lu Hz/ch (divider %ld.%ld)\r\n", calStage == 2 ? "verified" : "measured",
-                                  static_cast<unsigned long>(lroundf(rate)),
-                                  static_cast<long>(div), static_cast<long>(lroundf(div * 10.0f)) % 10);
+                    Console::log("Audio", "%s %s Hz/ch (divider %s)", calStage == 2 ? "verified" : "measured",
+                                 Console::num(rate, 0).s, Console::num(div, 1).s);
                     m_measuredRateHz = rate;
                     calStage = 3;
                 }
@@ -199,10 +199,22 @@ void AudioEngine::runCore1() {
         m_waveform.pushChunk(chunk);
         uint32_t t1 = micros();
         m_spectrum.pushChunk(chunk);
-        BeatDetector::instance().pushChunk(chunk); // a few operations per sample (tempo for the Info screen)
         uint32_t t2 = micros();
-        waveformAccumUs += t1 - t0;
-        spectrumAccumUs += t2 - t1;
+        BeatDetector::instance().pushChunk(chunk); // a few operations per sample (tempo for the Info screen)
+        uint32_t t3 = micros();
+        waveformStat.add(t1 - t0);
+        spectrumStat.add(t2 - t1);
+        beatStat.add(t3 - t2);
+        if (m_spectrum.ranFft()) {
+            // Where an FFT chunk's time goes, stage by stage.
+            const FftEngine::Stages& st = m_spectrum.fftStages();
+            fftChunkStat.add(t2 - t1);
+            stShift.add(st.shift);
+            stWindow.add(st.window);
+            stFft.add(st.fft);
+            stMags.add(st.mags);
+            stBands.add(m_spectrum.bandsUs());
+        }
         ++chunkCount;
 
         readPos = (readPos + kChunk) % kRingSamples;
@@ -220,41 +232,37 @@ void AudioEngine::runCore1() {
                     if (vR < minR) minR = vR;
                     if (vR > maxR) maxR = vR;
                 }
-                Serial.print("[Audio] ");
-                Serial.print(chunkCount);
-                Serial.print(" chunks/s | ADC ");
-                Serial.print(static_cast<unsigned long>(producedSamples / 2));
-                Serial.print(" Hz/ch | per chunk: waveform ");
-                Serial.print(waveformAccumUs / 1000.0f / chunkCount, 3);
-                Serial.print("ms, spectrum ");
-                Serial.print(spectrumAccumUs / 1000.0f / chunkCount, 3);
-                Serial.print("ms | fft ");
-                Serial.print(m_spectrum.lastFftDurationUs() / 1000.0f, 2);
-                Serial.print("ms @ ");
-                Serial.print(m_spectrum.observedRefreshHz(), 1);
-                Serial.print("Hz | max backlog ");
-                Serial.print(maxBacklogChunks);
-                Serial.print("/");
-                Serial.print(static_cast<unsigned>(CAPTURE_RING_CHUNKS));
-                Serial.print(" chunks | overruns ");
-                Serial.print(overruns);
-                Serial.print(" (total ");
-                Serial.print(totalOverruns);
-                Serial.print(") | max gap ");
-                Serial.print(maxGapUs / 1000.0f, 1);
-                Serial.print("ms, skips ");
-                Serial.print(gapSkips);
-                Serial.print(" (lost ");
-                Serial.print(lostChunks);
-                Serial.print(") | raw pp L=");
-                Serial.print(static_cast<unsigned>(maxL - minL));
-                Serial.print(" R=");
-                Serial.println(static_cast<unsigned>(maxR - minR));
+                // One line, built here on core 1 and sent by core 0 (Console's queue):
+                // this core never waits on USB.
+                Console::log("Audio", "%lu chunks/s | ADC %lu Hz/ch | per chunk: waveform %sms (max %s), spectrum %sms (max %s) | fft %sms @ %sHz"
+                             " | max backlog %lu/%u chunks | overruns %lu (total %lu) | max gap %sms, skips %lu (lost %lu)"
+                             " | raw pp L=%u R=%u",
+                             static_cast<unsigned long>(chunkCount), static_cast<unsigned long>(producedSamples / 2),
+                             Console::num(waveformStat.avgMs(), 3).s, Console::num(waveformStat.maxMs(), 2).s,
+                             Console::num(spectrumStat.avgMs(), 3).s, Console::num(spectrumStat.maxMs(), 2).s,
+                             Console::num(m_spectrum.lastFftDurationUs() / 1000.0f, 2).s,
+                             Console::num(m_spectrum.observedRefreshHz(), 1).s,
+                             static_cast<unsigned long>(maxBacklogChunks), static_cast<unsigned>(CAPTURE_RING_CHUNKS),
+                             static_cast<unsigned long>(overruns), static_cast<unsigned long>(totalOverruns),
+                             Console::num(maxGapUs / 1000.0f, 1).s,
+                             static_cast<unsigned long>(gapSkips), static_cast<unsigned long>(lostChunks),
+                             static_cast<unsigned>(maxL - minL), static_cast<unsigned>(maxR - minR));
+                auto ms2 = [](const PerfStat& p) { return Console::num(p.avgMs(), 2); };
+                auto mx2 = [](const PerfStat& p) { return Console::num(p.maxMs(), 2); };
+                Console::log("Audio", "FFT chunk %sms (max %s) = shift %s (%s) + window %s (%s) + fft %s (%s)"
+                             " + mags %s (%s) + bands %s (%s) | beat/chunk %s (%s) [ms avg (max)]",
+                             ms2(fftChunkStat).s, mx2(fftChunkStat).s, ms2(stShift).s, mx2(stShift).s,
+                             ms2(stWindow).s, mx2(stWindow).s, ms2(stFft).s, mx2(stFft).s,
+                             ms2(stMags).s, mx2(stMags).s, ms2(stBands).s, mx2(stBands).s,
+                             Console::num(beatStat.avgMs(), 3).s, mx2(beatStat).s);
             } else if (overruns > 0) {
-                Serial.print("[Audio] Capture overrun: chunks skipped in the last second: ");
-                Serial.println(overruns);
+                Console::log("Audio", "Capture overrun: chunks skipped in the last second: %lu", static_cast<unsigned long>(overruns));
             }
-            chunkCount = waveformAccumUs = spectrumAccumUs = 0;
+            chunkCount = 0;
+            waveformStat.reset();
+            spectrumStat.reset();
+            beatStat.reset();
+            fftChunkStat.reset(); stShift.reset(); stWindow.reset(); stFft.reset(); stMags.reset(); stBands.reset();
             maxBacklogChunks = overruns = 0;
             producedSamples = 0;
             maxGapUs = gapSkips = lostChunks = 0;

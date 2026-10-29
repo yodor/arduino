@@ -1,4 +1,5 @@
 #include "RtcClock.hpp"
+#include "Console.hpp"
 #include "Config.hpp"
 #include <Wire.h>
 #include <cstdio>
@@ -109,7 +110,7 @@ bool RtcClock::begin() {
     Wire1.beginTransmission(kDs3231Addr);
     m_present = (Wire1.endTransmission() == 0);
     if (!m_present) {
-        Serial.println("[RTC] No DS3231 answering on i2c1 -- clock disabled");
+        Console::log("RTC", "No DS3231 answering on i2c1 -- clock disabled");
         return false;
     }
 
@@ -119,7 +120,7 @@ bool RtcClock::begin() {
     if (readRegs(kRegControl, &control, 1) && (control & kControlEOSC)) {
         control &= static_cast<uint8_t>(~kControlEOSC);
         writeRegs(kRegControl, &control, 1);
-        Serial.println("[RTC] Battery oscillator was disabled -- enabled it");
+        Console::log("RTC", "Battery oscillator was disabled -- enabled it");
     }
 
     uint8_t status = 0;
@@ -133,11 +134,10 @@ bool RtcClock::begin() {
     char buf[20];
     if (read(now)) {
         RtcClock::format(now, buf, sizeof(buf));
-        Serial.print("[RTC] DS3231 found, time ");
-        Serial.print(buf);
-        Serial.println(oscStopped ? " -- NOT VALID (clock had stopped): set it in Settings > Clock" : "");
+        Console::log("RTC", "DS3231 found, time %s%s", buf,
+                     oscStopped ? " -- NOT VALID (clock had stopped): set it in Settings > Clock" : "");
     } else {
-        Serial.println("[RTC] DS3231 found, but reading the time failed");
+        Console::log("RTC", "DS3231 found, but reading the time failed");
     }
     return true;
 }

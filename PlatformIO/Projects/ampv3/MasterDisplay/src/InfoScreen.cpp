@@ -68,6 +68,17 @@ void InfoScreen::poke() {
     m_lastPokeMs = millis();
 }
 
+bool InfoScreen::filterFirstVolumePress(bool& up, bool& down, bool onThisScreen) {
+    bool any = up || down;
+    if (any) {
+        if (!m_volPassive && !onThisScreen && !m_active) m_volPassive = true;
+    } else {
+        m_volPassive = false;
+    }
+    if (m_volPassive) up = down = false;
+    return any;
+}
+
 void InfoScreen::update() {
     const DaughterBoardLink& link = DaughterBoardLink::instance();
 

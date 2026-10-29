@@ -1,4 +1,5 @@
 #include "FftEngine.hpp"
+#include "Console.hpp"
 #include "Config.hpp"
 #include <cmath>
 #include <cstdlib>
@@ -47,7 +48,7 @@ FftEngine::FftEngine(size_t fftSize)
         m_rfftOk = (initRfft<FFT_SIZE>(&m_rfft) == ARM_MATH_SUCCESS);
     }
     if (!m_rfftOk) {
-        Serial.printf("[FFT] CMSIS-DSP real FFT setup failed for %u points\r\n", static_cast<unsigned>(m_fftSize));
+        Console::log("FFT", "CMSIS-DSP real FFT setup failed for %u points", static_cast<unsigned>(m_fftSize));
         return;
     }
 
@@ -112,17 +113,20 @@ bool FftEngine::pushChunk(const uint16_t* interleavedChunk) {
     // A full threshold's worth has staged up -- fold it into the main
     // window in ONE combined shift+append, then run the FFT that
     // actually needs it.
+    uint32_t tShift = micros();
     memmove(m_slideL, m_slideL + m_halfWindowThreshold, (m_fftSize - m_halfWindowThreshold) * sizeof(uint16_t));
     memmove(m_slideR, m_slideR + m_halfWindowThreshold, (m_fftSize - m_halfWindowThreshold) * sizeof(uint16_t));
     memcpy(m_slideL + (m_fftSize - m_halfWindowThreshold), m_stagingL, m_halfWindowThreshold * sizeof(uint16_t));
     memcpy(m_slideR + (m_fftSize - m_halfWindowThreshold), m_stagingR, m_halfWindowThreshold * sizeof(uint16_t));
     m_stagedSamples = 0;
+    m_stages.shift = micros() - tShift;
 
     runFft();
     return true;
 }
 
 void FftEngine::runFft() {
+    uint32_t tWindow = micros();
     float meanL = 0.0f, meanR = 0.0f;
     for (size_t i = 0; i < m_fftSize; ++i) {
         meanL += static_cast<float>(m_slideL[i]);
@@ -137,6 +141,7 @@ void FftEngine::runFft() {
         m_fftInL[i] = (sampleL / 2048.0f) * m_hanningTable[i];
         m_fftInR[i] = (sampleR / 2048.0f) * m_hanningTable[i];
     }
+    m_stages.window = micros() - tWindow;
 
     // lastFftDurationUs() times the two transforms only (as before the
     // switch from kissfft, so the numbers compare); each channel's
@@ -148,23 +153,34 @@ void FftEngine::runFft() {
     // the same unnormalised transform as before, so the scaling is unchanged.
     constexpr float kHannCoherentGain = 0.5f;
     const float scale = 2.0f / (static_cast<float>(m_fftSize) * kHannCoherentGain);
+    //
+    // The magnitudes run on CMSIS-DSP too (Todor's find): arm_cmplx_mag_f32
+    // uses the FPU's VSQRT, where a plain sqrtf() is a slow library call in
+    // this build -- 7.5 ms per FFT run before, ~0.36 ms now.
+    //
+    // The Nyquist bin (out[1], 22.05 kHz) has no slot in bins[0..N/2-1] and no
+    // band reaches it -- the analog input is filtered well below it -- so it
+    // is left out, as before.
     auto magnitudes = [&](float* bins) {
-        bins[0] = fabsf(m_fftOut[0]) * scale;
-        for (size_t k = 1; k < m_fftSize / 2; ++k) {
-            float re = m_fftOut[2 * k], im = m_fftOut[2 * k + 1];
-            bins[k] = sqrtf(re * re + im * im) * scale;
-        }
+        const uint32_t complexBins = static_cast<uint32_t>(m_fftSize / 2 - 1); // bins 1..N/2-1
+        arm_cmplx_mag_f32(&m_fftOut[2], &bins[1], complexBins);
+        arm_scale_f32(&bins[1], scale, &bins[1], complexBins);
+        bins[0] = fabsf(m_fftOut[0]) * scale; // DC: real only
     };
 
     if (m_rfftOk) {
         uint32_t t0 = micros();
         arm_rfft_fast_f32(&m_rfft, m_fftInL, m_fftOut, 0);
-        uint32_t fftUs = micros() - t0;
+        uint32_t t1 = micros();
         magnitudes(m_fftBinsL);
-        t0 = micros();
+        uint32_t t2 = micros();
         arm_rfft_fast_f32(&m_rfft, m_fftInR, m_fftOut, 0);
-        fftUs += micros() - t0;
+        uint32_t t3 = micros();
         magnitudes(m_fftBinsR);
+        uint32_t t4 = micros();
+        uint32_t fftUs = (t1 - t0) + (t3 - t2);
+        m_stages.fft  = fftUs;
+        m_stages.mags = (t2 - t1) + (t4 - t3);
         m_lastFftUs = fftUs;
     } else {
         memset(m_fftBinsL, 0, sizeof(float) * (m_fftSize / 2));

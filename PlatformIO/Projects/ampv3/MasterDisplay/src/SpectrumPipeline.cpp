@@ -1,4 +1,5 @@
 #include "SpectrumPipeline.hpp"
+#include "FastMath.hpp"
 #include <cmath>
 
 SpectrumPipeline::SpectrumPipeline() : m_engine(FFT_SIZE) {
@@ -70,7 +71,10 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
         recomputeBinRanges();
     }
 
+    m_ranFft = false;
     if (!m_engine.pushChunk(interleavedChunk)) return;
+    m_ranFft = true;
+    uint32_t tBands = micros();
 
     const float* binsL    = m_engine.magnitudeBinsL();
     const float* binsR    = m_engine.magnitudeBinsR();
@@ -101,8 +105,8 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
                 sumSqL += binsL[binIdx] * binsL[binIdx];
                 sumSqR += binsR[binIdx] * binsR[binIdx];
             }
-            valueL = sqrtf(sumSqL);
-            valueR = sqrtf(sumSqR);
+            valueL = fastSqrt(sumSqL);
+            valueR = fastSqrt(sumSqR);
         }
 
         m_barsL[band] = valueL;
@@ -121,10 +125,11 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
             if (energyMode == EnergyMode::PEAK) { if (m > value) value = m; }
             else                                sumSq += m * m;
         }
-        if (energyMode != EnergyMode::PEAK) value = sqrtf(sumSq);
+        if (energyMode != EnergyMode::PEAK) value = fastSqrt(sumSq);
         m_miniBars[band] = value;
         start = end;
     }
+    m_bandsUs = micros() - tBands;
 }
 
 size_t SpectrumPipeline::getMiniBars(float* out) const {

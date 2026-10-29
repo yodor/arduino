@@ -1,6 +1,9 @@
 #define DECODE_NEC // Limit decoding to NEC to save memory and flash
 #include <IRremote.hpp>
 #include "InputEngine.hpp"
+#include "Console.hpp"
+#include <cstdio>
+#include <cstring>
 
 InputEngine& InputEngine::instance() {
     static InputEngine inst;
@@ -21,11 +24,13 @@ void InputEngine::init(uint8_t btnNextPin, uint8_t btnPrevPin, uint8_t irPin, ui
 
 void InputEngine::printRawStates() const {
     const DebouncedButton* buttons[] = { &m_btnVolUp, &m_btnNext, &m_btnVolDown, &m_btnPrev };
-    Serial.print("[Btn] raw:");
+    char text[96];
+    size_t n = 0;
     for (const DebouncedButton* b : buttons) {
-        Serial.printf(" %s=%s", b->name, (b->pin != 255 && digitalRead(b->pin) == LOW) ? "LOW" : "high");
+        n += snprintf(text + n, sizeof(text) - n, " %s=%s", b->name,
+                      (b->pin != 255 && digitalRead(b->pin) == LOW) ? "LOW" : "high");
     }
-    Serial.println("  (LOW = pressed)");
+    Console::log("Btn", "raw:%s  (LOW = pressed)", text);
 }
 
 UIEvent InputEngine::pop() {
@@ -33,6 +38,10 @@ UIEvent InputEngine::pop() {
     UIEvent e = m_queue[0];
     for (uint8_t i = 1; i < m_queueCount; ++i) m_queue[i - 1] = m_queue[i];
     --m_queueCount;
+    // Every event leaves through here: note the volume ones for
+    // volUpRequested() / volDownRequested().
+    if (e == UIEvent::GAIN_UP)   m_lastGainUpMs   = millis();
+    if (e == UIEvent::GAIN_DOWN) m_lastGainDownMs = millis();
     return e;
 }
 
@@ -119,7 +128,7 @@ UIEvent InputEngine::pollEvents() {
             for (const auto& mapping : kIrMappings) {
                 if (mapping.code == cmd) { what = uiEventName(mapping.event); break; }
             }
-            Serial.printf("[IR]  cmd=0x%02X%s -> %s\r\n", cmd, isRepeat ? " (repeat)" : "", what);
+            Console::log("IR", " cmd=0x%02X%s -> %s", cmd, isRepeat ? " (repeat)" : "", what);
         }
 
         for (const auto& mapping : kIrMappings) {

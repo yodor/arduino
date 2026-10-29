@@ -1,4 +1,5 @@
 #include "SpectrumScreen.hpp"
+#include "Console.hpp"
 #include "DebugFlags.hpp"
 #include "Renderer.hpp"
 #include "AudioEngine.hpp"
@@ -154,13 +155,9 @@ void SpectrumScreen::render() {
     if (DebugFlags::audio && nowMs - s_lastDebugMs >= 1000) {
         s_lastDebugMs = nowMs;
         float db = (s_debugMaxMag > 0.0001f) ? 20.0f * log10f(s_debugMaxMag) : -100.0f;
-        Serial.print("[Spectrum] loudest bin -> band ");
-        Serial.print(static_cast<int>(s_debugMaxBarIdx));
-        Serial.print(s_debugMaxIsLeft ? " (L)" : " (R)");
-        Serial.print(" | raw mag=");
-        Serial.print(s_debugMaxMag, 4);
-        Serial.print(" | dBFS=");
-        Serial.println(db, 2);
+        Console::log("Spectrum", "loudest bin -> band %d (%s) | raw mag=%s | dBFS=%s",
+                     static_cast<int>(s_debugMaxBarIdx), s_debugMaxIsLeft ? "L" : "R",
+                     Console::num(s_debugMaxMag, 4).s, Console::num(db, 2).s);
         s_debugMaxMag = 0.0f;
     }
 }
@@ -182,6 +179,11 @@ void SpectrumScreen::processAndDrawBar(BarPhysicsState& state, size_t i, size_t 
     BarPhysics::instance().updateState(state, val, maxBarHeight, now);
 
     uint16_t h     = static_cast<uint16_t>(state.decay * maxBarHeight);
+    // A bar never goes fully dark: at silence each one keeps a 1 px floor in
+    // its colour, so a quiet input reads as a dashed line of the theme's
+    // colours rather than an empty screen. (The peak marker sits beyond the
+    // bar's last row, so it's never drawn over the floor.)
+    if (h < 1) h = 1;
     uint16_t peakH = static_cast<uint16_t>(state.peak);
     if (peakH > maxBarHeight) peakH = maxBarHeight; // defensive: stay inside the column
 
