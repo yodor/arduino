@@ -15,13 +15,15 @@
 // content is defined as static const data, no dynamic allocation.
 
 enum class MenuItemType : uint8_t {
-    ACTION,       // onAction() fires immediately, then stays at the current list
+    ACTION,       // onAction() fires immediately, then stays at the current list -- or, if the
+                  // item has `fillInfo`, goes on to that page (e.g. a run's progress)
     VALUE_CHOICE, // drilling in shows `options`; selecting one applies it and returns to the current list
     SUBMENU,      // drilling in shows `submenuItems`, a whole separate MenuItem list one level deeper
     INFO,         // drilling in shows a read-only text page filled by `fillInfo`, refreshed live while open
     EDITOR,       // drilling in shows a row of numeric fields (`editor`) to adjust and save, e.g. a date or a time;
                   // if the item also has `options`, they're offered right after the save (e.g. Cancel / Start),
-                  // and an option with an action then opens `fillInfo`'s page, as for VALUE_CHOICE
+                  // and an option with an action then opens `fillInfo`'s page, as for VALUE_CHOICE;
+                  // without options, a save goes straight on to `fillInfo`'s page if there is one
     COLOR,        // drilling in shows the color chooser (`color`): a spectrum bar to pick from, Right sets it
     SLIDER        // drilling in shows a horizontal slider (`slider`): Up/Down move it (applied live), Right keeps, Left restores
 };
@@ -89,6 +91,12 @@ struct MenuValueOption {
     bool (*isActive)();   // returns true if this option is the CURRENTLY active value -- drawn with a marker so the user can see the current setting without changing it
 };
 
+// Optional, for any item: its label and the line under it in the list, live
+// (e.g. "970K (auto)" over "resync advised"). An empty label keeps the
+// item's own; an empty hint keeps the type's usual one. *hintColor starts
+// gray. Re-asked twice a second while the item is focused.
+using MenuDescribe = void (*)(char* label, size_t labelSize, char* hint, size_t hintSize, uint16_t* hintColor);
+
 struct MenuItem {
     const char* label;
     MenuItemType type;
@@ -109,4 +117,6 @@ struct MenuItem {
     const MenuColor*  color      = nullptr; // COLOR only
 
     const MenuSlider* slider     = nullptr; // SLIDER only
+
+    MenuDescribe      describe   = nullptr; // any type: live label / hint in the list
 };

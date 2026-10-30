@@ -5,6 +5,7 @@ struct BarPhysicsState {
     float    decay         = 0.0f;
     float    peak          = 0.0f;
     uint32_t peakTimer     = 0;
+    float    peakVel       = 0.0f; // the peak's falling speed, pixel units per second
     uint16_t prevUnits     = 0; // Merges prevBarHeight and prevBarWidth
     uint16_t prevPeakUnits = 0; // Merges prevPeakHeight and prevPeakWidth
 };
@@ -40,7 +41,11 @@ struct BarPhysicsState {
 // inserted first so SLOW/NORMAL/FAST keep their existing persisted
 // ordinal values (0/1/2) -- OFF=3 is purely additive, so this didn't need
 // a PersistentData version bump the way adding a new field would have.
-enum class PeakDecaySpeed : uint8_t { SLOW, NORMAL, FAST, OFF };
+// How fast the peak markers fall (Theme > Peaks; "Off" there hides them --
+// DisplaySettings::getPeaksEnabled()). Each speed is a hold time and the time
+// to fall the full bar height, falling with constant acceleration -- the
+// classic analyser feel. See kPeakSpeeds in BarPhysics.cpp.
+enum class PeakDecaySpeed : uint8_t { TURTLE, SLOW, NORMAL, FAST, CHEETAH };
 
 class BarPhysics {
 public:
@@ -48,8 +53,7 @@ public:
 
     float    smoothing() const      { return m_smoothing; }
     float    decayRate() const      { return m_decayRate; }
-    uint16_t peakDrop() const       { return m_peakDrop; }
-    uint32_t peakHoldTimeMs() const { return kPeakHoldTimeMs; }
+    uint32_t peakHoldTimeMs() const;
 
     void setPeakDecaySpeed(PeakDecaySpeed speed);
     PeakDecaySpeed getPeakDecaySpeed() const { return m_peakDecaySpeed; }
@@ -60,16 +64,13 @@ public:
 
 private:
     BarPhysics();
-    void recomputePeakDrop();
 
     // Baseline values, tuned by ear at 60fps. Retune the underlying feel
     // here -- this is the one place it lives now, instead of three
     // separate copies scattered across screen files.
     static constexpr float    kBaselineSmoothing = 0.35f; // EMA blend factor per frame at 60fps
     static constexpr float    kBaselineDecayRate = 0.08f; // linear per-frame decay (fraction of maxBarHeight) at 60fps
-    static constexpr float    kBaselinePeakDrop  = 2.0f;  // linear per-frame peak-fall (pixels) at 60fps
     static constexpr uint32_t kBaselineFrameUs   = 16000; // the frame period the baseline values above were tuned against
-    static constexpr uint32_t kPeakHoldTimeMs    = 200;   // wall-clock, not rescaled -- see class comment
 
     // Defensive floor on decayRate for very high frame rates (well beyond
     // anything tested so far) -- without it, enough TARGET_FRAME_US
@@ -81,6 +82,5 @@ private:
 
     float    m_smoothing;
     float    m_decayRate;
-    uint16_t m_peakDrop;
     PeakDecaySpeed m_peakDecaySpeed = PeakDecaySpeed::NORMAL;
 };

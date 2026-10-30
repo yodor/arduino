@@ -65,6 +65,10 @@ struct DaughterStatus {
     char     err[128]  = "";     // ERR= free text (only when hasErr)
 
     bool calibrating() const { return busy && cal == DaughterCalState::PROCESSING; }
+    // A run of any kind -- a calibration, or (rev 20) a verify, which runs
+    // with STATUS=BUSY while the calibration stays CAL=OK. Not the boot hold.
+    bool running() const     { return busy && !bootHold; }
+    bool verifying() const   { return running() && cal == DaughterCalState::OK; }
 };
 
 // Non-blocking, line-based link to the daughter (LDR volume) board over UART0
@@ -109,6 +113,20 @@ struct DaughterProgress {
 };
 
 // Revision 9 LEARN reply -- the thermal learning's progress (display only).
+// Revision 20 VERIFY RESULT: the newest verify run (seq 0 / verdict NONE: none
+// on record). Text fields as the attenuator sends them ("-" for no age).
+struct DaughterVerify {
+    bool     valid      = false;
+    uint32_t receivedMs = 0;
+    uint32_t seq = 0;
+    char restarts[6] = "-", ageMin[8] = "-", block[8] = "--";
+    char resL[8] = "--", resR[8] = "--", movedL[8] = "--", movedR[8] = "--";
+    char spreadL[8] = "--", spreadR[8] = "--", midL[8] = "--", midR[8] = "--";
+    char rmsL[8] = "--", rmsR[8] = "--", lr[8] = "--";
+    bool adopted = false;
+    char verdict[8] = "NONE";   // OK | RESYNC | CHECK | NONE
+};
+
 struct DaughterLearn {
     bool     valid      = false;
     uint32_t receivedMs = 0;
@@ -162,6 +180,8 @@ public:
     bool sendCalibrate();                    // plain "CAL" -- the daughter decides how much work it needs (R unchanged)
     bool sendCalibrateR(uint32_t ohms);      // "CAL R=<ohms>" -- must lie within RMIN..RMAX
     bool sendCalibrateAuto();                // "CAL R=AUTO"
+    bool sendCalibrateFull();                // "CAL FULL" (rev 19): always a full characterization
+    bool sendCalibrateVerify();              // "CAL VERIFY" (rev 20): measure how well the table holds
     bool sendStatus();
     bool sendEnv();                          // rev 8, read-only, answered even while busy
     bool sendProgress();                     // rev 8, read-only, answered even while busy
@@ -199,6 +219,8 @@ public:
     // on every refresh); at most every DAUGHTER_ENV_POLL_MS.
     void requestEnv()   { m_envWantedUntilMs   = millis() + 3000; }
     void requestLearn() { m_learnWantedUntilMs = millis() + 3000; } // same idea, for LEARN
+    void requestVerifyResult() { m_verifyWantedUntilMs = millis() + 3000; } // VERIFY RESULT (rev 20)
+    const DaughterVerify& verifyResult() const { return m_verify; }
 
     // Ask for a STATUS as soon as the link is free (update() sends it).
     void requestStatusRefresh() { m_statusRefreshRequested = true; }
@@ -244,7 +266,7 @@ private:
     DaughterBoardLink() = default;
 
     enum class PendingCmd : uint8_t {
-        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL, VER, BAL
+        NONE, MUTE_ON, MUTE_OFF, VOL_UP, VOL_DOWN, VOL_SET, AMP_MUTE_ON, AMP_MUTE_OFF, CAL, STATUS, ENV, PROGRESS, LEARN, FORGET, COMP, SET_MODEL, MODEL, VER, BAL, VERIFY
     };
 
     bool sendLine(const char* line, PendingCmd cmd);
@@ -261,7 +283,7 @@ private:
     // Protocol rev 7: the STATUS line runs ~130 chars, up to ~220 with ERR=,
     // and the doc requires >= 256 -- a shorter buffer silently loses the
     // tail, which is exactly where ERR= sits.
-    static constexpr size_t kLineBufSize = 256;
+    static constexpr size_t kLineBufSize = 512;
 
     // Serial1's receive queue (see init()): room for two longest-possible
     // replies, so one 10ms loop of not reading can never drop bytes.
@@ -293,6 +315,10 @@ private:
     uint32_t         m_modelWantedUntilMs = 0;
     uint32_t         m_lastLearnSentMs    = 0;
     uint32_t         m_learnWantedUntilMs = 0;
+    uint32_t         m_verifyWantedUntilMs = 0;
+    uint32_t         m_lastVerifySentMs   = 0;
+    DaughterVerify   m_verify;
+    bool parseVerifyLine(const char* line);
     uint32_t         m_lastEnvSentMs      = 0;
     uint32_t         m_envWantedUntilMs   = 0;
     uint32_t         m_lastProgressSentMs = 0;

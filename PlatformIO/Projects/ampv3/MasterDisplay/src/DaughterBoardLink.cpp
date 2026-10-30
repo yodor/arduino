@@ -96,6 +96,7 @@ bool DaughterBoardLink::sendLine(const char* line, PendingCmd cmd) {
     if (cmd == PendingCmd::ENV)      m_lastEnvSentMs      = m_commandSentMs;
     if (cmd == PendingCmd::PROGRESS) m_lastProgressSentMs = m_commandSentMs;
     if (cmd == PendingCmd::LEARN)    m_lastLearnSentMs    = m_commandSentMs;
+    if (cmd == PendingCmd::VERIFY)   m_lastVerifySentMs   = m_commandSentMs;
     if (cmd == PendingCmd::MODEL)    m_lastModelSentMs    = m_commandSentMs;
     if (cmd == PendingCmd::VER)      m_lastVerSentMs      = m_commandSentMs;
     if (cmd == PendingCmd::CAL)      m_calStart           = DaughterCalStart::PENDING;
@@ -112,6 +113,8 @@ bool DaughterBoardLink::sendAmpMuteOn()  { return sendLine("AMP_MUTE ON",  Pendi
 bool DaughterBoardLink::sendAmpMuteOff() { return sendLine("AMP_MUTE OFF", PendingCmd::AMP_MUTE_OFF); }
 bool DaughterBoardLink::sendCalibrate()  { return sendLine("CAL",          PendingCmd::CAL); }
 bool DaughterBoardLink::sendCalibrateAuto() { return sendLine("CAL R=AUTO", PendingCmd::CAL); }
+bool DaughterBoardLink::sendCalibrateFull()   { return sendLine("CAL FULL",   PendingCmd::CAL); }
+bool DaughterBoardLink::sendCalibrateVerify() { return sendLine("CAL VERIFY", PendingCmd::CAL); }
 bool DaughterBoardLink::sendCalibrateR(uint32_t ohms) {
     char line[24];
     snprintf(line, sizeof(line), "CAL R=%lu", static_cast<unsigned long>(ohms));
@@ -260,7 +263,7 @@ bool DaughterBoardLink::parseStatusLine(const char* line) {
 
     if (s.proto != DAUGHTER_PROTO_EXPECTED && !m_protoWarned) {
         m_protoWarned = true;
-        Console::log("Daughter", "WARNING: daughter reports PROTO=%u, this master is written for PROTO=%u",
+        Console::log("Attenuator", "WARNING: attenuator reports PROTO=%u, this master is written for PROTO=%u",
                      static_cast<unsigned>(s.proto), static_cast<unsigned>(DAUGHTER_PROTO_EXPECTED));
     }
     return true;
@@ -344,6 +347,36 @@ bool DaughterBoardLink::parseProgressLine(const char* line) {
 }
 
 // "OK LEARN N=7 SPREAD=1.24 COMP=ON KL=-5.84 R2L=0.99 ..." (rev 9)
+// "OK VERIFY SEQ=3 RESTARTS=0 AGE_MIN=12 BLOCK=24.35 RES_L=-10.0 ... VERDICT=RESYNC" (rev 20)
+bool DaughterBoardLink::parseVerifyLine(const char* line) {
+    static const char kPrefix[] = "OK VERIFY ";
+    if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
+    DaughterVerify v;
+    forEachField(line + sizeof(kPrefix) - 1, [&](const char* k, const char* val) {
+        if      (!strcmp(k, "SEQ"))      v.seq = static_cast<uint32_t>(strtoul(val, nullptr, 10));
+        else if (!strcmp(k, "RESTARTS")) copyField(v.restarts, val);
+        else if (!strcmp(k, "AGE_MIN"))  copyField(v.ageMin, val);
+        else if (!strcmp(k, "BLOCK"))    copyField(v.block, val);
+        else if (!strcmp(k, "RES_L"))    copyField(v.resL, val);
+        else if (!strcmp(k, "RES_R"))    copyField(v.resR, val);
+        else if (!strcmp(k, "MOVED_L"))  copyField(v.movedL, val);
+        else if (!strcmp(k, "MOVED_R"))  copyField(v.movedR, val);
+        else if (!strcmp(k, "SPREAD_L")) copyField(v.spreadL, val);
+        else if (!strcmp(k, "SPREAD_R")) copyField(v.spreadR, val);
+        else if (!strcmp(k, "MID_L"))    copyField(v.midL, val);
+        else if (!strcmp(k, "MID_R"))    copyField(v.midR, val);
+        else if (!strcmp(k, "RMS_L"))    copyField(v.rmsL, val);
+        else if (!strcmp(k, "RMS_R"))    copyField(v.rmsR, val);
+        else if (!strcmp(k, "LR"))       copyField(v.lr, val);
+        else if (!strcmp(k, "ADOPTED"))  v.adopted = !strcmp(val, "1");
+        else if (!strcmp(k, "VERDICT"))  copyField(v.verdict, val);
+    });
+    v.valid      = true;
+    v.receivedMs = millis();
+    m_verify = v;
+    return true;
+}
+
 bool DaughterBoardLink::parseLearnLine(const char* line) {
     static const char kPrefix[] = "OK LEARN ";
     if (strncmp(line, kPrefix, sizeof(kPrefix) - 1) != 0) return false;
@@ -403,8 +436,8 @@ bool DaughterBoardLink::parseVerLine(const char* line) {
     v.receivedMs = millis();
     m_version    = v;
     if (first) {
-        Console::log("Daughter", "Firmware %s (built %s), %s %s rev %s, protocol %u", v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
-        if (v.note[0]) Console::log("Daughter", "Release note: %s", v.note);
+        Console::log("Attenuator", "Firmware %s (built %s), %s %s rev %s, protocol %u", v.fw, v.build, v.chip, v.hw, v.hwRev, v.proto);
+        if (v.note[0]) Console::log("Attenuator", "Release note: %s", v.note);
     }
     return true;
 }
@@ -443,12 +476,12 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
 
         const DaughterStatus& s = m_statusData;
         if (cmd == PendingCmd::CAL) {
-            if (s.calibrating()) {
+            if (s.running()) {   // a calibration, or a verify (BUSY with CAL=OK)
                 m_status   = DaughterCmdStatus::OK; // started
                 m_calStart = DaughterCalStart::STARTED;
                 m_progress = DaughterProgress();     // forget the previous run's "DONE"
                 m_lastProgressSentMs = 0;            // ask for progress right away
-                Console::log("Daughter", "Calibration started");
+                Console::log("Attenuator", "Calibration started");
             } else {
                 // Rejected (IDLE + CAL=ERR) or the boot hold -- either way
                 // nothing was changed on the daughter.
@@ -467,13 +500,14 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         return;
     }
 
-    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line) || parseModelLine(line) || parseVerLine(line)) {
+    if (parseEnvLine(line) || parseProgressLine(line) || parseLearnLine(line) || parseModelLine(line) || parseVerLine(line) ||
+        parseVerifyLine(line)) {
         if (wasPending) m_status = DaughterCmdStatus::OK;
         return;
     }
 
     if (!wasPending) {
-        Console::log("Daughter", "Unexpected line (no command in flight): %s", line);
+        Console::log("Attenuator", "Unexpected line (no command in flight): %s", line);
         return;
     }
 
@@ -488,13 +522,13 @@ void DaughterBoardLink::handleResponseLine(const char* line) {
         setError(line);
         if (cmd == PendingCmd::COMP || cmd == PendingCmd::FORGET || cmd == PendingCmd::SET_MODEL || cmd == PendingCmd::BAL ||
             cmd == PendingCmd::AMP_MUTE_ON || cmd == PendingCmd::AMP_MUTE_OFF) {
-            Console::log("Daughter", "Command refused: %s", line);
+            Console::log("Attenuator", "Command refused: %s", line);
         }
         requestStatusRefresh();
     } else {
         // Every branch must leave m_status != PENDING, or every later send
         // would be refused until the timeout (a real bug, fixed earlier).
-        Console::log("Daughter", "Unrecognized reply: %s", line);
+        Console::log("Attenuator", "Unrecognized reply: %s", line);
         setError(line);
     }
 }
@@ -525,7 +559,7 @@ void DaughterBoardLink::update() {
         if (c == '\r') continue;
         if (c == '\n') {
             if (m_lineOverflow) {
-                Console::log("Daughter", "Reply longer than the line buffer -- dropped");
+                Console::log("Attenuator", "Reply longer than the line buffer -- dropped");
             } else if (m_lineLen > 0) {
                 m_lineBuf[m_lineLen] = '\0';
                 handleResponseLine(m_lineBuf);
@@ -541,7 +575,7 @@ void DaughterBoardLink::update() {
 
     // Should never fire with kRxFifoSize -- if it does, a reply was mangled.
     if (Serial1.overflow()) {
-        Console::log("Daughter", "UART receive overflow -- bytes were lost");
+        Console::log("Attenuator", "UART receive overflow -- bytes were lost");
     }
 
     uint32_t now = millis();
@@ -551,7 +585,7 @@ void DaughterBoardLink::update() {
         if (DAUGHTER_LINK_TRACE) Console::log("UART", "TIMEOUT -- no reply within DAUGHTER_RESPONSE_TIMEOUT_MS");
         if (m_pending == PendingCmd::CAL) {
             m_calStart = DaughterCalStart::REJECTED;
-            strncpy(m_calStartError, "no reply from the daughter board", sizeof(m_calStartError) - 1);
+            strncpy(m_calStartError, "no reply from the attenuator", sizeof(m_calStartError) - 1);
         }
         m_status  = DaughterCmdStatus::TIMEOUT;
         m_pending = PendingCmd::NONE;
@@ -563,19 +597,26 @@ void DaughterBoardLink::update() {
     if (fresh != m_linkUp) {
         m_linkUp = fresh;
         if (fresh) {
-            Console::log("Daughter", "Link up, PROTO=%u", static_cast<unsigned>(m_statusData.proto));
+            Console::log("Attenuator", "Link up, PROTO=%u", static_cast<unsigned>(m_statusData.proto));
         } else {
-            Console::log("Daughter", "Link lost -- no STATUS reply");
+            Console::log("Attenuator", "Link lost -- no STATUS reply");
         }
     }
 
-    // A calibration just ended: one fresh ENV for its result (MATCH etc.).
-    bool calibrating = m_statusData.valid && m_statusData.calibrating();
-    if (m_wasCalibrating && !calibrating) m_lastEnvSentMs = 0, m_envWantedUntilMs = now + 3000;
+    // A run (calibration or verify) just ended: a fresh ENV for its result
+    // (MATCH, the resync hint), and the verify result.
+    bool calibrating = m_statusData.valid && m_statusData.running();
+    if (m_wasCalibrating && !calibrating) {
+        m_lastEnvSentMs = 0;
+        m_envWantedUntilMs = now + 3000;
+        if (m_statusData.proto >= 20) m_lastVerifySentMs = 0, m_verifyWantedUntilMs = now + 3000;
+    }
     m_wasCalibrating = calibrating;
 
     // Polls, whenever the link is free: STATUS when due (or asked for);
-    // PROGRESS every second while a calibration runs; ENV while a page
+    // PROGRESS every second while a run (calibration or verify) goes on; ENV
+    // in the background every DAUGHTER_ENV_BACKGROUND_POLL_MS (the Info
+    // screen's COMP and the resync hint follow it), faster while a page
     // showing it is open.
     if (m_status != DaughterCmdStatus::PENDING && !m_holdPolls) {
         bool statusDue   = m_statusRefreshRequested || (now - m_lastStatusSentMs >= currentPollIntervalMs());
@@ -591,6 +632,12 @@ void DaughterBoardLink::update() {
                            (m_lastModelSentMs == 0 || now - m_lastModelSentMs >= DAUGHTER_ENV_POLL_MS);
         // VER: while a page wants it, and once on its own after the link is
         // up (for the boot log) -- from a daughter that knows it (rev 15+).
+        // VERIFY RESULT (rev 20): while a page wants it, after a run, and
+        // once after the link is up (the Calibration item shows the verdict).
+        bool verifyDue   = m_statusData.valid && m_statusData.proto >= 20 && !m_statusData.busy &&
+                           ((static_cast<int32_t>(m_verifyWantedUntilMs - now) > 0 &&
+                             (m_lastVerifySentMs == 0 || now - m_lastVerifySentMs >= DAUGHTER_ENV_POLL_MS)) ||
+                            (!m_verify.valid && m_lastVerifySentMs == 0 && isStatusFresh()));
         bool verDue      = (static_cast<int32_t>(m_verWantedUntilMs - now) > 0 &&
                             (m_lastVerSentMs == 0 || now - m_lastVerSentMs >= DAUGHTER_ENV_POLL_MS)) ||
                            (!m_version.valid && m_lastVerSentMs == 0 && m_statusData.valid && isStatusFresh() &&
@@ -607,6 +654,8 @@ void DaughterBoardLink::update() {
             sendModel();
         } else if (verDue) {
             sendVer();
+        } else if (verifyDue) {
+            sendLine("VERIFY RESULT", PendingCmd::VERIFY);
         }
     }
 }

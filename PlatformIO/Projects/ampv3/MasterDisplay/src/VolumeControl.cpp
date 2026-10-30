@@ -79,6 +79,22 @@ void VolumeControl::setModelLoad(uint32_t ohms) {
     retryPendingCommands();
 }
 
+int8_t VolumeControl::compensationLevel() const {
+    const DaughterEnv& e = DaughterBoardLink::instance().env();
+    if (m_compRequested && (m_compPending || !e.valid || static_cast<int32_t>(e.receivedMs - m_compSentMs) <= 0)) {
+        return m_compOn ? 1 : 0;
+    }
+    if (!e.valid || !strcmp(e.comp, "--")) return -1;
+    if (!strcmp(e.comp, "ON"))                                   return 2;
+    if (!strcmp(e.comp, "LEARNING") || !strcmp(e.comp, "PART")) return 1;
+    return 0;                                                    // OFF, NONTC
+}
+
+const char* VolumeControl::compensationText() const {
+    const DaughterEnv& e = DaughterBoardLink::instance().env();
+    return e.valid ? e.comp : "--";
+}
+
 int8_t VolumeControl::compensationState() const {
     const DaughterEnv& e = DaughterBoardLink::instance().env();
     if (m_compRequested && (m_compPending || !e.valid || static_cast<int32_t>(e.receivedMs - m_compSentMs) <= 0)) {
@@ -142,6 +158,8 @@ void VolumeControl::retryPendingCommands() {
     if (m_calPending && !link.isBusy()) {
         bool sent = (m_calMode == CalR::AUTO_R) ? link.sendCalibrateAuto()
                   : (m_calMode == CalR::SET_R)  ? link.sendCalibrateR(m_calOhms)
+                  : (m_calMode == CalR::FULL)   ? link.sendCalibrateFull()
+                  : (m_calMode == CalR::VERIFY) ? link.sendCalibrateVerify()
                                                 : link.sendCalibrate();
         if (sent) m_calPending = false;
     }
@@ -160,9 +178,9 @@ void VolumeControl::syncFromDaughterStatus() {
 
     // Calibration start/end logging (the protocol has no CAL DONE/FAIL --
     // completion is STATUS going back to IDLE).
-    bool calibratingNow = s.calibrating();
+    bool calibratingNow = s.running();   // a calibration, or a verify (rev 20)
     if (calibratingNow && !m_wasCalibrating) {
-        Console::log("Calibration", "Daughter reports CAL=PROCESSING");
+        Console::log("Calibration", "%s", s.verifying() ? "Attenuator runs a verify" : "Attenuator reports CAL=PROCESSING");
     } else if (!calibratingNow && m_wasCalibrating && !s.busy) {
         char extra[96] = "";
         if (s.cal == DaughterCalState::OK) snprintf(extra, sizeof(extra), ", LASTCAL=%s", s.lastCal);
@@ -177,7 +195,7 @@ void VolumeControl::syncFromDaughterStatus() {
     // start-up statuses never show CAL leaving OK.
     if (m_haveUp && s.upSeconds + 2 < m_lastUp) {
         m_ready = false;
-        Console::log("Volume", "Daughter restarted -- will restore balance and unmute once it's calibrated");
+        Console::log("Volume", "Attenuator restarted -- will restore balance and unmute once it's calibrated");
     }
     m_lastUp = s.upSeconds;
     m_haveUp = true;
@@ -206,7 +224,7 @@ void VolumeControl::syncFromDaughterStatus() {
 
     if (!calOk) {
         m_ready = false;
-        Console::log("Volume", "Calibration needed (%s) -- the daughter keeps the volume muted", calStateText(s.cal));
+        Console::log("Volume", "Calibration needed (%s) -- the attenuator keeps the volume muted", calStateText(s.cal));
         return;
     }
 

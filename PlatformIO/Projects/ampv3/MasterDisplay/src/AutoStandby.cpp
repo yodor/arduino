@@ -38,7 +38,7 @@ bool AutoStandby::update(bool keyActivity) {
     }
 
     const DaughterStatus& s = DaughterBoardLink::instance().status();
-    bool calibrating = s.valid && s.calibrating();
+    bool calibrating = s.valid && s.running();   // a verify too: it holds the amp muted for minutes
     uint8_t minutes  = DisplaySettings::instance().getAutoStandbyMinutes();
 
     if (keyActivity || playing() || calibrating || !PowerControl::instance().isOn() || minutes == 0) {

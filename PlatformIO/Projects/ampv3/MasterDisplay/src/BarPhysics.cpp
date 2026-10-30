@@ -21,7 +21,6 @@ BarPhysics::BarPhysics() {
     m_decayRate = kBaselineDecayRate * frameRatio;
     if (m_decayRate < kMinDecayRate) m_decayRate = kMinDecayRate;
 
-    recomputePeakDrop(); // uses m_peakDecaySpeed's default (NORMAL) on first construction
 
     // smoothing is a per-frame EXPONENTIAL blend factor, not a linear
     // step -- a straight ratio rescale (like decayRate above) would be
@@ -37,38 +36,26 @@ BarPhysics::BarPhysics() {
     m_smoothing = expf(-static_cast<float>(TARGET_FRAME_US) / tau);
 }
 
-void BarPhysics::setPeakDecaySpeed(PeakDecaySpeed speed) {
-    m_peakDecaySpeed = speed;
-    recomputePeakDrop();
+// The peak speeds: hold, then fall the whole bar height in fallS seconds,
+// accelerating from rest (gravity g = 2 / fallS^2 of full height per s^2).
+// Timed in seconds, so the same at any frame rate and any bar height.
+namespace {
+struct PeakSpeed { uint32_t holdMs; float fallS; };
+constexpr PeakSpeed kPeakSpeeds[] = {
+    { 1500, 6.0f },   // TURTLE
+    { 1000, 3.5f },   // SLOW
+    {  600, 2.0f },   // NORMAL
+    {  300, 1.1f },   // FAST
+    {  120, 0.5f },   // CHEETAH
+};
+const PeakSpeed& peakSpeed(PeakDecaySpeed s) {
+    size_t i = static_cast<size_t>(s);
+    return kPeakSpeeds[i < sizeof(kPeakSpeeds) / sizeof(kPeakSpeeds[0]) ? i : 2];
 }
+} // namespace
 
-// peakDrop is rounded to a whole pixel step (minimum 1), not left as a
-// fractional value. state.peak[] starts as an exact integer
-// (static_cast<float>(h)) every time it's reset by a rising bar, and
-// subtracting an exact-integer peakDrop keeps it an exact integer through
-// every subsequent decay step -- so truncating to uint16_t for the drawn
-// pixel row is always lossless. A fractional peakDrop breaks that
-// invariant: once decaying, the peak accumulates genuine fractional
-// remainders, and truncating a fractional float to a pixel row is exactly
-// the kind of thing that can drift by a pixel over many frames from
-// floating-point representation error -- a real, subtle regression versus
-// the original hardcoded peakDrop=2.0f, which was always an exact integer
-// and never had this problem.
-//
-// SLOW/FAST are plain multipliers on the same by-ear-tuned baseline, not
-// independently-tuned values -- 0.5x/2x was a reasonable first guess, not
-// something confirmed against real hardware yet.
-void BarPhysics::recomputePeakDrop() {
-    float frameRatio = static_cast<float>(TARGET_FRAME_US) / static_cast<float>(kBaselineFrameUs);
-
-    float speedMultiplier = 1.0f;
-    if (m_peakDecaySpeed == PeakDecaySpeed::SLOW) speedMultiplier = 0.5f;
-    else if (m_peakDecaySpeed == PeakDecaySpeed::FAST) speedMultiplier = 2.0f;
-
-    float rawPeakDrop = kBaselinePeakDrop * frameRatio * speedMultiplier;
-    m_peakDrop = static_cast<uint16_t>(roundf(rawPeakDrop));
-    if (m_peakDrop < 1) m_peakDrop = 1;
-}
+void BarPhysics::setPeakDecaySpeed(PeakDecaySpeed speed) { m_peakDecaySpeed = speed; }
+uint32_t BarPhysics::peakHoldTimeMs() const { return peakSpeed(m_peakDecaySpeed).holdMs; }
 
 // THE CENTRALIZED ENGINE METHOD: Calculates ballistics updates uniformly
     // Maps a floating-point level input (0.0..1.0) into crisp integer pixel limits
@@ -80,34 +67,22 @@ void BarPhysics::updateState(BarPhysicsState& state, float currentVal, uint16_t 
         state.decay = max(currentVal, state.decay - m_decayRate);
     }
 
-    // B. Cast to a strict integer coordinate bounds step
+    // B. The bar in whole pixel units.
     uint16_t integerUnits = static_cast<uint16_t>(state.decay * maxPixelUnits);
-    uint16_t integerPeak  = static_cast<uint16_t>(state.peak);
 
-    // C. peakHoldTime is a genuine wall-clock duration, compared directly
-    // against millis() -- already frame-rate-independent by construction,
-    // like decayRate/peakDrop/smoothing are NOT, so (unlike those three)
-    // it needs no TARGET_FRAME_US-based rescale at all. Using the constant
-    // directly here also guarantees this can never again silently
-    // disagree with the public peakHoldTimeMs() getter, which reports the
-    // same constant -- previously this recomputed a DIFFERENT, wrongly
-    // hold time locally on every single call (a stray division using an
-    // unrelated hardcoded 16666 baseline, inconsistent with this class's
-    // own kBaselineFrameUs=16000), silently diverging from what the
-    // getter reported and making the peak visibly hold longer than
-    // intended at higher frame rates.
-    if (integerUnits >= integerPeak) {
-        integerPeak = integerUnits;
+    // C. The peak: jumps up with the bar; after its hold (wall-clock) it falls
+    // with constant acceleration, never below the bar. Kept fractional, so
+    // even the slowest speed moves smoothly at 100 fps.
+    const PeakSpeed& sp = peakSpeed(m_peakDecaySpeed);
+    if (integerUnits >= state.peak) {
+        state.peak      = integerUnits;
+        state.peakVel   = 0.0f;
         state.peakTimer = now;
-    } else if (m_peakDecaySpeed != PeakDecaySpeed::OFF && now - state.peakTimer > kPeakHoldTimeMs) {
-        // OFF skips this whole branch -- the peak simply never falls on
-        // its own once set, only a new higher bar value (the branch
-        // above) ever raises it again.
-        if (integerPeak > m_peakDrop) integerPeak -= m_peakDrop;
-        else integerPeak = 0;
-        if (integerPeak < integerUnits) integerPeak = integerUnits;
+    } else if (now - state.peakTimer > sp.holdMs) {
+        constexpr float dt = TARGET_FRAME_US / 1e6f;                  // one frame
+        float g = 2.0f * maxPixelUnits / (sp.fallS * sp.fallS);       // units per s^2
+        state.peakVel += g * dt;
+        state.peak    -= state.peakVel * dt;
+        if (state.peak < integerUnits) { state.peak = integerUnits; state.peakVel = 0.0f; }
     }
-
-    // D. Save integer coordinates losslessly back into the state float store
-    state.peak = static_cast<float>(integerPeak);
 }

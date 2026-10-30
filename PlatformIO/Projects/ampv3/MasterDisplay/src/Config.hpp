@@ -46,7 +46,7 @@ constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter 
 // Protocol revision this master is written for. A daughter reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 18;
+constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 20;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held -- each
 // command is a single discrete step on the daughter board.
@@ -74,7 +74,7 @@ constexpr uint32_t DAUGHTER_ENV_POLL_MS      = 5000;
 // ...and, in the background, this often anyway while the daughter is idle --
 // for revision 14's resync hint and revision 13's NTC state (both based on a
 // 1-minute average, so a slow poll misses nothing).
-constexpr uint32_t DAUGHTER_ENV_BACKGROUND_POLL_MS = 30000;
+constexpr uint32_t DAUGHTER_ENV_BACKGROUND_POLL_MS = 10000; // COMP / resync hint on the Info screen follow it
 
 // Notices (resync advised, NTC fault): how long the popup stays up.
 constexpr uint32_t NOTICE_POPUP_MS = 5000;

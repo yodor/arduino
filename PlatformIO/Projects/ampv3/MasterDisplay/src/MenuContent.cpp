@@ -90,7 +90,7 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
         return n;
     }
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "No reply from daughter");
+        addLine(lines, n, maxLines, "No reply from attenuator");
         if (!s.valid) return n;
         addLine(lines, n, maxLines, "(last known values)");
     } else if (s.proto != DAUGHTER_PROTO_EXPECTED) {
@@ -99,13 +99,13 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
         addLine(lines, n, maxLines, "Link OK, protocol %u", s.proto);
     }
 
-    addLine(lines, n, maxLines, "State: %s", s.calibrating() ? "CALIBRATING" : (s.busy ? "busy" : "idle"));
+    addLine(lines, n, maxLines, "State: %s", s.verifying() ? "VERIFYING" : s.calibrating() ? "CALIBRATING" : (s.busy ? "busy" : "idle"));
     addLine(lines, n, maxLines, "Cal: %s", calStateText(s.cal));
     if (s.lastCal[0] && strcmp(s.lastCal, "NONE") != 0) addLine(lines, n, maxLines, "Last cal: %s", s.lastCal);
 
     char a[12], b[12];
     if (s.calibrating()) {
-        // Per the protocol, every other field is transient during a run.
+        // Per the protocol, every other field is transient during a calibration.
         addLine(lines, n, maxLines, "Volume locked");
     } else {
         if (s.vol < 0) {
@@ -325,25 +325,29 @@ bool menuIsActive_WaveDaw() { return AudioEngine::instance().getWaveformWindowMo
 // DisplaySettings::setPeaksEnabled()'s comment for why no special
 // clear/reset handling is needed here beyond the menu's existing onEnter()
 // behavior on close).
-void menuSet_PeaksOn()  { DisplaySettings::instance().setPeaksEnabled(true);  PersistentSettings::instance().markDirty(); }
-void menuSet_PeaksOff() { DisplaySettings::instance().setPeaksEnabled(false); PersistentSettings::instance().markDirty(); }
-bool menuIsActive_PeaksOn()  { return DisplaySettings::instance().getPeaksEnabled(); }
-bool menuIsActive_PeaksOff() { return !DisplaySettings::instance().getPeaksEnabled(); }
-
-// Peak Decay Speed: a multiplier on the peak-hold drop rate (Slow/Normal/
-// Fast), not independently-tuned values -- see BarPhysics::
-// recomputePeakDrop()'s comment. Same core0-only reasoning as above, no
-// cross-core handling needed. Off is a genuinely different mode, not just
-// the slowest multiplier -- see PeakDecaySpeed's own comment in
-// BarPhysics.hpp: once set, the peak never falls on its own at all.
-void menuSet_PeakDecaySlow()   { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::SLOW);   PersistentSettings::instance().markDirty(); }
-void menuSet_PeakDecayNormal() { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::NORMAL); PersistentSettings::instance().markDirty(); }
-void menuSet_PeakDecayFast()   { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::FAST);   PersistentSettings::instance().markDirty(); }
-void menuSet_PeakDecayOff()    { BarPhysics::instance().setPeakDecaySpeed(PeakDecaySpeed::OFF);    PersistentSettings::instance().markDirty(); }
-bool menuIsActive_PeakDecaySlow()   { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::SLOW; }
-bool menuIsActive_PeakDecayNormal() { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::NORMAL; }
-bool menuIsActive_PeakDecayFast()   { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::FAST; }
-bool menuIsActive_PeakDecayOff()    { return BarPhysics::instance().getPeakDecaySpeed() == PeakDecaySpeed::OFF; }
+// Theme > Peaks: Off hides the peak markers; the others set how fast they
+// fall (BarPhysics: hold, then an accelerating fall).
+void setPeaks(bool on, PeakDecaySpeed speed) {
+    DisplaySettings::instance().setPeaksEnabled(on);
+    if (on) BarPhysics::instance().setPeakDecaySpeed(speed);
+    PersistentSettings::instance().markDirty();
+}
+bool peaksAre(bool on, PeakDecaySpeed speed) {
+    bool enabled = DisplaySettings::instance().getPeaksEnabled();
+    return on ? (enabled && BarPhysics::instance().getPeakDecaySpeed() == speed) : !enabled;
+}
+void menuSet_PeaksOff()     { setPeaks(false, PeakDecaySpeed::NORMAL); }
+void menuSet_PeaksTurtle()  { setPeaks(true, PeakDecaySpeed::TURTLE); }
+void menuSet_PeaksSlow()    { setPeaks(true, PeakDecaySpeed::SLOW); }
+void menuSet_PeaksNormal()  { setPeaks(true, PeakDecaySpeed::NORMAL); }
+void menuSet_PeaksFast()    { setPeaks(true, PeakDecaySpeed::FAST); }
+void menuSet_PeaksCheetah() { setPeaks(true, PeakDecaySpeed::CHEETAH); }
+bool menuIsActive_PeaksOff()     { return peaksAre(false, PeakDecaySpeed::NORMAL); }
+bool menuIsActive_PeaksTurtle()  { return peaksAre(true, PeakDecaySpeed::TURTLE); }
+bool menuIsActive_PeaksSlow()    { return peaksAre(true, PeakDecaySpeed::SLOW); }
+bool menuIsActive_PeaksNormal()  { return peaksAre(true, PeakDecaySpeed::NORMAL); }
+bool menuIsActive_PeaksFast()    { return peaksAre(true, PeakDecaySpeed::FAST); }
+bool menuIsActive_PeaksCheetah() { return peaksAre(true, PeakDecaySpeed::CHEETAH); }
 
 const MenuValueOption kColorOptions[] = {
     { "Classic",  menuSet_ColorClassic,  menuIsActive_ColorClassic  },
@@ -413,26 +417,15 @@ const MenuItem kWaveSubmenuItems[] = {
 };
 constexpr size_t kWaveSubmenuItemCount = sizeof(kWaveSubmenuItems) / sizeof(kWaveSubmenuItems[0]);
 
-const MenuValueOption kPeaksEnabledOptions[] = {
-    { "On",  menuSet_PeaksOn,  menuIsActive_PeaksOn  },
-    { "Off", menuSet_PeaksOff, menuIsActive_PeaksOff },
+// Theme > Peaks -- the peak markers on the Spectrum and Digital VU screens.
+const MenuValueOption kPeaksOptions[] = {
+    { "Off",     menuSet_PeaksOff,     menuIsActive_PeaksOff     },
+    { "Turtle",  menuSet_PeaksTurtle,  menuIsActive_PeaksTurtle  },
+    { "Slow",    menuSet_PeaksSlow,    menuIsActive_PeaksSlow    },
+    { "Normal",  menuSet_PeaksNormal,  menuIsActive_PeaksNormal  },
+    { "Fast",    menuSet_PeaksFast,    menuIsActive_PeaksFast    },
+    { "Cheetah", menuSet_PeaksCheetah, menuIsActive_PeaksCheetah },
 };
-
-const MenuValueOption kPeakDecaySpeedOptions[] = {
-    { "Off",    menuSet_PeakDecayOff,    menuIsActive_PeakDecayOff    },
-    { "Slow",   menuSet_PeakDecaySlow,   menuIsActive_PeakDecaySlow   },
-    { "Normal", menuSet_PeakDecayNormal, menuIsActive_PeakDecayNormal },
-    { "Fast",   menuSet_PeakDecayFast,   menuIsActive_PeakDecayFast   },
-};
-
-// "Peaks" submenu, nested inside "Theme" -- peak-hold indicator settings
-// for both SpectrumScreen and DigitalVuMeterScreen, same role as "FFT"/
-// "Wave" play for their own screens.
-const MenuItem kPeaksSubmenuItems[] = {
-    { "Enabled",     MenuItemType::VALUE_CHOICE, nullptr, kPeaksEnabledOptions,    2 },
-    { "Decay Speed", MenuItemType::VALUE_CHOICE, nullptr, kPeakDecaySpeedOptions,  4 },
-};
-constexpr size_t kPeaksSubmenuItemCount = sizeof(kPeaksSubmenuItems) / sizeof(kPeaksSubmenuItems[0]);
 
 // "Theme" submenu, nested at root -- display/appearance settings grouped
 // together, with "FFT", "Wave", and "Peaks" themselves one further level in.
@@ -441,7 +434,7 @@ const MenuItem kThemeSubmenuItems[] = {
     { "Colors",        MenuItemType::VALUE_CHOICE, nullptr, kColorOptions,       4 },
     { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
     { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
-    { "Peaks",         MenuItemType::SUBMENU,      nullptr, nullptr, 0, kPeaksSubmenuItems, kPeaksSubmenuItemCount },
+    { "Peaks",         MenuItemType::VALUE_CHOICE, nullptr, kPeaksOptions, 6 },
 };
 constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
 
@@ -485,12 +478,8 @@ uint32_t g_rSelOhms = 0;
 
 // The start option's label names what will run: "Start R=AUTO" or
 // "Start R=650K" (MenuScreen reads the label each time it draws).
-char g_startLabel[24] = "Start";
 
-void updateStartLabel() {
-    if (g_rSelAuto) snprintf(g_startLabel, sizeof(g_startLabel), "Start R=AUTO");
-    else            snprintf(g_startLabel, sizeof(g_startLabel), "Start R=%luK", static_cast<unsigned long>((g_rSelOhms + 500) / 1000));
-}
+void menuAction_StartCalibration();   // below: sends CAL with the chosen R
 
 // "Rtotal" selector: ONE field covering both modes -- index 0 is AUTO,
 // then RMIN..RMAX (the daughter's measured range) in kRStepOhms steps,
@@ -549,7 +538,7 @@ bool saveRTotal(const int16_t* v) {
         g_rSelAuto = false;
         g_rSelOhms = rIndexOhms(v[0]);
     }
-    updateStartLabel();
+    menuAction_StartCalibration();   // Right on the value runs it: no Cancel / Start step
     return true;
 }
 // Under the item in the list: the daughter's current Rtotal, e.g. "650K (auto)".
@@ -591,6 +580,8 @@ const char* phaseLabel(const char* phase) {
     if (!strcmp(phase, "HOLD"))         return "Settling";
     if (!strcmp(phase, "SEEK"))         return "Stereo match";
     if (!strcmp(phase, "SAVE"))         return "Saving";
+    if (!strcmp(phase, "STEPS"))        return "Step levels";     // verify (rev 20)
+    if (!strcmp(phase, "CREEP"))        return "Creep test";      // verify (rev 20)
     if (!strcmp(phase, "DONE"))         return "Done";
     return "Starting";
 }
@@ -606,14 +597,15 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     link.requestEnv();
 
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "No reply from daughter");
+        addLine(lines, n, maxLines, "No reply from attenuator");
         return n;
     }
 
-    if (s.calibrating()) {
+    if (s.running()) {   // a calibration, or a verify (rev 20: BUSY with CAL=OK)
         bool known = pr.valid && pr.kind[0] && strcmp(pr.kind, "NONE") != 0;
-        if (known) addLine(lines, n, maxLines, "Calibrating %s", pr.kind);
-        else       addLine(lines, n, maxLines, "Calibrating");
+        if (s.verifying() || (known && !strcmp(pr.kind, "VERIFY"))) addLine(lines, n, maxLines, "Verifying");
+        else if (known) addLine(lines, n, maxLines, "Calibrating %s", pr.kind);
+        else            addLine(lines, n, maxLines, "Calibrating");
         if (pr.valid) {
             addLine(lines, n, maxLines, "%s%s%s%s%s", phaseLabel(pr.phase),
                     pr.side[0] ? " " : "", pr.side, pr.step[0] ? " " : "", pr.step);
@@ -646,8 +638,10 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
         return n;
     }
 
-    // Idle: the result of the last calibration.
+    // Idle: the result of the last calibration, and of the last verify.
     addLine(lines, n, maxLines, "Result: %s", calStateText(s.cal));
+    const DaughterVerify& vr = link.verifyResult();
+    if (vr.valid && vr.seq > 0) addLine(lines, n, maxLines, "Verify: %s", vr.verdict);
     if (s.lastCal[0]) addLine(lines, n, maxLines, "Last: %s", s.lastCal);
     if (s.cal == DaughterCalState::ERR && s.hasErr) addWrapped(lines, n, maxLines, "  ", s.err);
     if (link.env().valid) addLine(lines, n, maxLines, "Match %s dB", link.env().match);
@@ -667,7 +661,7 @@ size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
     link.requestEnv();
     const DaughterEnv&    e = link.env();
     const DaughterStatus& s = link.status();
-    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!e.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
 
     if (e.ntcOk()) addLine(lines, n, maxLines, "Block %s C", e.block);
@@ -682,6 +676,7 @@ size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
                         : !strcmp(e.why, "LIMIT")  ? "30 C from cal temp"
                         : !strcmp(e.why, "NOCOMP") ? "no comp, moved >1 C"
                         : !strcmp(e.why, "SEEK")   ? "seek didn't settle"
+                        : !strcmp(e.why, "VERIFY") ? "last verify: drift"
                                                    : e.why;
         addLine(lines, n, maxLines, "Resync ADVISED");
         addLine(lines, n, maxLines, "  %s", why);
@@ -705,7 +700,7 @@ size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
     link.requestLearn();
     const DaughterLearn& l = link.learn();
     if (!link.isStatusFresh()) {
-        addLine(lines, n, maxLines, "No reply from daughter");
+        addLine(lines, n, maxLines, "No reply from attenuator");
         return n;
     }
     if (!l.valid) {
@@ -816,7 +811,7 @@ size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
     link.requestModel();
     const DaughterModel&  m = link.model();
     const DaughterStatus& s = link.status();
-    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!m.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
     auto ohms = [](char* b, size_t sz, int32_t v, bool unl) {
         if (v < 0) snprintf(b, sz, "--"); else if (v == 0 && unl) snprintf(b, sz, "unloaded"); else snprintf(b, sz, "%ld", static_cast<long>(v));
@@ -870,15 +865,114 @@ constexpr size_t kModelSubmenuItemCount = sizeof(kModelSubmenuItems) / sizeof(kM
 
 // Offered right after the Rtotal selector is confirmed: Cancel (focused)
 // or start -- the second label names the Rtotal, then the progress page.
-const MenuValueOption kCalStartOptions[] = {
-    { "Cancel",     nullptr,                     nullptr },
-    { g_startLabel, menuAction_StartCalibration, nullptr },
-};
 // Calibration. "Rtotal" shows the daughter's current Rtotal;
 // entering it opens the selector on that value, confirming offers Cancel /
 // Start R=..., and Start shows the progress page.
+// Calibration > Last Verify: the newest CAL VERIFY run (rev 20 VERIFY RESULT).
+size_t fillVerifyResult(char (*lines)[kInfoLineLen], size_t maxLines) {
+    size_t n = 0;
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    link.requestVerifyResult();
+    const DaughterVerify& v = link.verifyResult();
+    if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
+    if (link.status().proto < 20) { addLine(lines, n, maxLines, "Needs protocol 20"); return n; }
+    if (!v.valid) { addLine(lines, n, maxLines, "Waiting for data"); return n; }
+    if (v.seq == 0) {
+        addLine(lines, n, maxLines, "No verify on record");
+        addLine(lines, n, maxLines, "Calibrate > Verify");
+        return n;
+    }
+    addLine(lines, n, maxLines, "Verdict: %s", v.verdict);
+    addLine(lines, n, maxLines, "  %s", !strcmp(v.verdict, "OK")     ? "the table holds"
+                                     : !strcmp(v.verdict, "RESYNC") ? "a resync fixes it"
+                                     : !strcmp(v.verdict, "CHECK")  ? "look on the console"
+                                                                    : "--");
+    if (strcmp(v.ageMin, "-")) addLine(lines, n, maxLines, "Run #%lu, %s min ago", static_cast<unsigned long>(v.seq), v.ageMin);
+    else                       addLine(lines, n, maxLines, "Run #%lu, %s restarts ago", static_cast<unsigned long>(v.seq), v.restarts);
+    addLine(lines, n, maxLines, "Block %s C", v.block);
+    addLine(lines, n, maxLines, "Residual L%s R%s", v.resL, v.resR);
+    addLine(lines, n, maxLines, "Moved L%s R%s", v.movedL, v.movedR);
+    addLine(lines, n, maxLines, "Mid L%s R%s dB", v.midL, v.midR);
+    addLine(lines, n, maxLines, "Rms L%s R%s dB", v.rmsL, v.rmsR);
+    addLine(lines, n, maxLines, "Worst L-R %s dB", v.lr);
+    addLine(lines, n, maxLines, "Walk %s", v.adopted ? "adopted" : "kept");
+    return n;
+}
+
+// Calibration > (first item): what the calibration is, live -- the item's
+// label is the Rtotal ("970K (auto)") or the state, the line under it what
+// to know (a resync advised, a run's progress...).
+void describeCalibration(char* label, size_t ls, char* hint, size_t hs, uint16_t* color) {
+    DaughterBoardLink& link = DaughterBoardLink::instance();
+    const DaughterStatus&   s  = link.status();
+    const DaughterEnv&      e  = link.env();
+    const DaughterProgress& pr = link.progress();
+    const DaughterVerify&   v  = link.verifyResult();
+    if (!link.isStatusFresh()) {
+        snprintf(label, ls, "No link");
+        snprintf(hint, hs, "attenuator not answering"); *color = COLOR_RED;
+        return;
+    }
+    if (s.running()) {
+        snprintf(label, ls, "%s", s.verifying() ? "Verifying" : "Calibrating");
+        if (pr.valid) snprintf(hint, hs, "%s %d%%", phaseLabel(pr.phase), pr.pct < 0 ? 0 : pr.pct);
+        else          snprintf(hint, hs, "amp muted meanwhile");
+        *color = COLOR_YELLOW;
+        return;
+    }
+    switch (s.cal) {
+        case DaughterCalState::NONE:
+        case DaughterCalState::CHANGED:
+            snprintf(label, ls, "No calibration");
+            snprintf(hint, hs, "%s", s.cal == DaughterCalState::CHANGED ? "new cells: calibrate" : "calibrate to play");
+            *color = COLOR_RED;
+            return;
+        case DaughterCalState::ERR:
+            snprintf(label, ls, "Calibration error");
+            snprintf(hint, hs, "%s", s.hasErr ? s.err : "see Status");
+            *color = COLOR_RED;
+            return;
+        default: break;
+    }
+    snprintf(label, ls, "%luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
+    if (s.cal == DaughterCalState::STALE) { snprintf(hint, hs, "re-solve needed: Start"); *color = COLOR_YELLOW; return; }
+    if (e.valid && e.resync == 1)         { snprintf(hint, hs, "resync advised: Start");  *color = COLOR_YELLOW; return; }
+    if (v.valid && v.seq > 0 && !strcmp(v.verdict, "CHECK")) { snprintf(hint, hs, "verify: check console"); *color = COLOR_RED; return; }
+    if (e.valid && e.resync == 0 && !strcmp(e.why, "WARMING")) { snprintf(hint, hs, "resync after warm-up"); return; }
+    snprintf(hint, hs, "calibrated, last %s", s.lastCal[0] ? s.lastCal : "--");
+}
+
+// Calibration > Calibrate > Start / Verify / Full.
+void describeCalStart(char*, size_t, char* hint, size_t hs, uint16_t*) {
+    snprintf(hint, hs, "choose R, then it runs");
+}
+void describeCalVerify(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    if (DaughterBoardLink::instance().status().cal != DaughterCalState::OK) { snprintf(hint, hs, "needs a calibration"); *color = COLOR_RED; return; }
+    snprintf(hint, hs, "8 min, amp muted, no change");
+}
+void describeCalFull(char*, size_t, char* hint, size_t hs, uint16_t*) {
+    snprintf(hint, hs, "6 min, re-measures cells");
+}
+void menuAction_CalVerify() {
+    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    if (s.running() || s.cal != DaughterCalState::OK) return;   // the page says why
+    VolumeControl::instance().calibrate(VolumeControl::CalR::VERIFY);
+}
+void menuAction_CalFull() {
+    if (DaughterBoardLink::instance().status().running()) return;
+    VolumeControl::instance().calibrate(VolumeControl::CalR::FULL);
+}
+
+const MenuItem kCalibrateItems[] = {
+    { "Start",  MenuItemType::EDITOR, nullptr,              nullptr, 0, nullptr, 0, fillCalibrationProgress, &kRTotalEditor, nullptr, nullptr, describeCalStart },
+    { "Verify", MenuItemType::ACTION, menuAction_CalVerify, nullptr, 0, nullptr, 0, fillCalibrationProgress, nullptr,        nullptr, nullptr, describeCalVerify },
+    { "Full",   MenuItemType::ACTION, menuAction_CalFull,   nullptr, 0, nullptr, 0, fillCalibrationProgress, nullptr,        nullptr, nullptr, describeCalFull },
+};
+constexpr size_t kCalibrateItemCount = sizeof(kCalibrateItems) / sizeof(kCalibrateItems[0]);
+
 const MenuItem kCalibrationSubmenuItems[] = {
-    { "Rtotal",   MenuItemType::EDITOR,       nullptr, kCalStartOptions, 2, nullptr, 0, fillCalibrationProgress, &kRTotalEditor },
+    { "Calibrate", MenuItemType::SUBMENU,     nullptr, nullptr, 0, kCalibrateItems, kCalibrateItemCount, nullptr, nullptr, nullptr, nullptr, describeCalibration },
+    { "Last Verify", MenuItemType::INFO,      nullptr, nullptr, 0, nullptr, 0, fillVerifyResult },
     { "Auto Depth", MenuItemType::VALUE_CHOICE, nullptr, kAutoPrefOptions, 3, nullptr, 0, fillModelInfo },
     { "Model",    MenuItemType::SUBMENU,      nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount },
     { "Progress", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
@@ -950,7 +1044,7 @@ size_t fillDaughterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
     DaughterBoardLink& link = DaughterBoardLink::instance();
     link.requestVer();
     const DaughterVersion& v = link.version();
-    if (!link.isStatusFresh() && !v.valid) { addLine(lines, n, maxLines, "No reply from daughter"); return n; }
+    if (!link.isStatusFresh() && !v.valid) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!v.valid) {
         if (link.status().valid && link.status().proto < 15) addLine(lines, n, maxLines, "Needs protocol 15+");
         else                                                 addLine(lines, n, maxLines, "Waiting for data...");
@@ -987,7 +1081,7 @@ size_t fillDaughterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
 
 const MenuItem kVersionsSubmenuItems[] = {
     { "Master",       MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillMasterVersion },
-    { "Volume Board", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillDaughterVersion },
+    { "Attenuator", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillDaughterVersion },
 };
 
 // Diagnostics > Debug Output: the serial debug lines, at run time (not saved).
@@ -1012,10 +1106,26 @@ const MenuItem kDebugOutputItems[] = {
     { "Perf",  MenuItemType::VALUE_CHOICE, nullptr, kDbgPerfOptions,  2 }, // [Perf] frame-rate line
 };
 
+// Diagnostics > Compensation: the switch (On/Off) inside; under the name, what
+// the attenuator's compensation is actually doing (its ENV COMP).
+void describeCompensation(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    VolumeControl& vc = VolumeControl::instance();
+    const char* c = vc.compensationText();
+    int8_t level  = vc.compensationLevel();
+    const char* text = !strcmp(c, "ON")       ? "on"
+                     : !strcmp(c, "PART")     ? "on, one side only"
+                     : !strcmp(c, "LEARNING") ? "learning"
+                     : !strcmp(c, "OFF")      ? "off"
+                     : !strcmp(c, "NONTC")    ? "off: block sensor fault"
+                                              : "--";
+    snprintf(hint, hs, "%s", text);
+    *color = level == 2 ? COLOR_GREEN : level == 1 ? COLOR_YELLOW : level == 0 ? COLOR_RED : 0x8410;
+}
+
 const MenuItem kDiagnosticsSubmenuItems[] = {
     { "Versions",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kVersionsSubmenuItems, 2 },
     { "Amp Mute",     MenuItemType::VALUE_CHOICE, nullptr, kAmpMuteOptions, 2 },
-    { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2 },
+    { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeCompensation },
     { "Display Test", MenuItemType::ACTION,       menuAction_DisplayTest, nullptr, 0 },
     { "Debug Output", MenuItemType::SUBMENU,      nullptr, nullptr, 0, kDebugOutputItems, 2 },
 };
@@ -1164,20 +1274,8 @@ void menuOpenResyncStart(MenuScreen& menu) {
     if (calibration < 0) return;
     menu.focus(static_cast<size_t>(calibration));
     menu.enter();
-
-    constexpr size_t kCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (s.busy) {
-        int progress = indexOfInfo(kCalibrationSubmenuItems, kCount, fillCalibrationProgress, MenuItemType::INFO);
-        if (progress >= 0) { menu.focus(static_cast<size_t>(progress)); menu.enter(); }
-        return;
-    }
-    int rtotal = indexOfInfo(kCalibrationSubmenuItems, kCount, fillCalibrationProgress, MenuItemType::EDITOR);
-    if (rtotal < 0) return;
-    // A resync keeps Rtotal: select exactly what the daughter uses now.
-    g_rSelAuto = s.rAuto;
-    g_rSelOhms = s.rOhms;
-    updateStartLabel();
-    menu.focus(static_cast<size_t>(rtotal));
-    menu.openOptions();
+    int calibrate = indexOfSubmenu(kCalibrationSubmenuItems, kCalibrationSubmenuItemCount, kCalibrateItems);
+    if (calibrate < 0) return;
+    menu.focus(static_cast<size_t>(calibrate));
+    menu.enter();      // into Calibrate: "Start" is first -- Right, then Right on the R, runs it
 }

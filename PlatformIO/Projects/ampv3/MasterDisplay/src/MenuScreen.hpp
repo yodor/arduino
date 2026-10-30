@@ -112,4 +112,11 @@ private:
     bool m_editorFieldsDirty = false;
     uint32_t m_holdStartMs  = 0;   // handleUpDownButtons(): the held-key repeat
     uint32_t m_lastRepeatMs = 0;
+    // The list view (proportional fonts) and live labels (MenuItem::describe).
+    void drawListHeader(const char* title, size_t index, size_t count);
+    void drawListLine(const char* text, bool big, int16_t y, uint16_t color);
+    void rememberDescribe(const MenuItem& item);
+    bool describeChanged(const MenuItem& item) const;
+    uint32_t m_describeHash    = 0;
+    uint32_t m_describeCheckMs = 0;
 };

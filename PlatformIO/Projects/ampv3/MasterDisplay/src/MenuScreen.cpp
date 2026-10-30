@@ -1,4 +1,5 @@
 #include "MenuScreen.hpp"
+#include "MenuFont.hpp"
 #include "InputEngine.hpp"
 #include "Renderer.hpp"
 #include <cstdio>
@@ -12,17 +13,17 @@ constexpr int16_t kCharW = 6;
 constexpr int16_t kCharH = 8;
 
 // Header: where you are (left) and "2/5" (right), above a divider line.
-constexpr uint8_t  kHeaderSize  = 2;
+constexpr uint8_t  kHeaderSize  = 2;    // the header of INFO pages, editors, color, slider
 constexpr int16_t  kHeaderY     = 4;
 constexpr int16_t  kDividerY    = 24;
+// The list view (one item per screen) uses the proportional MenuFonts:
+constexpr int16_t  kListHeaderY  = 2;   // 16 px line box
+constexpr int16_t  kListDividerY = 21;
+constexpr int16_t  kListLabelMid = 56;  // vertical centre of the item's name
+constexpr int16_t  kListHintY    = 96;  // top of the line under it (27 px box)
 constexpr uint16_t kHeaderColor = 0x8410; // gray
 
 // The focused item: big and centered, with a hint line under it.
-constexpr uint8_t  kLabelSize      = 4;  // 24x32 px characters -> 17 fit across
-constexpr uint8_t  kLabelSizeSmall = 3;  // fallback for longer labels
-constexpr int16_t  kLabelCenterY   = 62;
-constexpr uint8_t  kHintSize       = 2;
-constexpr int16_t  kHintY          = 100;
 constexpr uint16_t kHintColor      = 0x8410;
 
 // INFO pages: large text, 3 rows at a time
@@ -227,10 +228,15 @@ void MenuScreen::enter() {
             item.editor->save(m_editorValues); // last field: Right = save
             m_inEditor = false;
             m_dirty    = true;
-            // A follow-up choice (e.g. Cancel / Start), Cancel-first.
+            // A follow-up choice (e.g. Cancel / Start), Cancel-first -- or, with
+            // none, straight on to the item's page (e.g. the run it started).
             if (item.options && item.optionCount > 0) {
                 m_inValueChoice = true;
                 m_optionIdx     = 0;
+            } else if (item.fillInfo) {
+                m_inInfo     = true;
+                m_infoScroll = 0;
+                refillInfo();
             }
         }
         return;
@@ -256,6 +262,11 @@ void MenuScreen::enter() {
         case MenuItemType::ACTION:
             if (item.onAction) item.onAction();
             m_dirty = true;
+            if (item.fillInfo) {          // e.g. Verify / Full: on to the run's progress
+                m_inInfo     = true;
+                m_infoScroll = 0;
+                refillInfo();
+            }
             break;
         case MenuItemType::INFO:
             if (!item.fillInfo) return;
@@ -356,6 +367,13 @@ void MenuScreen::render() {
     if (m_inInfo && (millis() - m_lastInfoFillMs >= kInfoRefreshMs)) {
         if (refillInfo()) m_dirty = true;
     }
+    // A focused item with a live label: re-ask twice a second, redraw on change.
+    if (!m_dirty && !m_inInfo && !m_inEditor && !m_inColor && !m_inSlider && !m_inValueChoice &&
+        millis() - m_describeCheckMs >= 500) {
+        m_describeCheckMs = millis();
+        const StackFrame& frame = m_stack[m_stackDepth - 1];
+        if (frame.itemCount && frame.items[frame.focusedIdx].describe && describeChanged(frame.items[frame.focusedIdx])) m_dirty = true;
+    }
     if (m_dirty) {
         drawFull();
         m_dirty = false;
@@ -367,6 +385,36 @@ void MenuScreen::render() {
 }
 
 // Header: location on the left, "n/total" on the right, divider under it.
+// The list view's header: the title left, "3/12" and arrows right, in the
+// small proportional font; a thin divider below.
+void MenuScreen::drawListHeader(const char* title, size_t index, size_t count) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    menuDrawText(gfx, kMenuFontHeader, 6, kListHeaderY, title, kHeaderColor);
+    if (count > 0) {
+        char pos[12];
+        snprintf(pos, sizeof(pos), "%u/%u", static_cast<unsigned>(index + 1), static_cast<unsigned>(count));
+        int16_t posX = SCREEN_WIDTH - 6 - menuTextWidth(kMenuFontHeader, pos);
+        menuDrawText(gfx, kMenuFontHeader, posX, kListHeaderY, pos, kHeaderColor);
+        if (count > 1) {
+            constexpr int16_t w = 10, h = 5;
+            int16_t x = posX - w - 8, y = kListHeaderY + 2;
+            gfx->fillTriangle(x, y + h, x + w, y + h, x + w / 2, y, kHeaderColor);
+            gfx->fillTriangle(x, y + h + 3, x + w, y + h + 3, x + w / 2, y + 2 * h + 3, kHeaderColor);
+        }
+    }
+    gfx->drawFastHLine(0, kListDividerY, SCREEN_WIDTH, COLOR_DIM_GREEN);
+}
+
+// A line of the list view, centred; the next smaller font if it doesn't fit.
+void MenuScreen::drawListLine(const char* text, bool big, int16_t y, uint16_t color) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    const MenuFont* f = big ? &kMenuFontLabel : &kMenuFontHint;
+    if (menuTextWidth(*f, text) > SCREEN_WIDTH - 12) f = big ? &kMenuFontHint : &kMenuFontHeader;
+    if (big) y = kListLabelMid - f->height / 2;   // centred on the name's line
+    int16_t x = (SCREEN_WIDTH - menuTextWidth(*f, text)) / 2;
+    menuDrawText(gfx, *f, x < 0 ? 0 : x, y, text, color);
+}
+
 void MenuScreen::drawHeader(const char* title, size_t index, size_t count) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     gfx->setTextSize(kHeaderSize);
@@ -405,8 +453,8 @@ void MenuScreen::drawFull() {
 
     const StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) {
-        drawHeader("MENU", 0, 0);
-        drawCentered(gfx, "(empty)", kLabelSize, kLabelCenterY - kCharH * kLabelSize / 2, kHintColor);
+        drawListHeader("Menu", 0, 0);
+        drawListLine("(empty)", true, 0, kHintColor);
         return;
     }
     const MenuItem& item = frame.items[frame.focusedIdx];
@@ -425,7 +473,7 @@ void MenuScreen::drawFull() {
         index = m_optionIdx;
         count = item.optionCount;
     } else {
-        title = (m_stackDepth == 1) ? "MENU" : m_stack[m_stackDepth - 2].items[m_stack[m_stackDepth - 2].focusedIdx].label;
+        title = (m_stackDepth == 1) ? "Menu" : m_stack[m_stackDepth - 2].items[m_stack[m_stackDepth - 2].focusedIdx].label;
         label = item.label;
         index = frame.focusedIdx;
         count = frame.itemCount;
@@ -487,14 +535,23 @@ void MenuScreen::drawFull() {
         }
     }
 
-    drawHeader(title, index, count);
+    // A live label / line from the item itself (e.g. the calibration state).
+    static char descLabel[40], descHint[48];
+    if (!m_inValueChoice && item.describe) {
+        descLabel[0] = descHint[0] = '\0';
+        uint16_t c = kHintColor;
+        item.describe(descLabel, sizeof(descLabel), descHint, sizeof(descHint), &c);
+        if (descLabel[0]) label = descLabel;
+        if (descHint[0])  { hint = descHint; hintColor = c; }
+    }
+    rememberDescribe(item);
 
-    uint8_t size = (textWidth(label, kLabelSize) <= SCREEN_WIDTH - 20) ? kLabelSize : kLabelSizeSmall;
-    drawCentered(gfx, label, size, kLabelCenterY - kCharH * size / 2, COLOR_WHITE);
-    if (hint[0]) drawCentered(gfx, hint, kHintSize, kHintY, hintColor);
+    drawListHeader(title, index, count);
+    drawListLine(label, true, 0, COLOR_WHITE);
+    if (hint[0]) drawListLine(hint, false, kListHintY, hintColor);
     if (!m_inValueChoice && item.type == MenuItemType::COLOR && item.color && item.color->get) {
-        constexpr int16_t w = 96, h = 16;
-        gfx->fillRect((SCREEN_WIDTH - w) / 2, kHintY, w, h, item.color->get());
+        constexpr int16_t w = 96, h = 20;
+        gfx->fillRect((SCREEN_WIDTH - w) / 2, kListHintY + 3, w, h, item.color->get());
     }
 
 }
@@ -711,4 +768,27 @@ void MenuScreen::handleUpDownButtons() {
         moveFocus(heldDir);
         m_lastRepeatMs = now;
     }
+}
+
+// --- Live labels ------------------------------------------------------------------
+
+namespace {
+uint32_t describeHash(const MenuItem& item) {
+    char l[40] = "", h[48] = "";
+    uint16_t c = 0;
+    item.describe(l, sizeof(l), h, sizeof(h), &c);
+    uint32_t x = 2166136261u ^ c;                      // FNV-1a over both strings
+    for (const char* p = l; *p; ++p) x = (x ^ static_cast<uint8_t>(*p)) * 16777619u;
+    x = (x ^ 0xFF) * 16777619u;
+    for (const char* p = h; *p; ++p) x = (x ^ static_cast<uint8_t>(*p)) * 16777619u;
+    return x;
+}
+} // namespace
+
+void MenuScreen::rememberDescribe(const MenuItem& item) {
+    m_describeHash = item.describe ? describeHash(item) : 0;
+}
+
+bool MenuScreen::describeChanged(const MenuItem& item) const {
+    return describeHash(item) != m_describeHash;
 }

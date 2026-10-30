@@ -21,7 +21,7 @@ void MasterConsole::begin() {
 void MasterConsole::printHelp() {
     Console::line("--- " FW_NAME " " FW_VERSION " console ---");
     Console::line("  HELP       this list");
-    Console::line("  DAUGHTER   pass-through to the daughter board's bench console");
+    Console::line("  ATTEN      pass-through to the LDR attenuator's bench console (also DAUGHTER, D)");
     Console::line("             (type ~. at the start of a line to come back)");
     Console::line("  SETTINGS   print the settings file (/settings.txt)");
     Console::line("  SETTINGS RESET   delete it: defaults from the next boot");
@@ -33,7 +33,7 @@ void MasterConsole::printHelp() {
 }
 
 void MasterConsole::enterPassthrough() {
-    Console::log("Console", "Pass-through to the daughter console. Type ~. at the start of a line to return.");
+    Console::log("Console", "Pass-through to the attenuator console. Type ~. at the start of a line to return.");
     m_atLineStart = true;
     m_heldTilde   = false;
     DaughterBoardLink::instance().enterPassthrough(); // sends DEBUG
@@ -43,7 +43,7 @@ void MasterConsole::leavePassthrough() {
     DaughterBoardLink::instance().exitPassthrough(); // sends EXIT
     m_len = 0;
     Console::blank();
-    Console::log("Console", "Back on the master console (daughter returned to strict protocol).");
+    Console::log("Console", "Back on the master console (attenuator returned to strict protocol).");
 }
 
 // TIME                         -> print the RTC time
@@ -104,7 +104,7 @@ void MasterConsole::handleLine(char* line) {
 
     if (!strcmp(line, "HELP") || !strcmp(line, "?")) {
         printHelp();
-    } else if (!strcmp(line, "DAUGHTER") || !strcmp(line, "D")) {
+    } else if (!strcmp(line, "DAUGHTER") || !strcmp(line, "ATTEN") || !strcmp(line, "D")) {
         enterPassthrough();
     } else if (!strcmp(line, "SETTINGS")) {
         PersistentSettings::instance().printFile();

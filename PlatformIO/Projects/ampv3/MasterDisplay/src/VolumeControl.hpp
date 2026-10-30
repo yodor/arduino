@@ -62,6 +62,13 @@ public:
     // For the menu: 1 on, 0 off, -1 unknown. Taken from ENV's COMP; right
     // after a change, the requested state until ENV has caught up.
     int8_t compensationState() const;
+    // What the attenuator's compensation is doing, from its ENV: -1 unknown,
+    // 0 off (OFF, or NONTC: the block sensor is faulty), 1 not fully active
+    // (LEARNING, or PART: one side), 2 ON. A just-sent switch shows as 1/0
+    // until the attenuator confirms it.
+    int8_t compensationLevel() const;
+    // ENV's COMP word, or "--".
+    const char* compensationText() const;
 
     // Revision 10: the daughter powers up with its LDR mute ON and refuses
     // VOL / MUTE OFF until CAL=OK; a finished calibration doesn't unmute
@@ -81,7 +88,9 @@ public:
     // SET_R "CAL R=<ohms>" (must lie within the daughter's RMIN..RMAX).
     // Retried until the link takes it; progress/outcome come from STATUS and
     // PROGRESS polling and are logged by update().
-    enum class CalR : uint8_t { KEEP_R, AUTO_R, SET_R };
+    // KEEP_R "CAL", AUTO_R "CAL R=AUTO", SET_R "CAL R=<ohms>", FULL "CAL FULL"
+    // (rev 19), VERIFY "CAL VERIFY" (rev 20).
+    enum class CalR : uint8_t { KEEP_R, AUTO_R, SET_R, FULL, VERIFY };
     void calibrate(CalR mode = CalR::KEEP_R, uint32_t ohms = 0);
     bool isCalibrationPending() const { return m_calPending; } // requested, not yet sent
 

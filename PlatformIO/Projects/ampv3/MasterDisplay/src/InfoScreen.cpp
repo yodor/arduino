@@ -140,11 +140,11 @@ void InfoScreen::drawStaticForView(View v) {
     switch (v) {
         case View::NO_LINK:
             drawCentered("NO LINK", 4, kMsgY, COLOR_RED);
-            drawCentered("volume board not answering", 2, kMsgY + 44, kColorSubtle);
+            drawCentered("attenuator not answering", 2, kMsgY + 44, kColorSubtle);
             break;
         case View::CHECKING:
             drawCentered("CHECKING CELLS", 4, kMsgY, COLOR_YELLOW);
-            drawCentered("volume board starting up", 2, kMsgY + 44, kColorSubtle);
+            drawCentered("attenuator starting up", 2, kMsgY + 44, kColorSubtle);
             break;
         case View::CALIBRATING:
             drawCentered("CALIBRATING", 4, kMsgY, COLOR_YELLOW);
@@ -325,8 +325,11 @@ void InfoScreen::drawTags() {
 
     auto slotX = [](uint8_t i) { return static_cast<int16_t>(kMargin + kSlot[i].col * kCharW * kRowSize); };
 
-    int8_t comp = fresh ? VolumeControl::instance().compensationState() : -1;
-    drawSlot(0, slotX(0), kSlot[0].width, comp >= 0 ? "COMP" : "", comp == 1 ? COLOR_GREEN : kColorOff);
+    // COMP follows the attenuator: green ON, yellow LEARNING / one side, red
+    // OFF or a faulty block sensor.
+    int8_t comp = fresh ? VolumeControl::instance().compensationLevel() : -1;
+    drawSlot(0, slotX(0), kSlot[0].width, comp >= 0 ? "COMP" : "",
+             comp == 2 ? COLOR_GREEN : comp == 1 ? COLOR_YELLOW : COLOR_RED);
 
     char match[12] = "";
     if (fresh && e.valid && strcmp(e.match, "--")) snprintf(match, sizeof(match), "%sdB", e.match);

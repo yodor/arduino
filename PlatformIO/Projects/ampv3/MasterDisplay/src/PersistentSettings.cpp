@@ -29,7 +29,7 @@ const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT
 const char* const kBandLayouts[]    = { "DOUBLING", "FIXED_BANDS", "FULL" };
 const char* const kEnergyModes[]    = { "PEAK", "QUADRATURE_SUM" };
 const char* const kWindowModes[]    = { "OSCILLOSCOPE", "TRACK_PREVIEW", "DAW" };
-const char* const kPeakDecays[]     = { "SLOW", "NORMAL", "FAST", "OFF" };
+const char* const kPeakDecays[]     = { "TURTLE", "SLOW", "NORMAL", "FAST", "CHEETAH" };
 const char* const kStandbyDisplays[] = { "CLOCK", "DIM_CLOCK", "OFF" };
 const char* const kClockModes[]     = { "CLOCK_ONLY", "SECONDS", "DATE" };
 const char* const kVolumeDisplays[] = { "DB", "STEPS" };
@@ -250,7 +250,9 @@ bool PersistentSettings::importLegacy() {
     s.setBrightnessPercent(d->brightnessPercent);
     Renderer::instance().setBacklightPercent(d->brightnessPercent);
     s.setPeaksEnabled(d->peaksEnabled != 0);
-    BarPhysics::instance().setPeakDecaySpeed(static_cast<PeakDecaySpeed>(d->peakDecaySpeed));
+    // The old binary layout stored SLOW, NORMAL, FAST, OFF (0..3).
+    static const PeakDecaySpeed kOldSpeeds[] = { PeakDecaySpeed::SLOW, PeakDecaySpeed::NORMAL, PeakDecaySpeed::FAST, PeakDecaySpeed::NORMAL };
+    BarPhysics::instance().setPeakDecaySpeed(kOldSpeeds[d->peakDecaySpeed < 4 ? d->peakDecaySpeed : 1]);
     s.setClock24h(d->clock24h != 0);
     s.setStandbyDisplay(static_cast<StandbyDisplay>(d->standbyDisplay));
     s.setClockMode(static_cast<ClockMode>(d->clockMode));

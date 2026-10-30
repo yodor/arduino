@@ -62,7 +62,7 @@ void NoticeOverlay::watchDaughter(bool unitOn) {
                         : !strcmp(e.why, "SEEK")   ? "last quiet-point seek didn't settle"
                                                    : "temperature changed";
         show("CALIBRATION ADVISED", why, "press RIGHT to calibrate", COLOR_YELLOW, true);
-        if (!s_resyncShown) Console::log("Daughter", "Resync recommended (WHY=%s)", e.why);
+        if (!s_resyncShown) Console::log("Attenuator", "Resync recommended (WHY=%s)", e.why);
         s_resyncShown   = true;
         s_resyncShownMs = millis();
     };
@@ -87,7 +87,7 @@ void NoticeOverlay::watchDaughter(bool unitOn) {
         char line[40];
         snprintf(line, sizeof(line), "block NTC %s: compensation off", e.ntc);
         if (on) show("SENSOR FAULT", line, "check the NTC on the driver block", COLOR_RED);
-        Console::log("Daughter", "Block NTC fault: NTC=%s -- thermal compensation off", e.ntc);
+        Console::log("Attenuator", "Block NTC fault: NTC=%s -- thermal compensation off", e.ntc);
     }
     s_lastNtcOk = ntcOk;
 }
