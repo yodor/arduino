@@ -1,4 +1,5 @@
 #include "LdrSensor.hpp"
+#include "Console.hpp"
 
 void LdrSensor::activate() {
   wire_.setSDA(sdaPin_);
@@ -21,10 +22,8 @@ bool LdrSensor::read(float &vRefOut, float &rsOut, float &rshOut) {
   SenseWiring::Volts v = SenseWiring::measure(topOnA3_, rd);
   if (SenseWiring::wiringLooksWrong(v)) {           // the other board layout: switch and re-read
     topOnA3_ = !topOnA3_;
-    Serial.print(F("[sensor ")); Serial.print(label_);
-    Serial.print(F("] ADS inputs: top junction is on "));
-    Serial.print(topOnA3_ ? F("A3 (second-edition LDR board)") : F("A1 (original LDR board)"));
-    Serial.println(F(" -- mapping switched"));
+    usb.line("[sensor %c] ADS inputs: top junction is on %s -- mapping switched", label_,
+             topOnA3_ ? "A3 (second-edition LDR board)" : "A1 (original LDR board)");
     v = SenseWiring::measure(topOnA3_, rd);
   }
   float vRef = v.vRef, vRs = v.vRs, vRsh = v.vRsh;

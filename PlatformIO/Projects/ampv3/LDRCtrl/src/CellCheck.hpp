@@ -77,6 +77,8 @@ enum class CellState : uint8_t { NO_DATA, MATCH, CHANGED };
 enum class CalAction : uint8_t { FULL, RESYNC, RESOLVE_RESYNC };
 
 struct CalRequest {
+  bool full = false;           // FULL: always a characterization (protocol 19)
+  bool verify = false;         // VERIFY: measure how well the table holds, change nothing (protocol 20)
   bool hasR = false;           // R=<ohms>
   bool rAuto = false;          // R=AUTO
   long ohms = 0;
@@ -167,7 +169,7 @@ inline CellState judge(bool haveStored, const CellFingerprint &stored, const Cel
 }
 
 inline CalAction plan(CellState cs, const CalRequest &req, bool currentlyAuto) {
-  if (cs != CellState::MATCH) return CalAction::FULL;
+  if (req.full || cs != CellState::MATCH) return CalAction::FULL;
   if (req.hasR || (req.rAuto && !currentlyAuto)) return CalAction::RESOLVE_RESYNC;
   return CalAction::RESYNC;
 }

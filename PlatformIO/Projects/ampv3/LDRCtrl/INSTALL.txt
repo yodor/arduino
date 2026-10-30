@@ -1,12 +1,12 @@
-LDR daughter board firmware -- 2026-10-28d  (driver v1b, 2nd-edition LDR boards)
+LDR attenuator firmware -- 2026-10-30j  (driver v1b, 2nd-edition LDR boards)
 
-Balance (protocol 18): BAL <-16..16> in 0.25 dB units (+-4 dB); negative lowers the right channel,
-positive the left; BAL alone replies OK BAL=<n>. At 0 both channels play exactly their calibrated
-steps. The lowered channel plays between its steps, solved for the exact level under the table's
-own rules (within ~0.01 dB of the requested level on your table). Applies to volume changes, the
-ramp, MUTE OFF and after calibrations. Not stored: the master sends it after power-up.
-The volume ramp stays: 2 ms per step (a full-range jump ~60 ms), a free guard against pops.
-Everything from 2026-10-28c (temperature-spread learning log) included.
-
-firmware.uf2 is a real build: hold BOOTSEL, plug in, copy it to RPI-RP2. Or build from src/.
-No recalibration needed. NEW FILES: Balance.cpp / Balance.hpp -- copy the whole src/ folder.
+Protocol 20 (see ldr-attenuator-protocol.md, "Revision 20"):
+* CAL VERIFY (protocol and console) runs the verify through CAL's own path: a status line,
+  STATUS=BUSY with CAL=OK while it runs, PROGRESS KIND=VERIFY (CHECK/STEPS/WALK/CREEP).
+* VERIFY RESULT: the newest run in one line (residuals, movement, middle steps, rms, L-R,
+  ADOPTED, VERDICT=OK|RESYNC|CHECK). Console: VERIFY [HISTORY] lists the stored runs.
+* ENV: RESYNC=1 WHY=VERIFY after a run with verdict RESYNC (held while warming up).
+* The run's walk is adopted automatically when safe (not on CHECK, not if AUTO would change
+  Rtotal, not if a manual Rtotal is not reached). The manual VERIFY ADOPT is gone.
+Included from 30i: re-solves no longer write learning entries (FORGET COMP once, then resync).
+Tests: python3 test/run_tests.py (22 + source check).

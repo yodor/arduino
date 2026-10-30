@@ -50,12 +50,11 @@ void SpectrumScreen::render() {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     if (!gfx) return;
 
-    size_t totalBars = AudioEngine::instance().getSpectrumBandCount();
-    if (totalBars == 0 || totalBars > MAX_BAND_COUNT) return; // defensive -- never index past our arrays
-
+    // One consistent snapshot: the bars and the band count of the same FFT.
     float leftBars[MAX_BAND_COUNT];
     float rightBars[MAX_BAND_COUNT];
-    AudioEngine::instance().getSpectrumBars(leftBars, rightBars);
+    size_t totalBars = AudioEngine::instance().getSpectrumBars(leftBars, rightBars);
+    if (totalBars == 0 || totalBars > MAX_BAND_COUNT) return; // defensive -- never index past our arrays
 
     const DisplaySettings& ds = DisplaySettings::instance();
     bool stereo     = ds.getChannelMode() == ChannelMode::STEREO;

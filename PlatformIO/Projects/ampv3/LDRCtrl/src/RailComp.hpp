@@ -38,7 +38,6 @@ void beginFullCharacterization();         // correction off for the sweeps; rail
 void onCalibrated(bool full);             // store the reference (full, or the first ever)
 void endFullCharacterization();           // however it ended: correction back on (no-op after success)
 void report(Stream &out);                 // one line: reference, now, the correction
-float referenceVolts();
 float averageVolts();                     // the 1-minute average the correction uses
 void forgetReference();                   // FORGET CAL: no reference until the next calibration
 

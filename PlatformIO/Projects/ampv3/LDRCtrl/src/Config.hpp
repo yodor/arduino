@@ -67,13 +67,13 @@ constexpr float LED_PWM_CLKDIV = 1.0f; // fastest achievable divider at this WRA
 constexpr uint32_t PWM_DITHER_LEVELS = 16;
 
 // Which source this firmware was built from. Printed at boot, at the top of HELP and in
-// DIAG, together with the compile date/time, so it is always obvious which build is
+// DUMP, together with the compile date/time, so it is always obvious which build is
 // actually running on the board. Bump it with every delivered source package.
 #include "Version.hpp"   // FW_VERSION (and its ID and note) live there
 static_assert(PWM_DITHER_LEVELS >= 1 && (PWM_DITHER_LEVELS & (PWM_DITHER_LEVELS - 1)) == 0,
               "PWM_DITHER_LEVELS must be a power of two");
 
-// DIAG ALL verify: how long after driving a LUT step its cells are read. The cells take a
+// VERIFY verify: how long after driving a LUT step its cells are read. The cells take a
 // few seconds to settle after a volume change -- an accepted property of this design --
 // so verify reports what is heard once they have settled, not the transient.
 constexpr uint32_t VERIFY_SETTLE_MS = 3000;
@@ -162,7 +162,7 @@ constexpr uint32_t RELAY_POP_SETTLE_MS = 100;
 // can't make each step's gain change smaller (32 is the LUT's fixed
 // granularity), so speed is the only lever. Worst case is a full 31-step
 // traversal (step 31 to step 0): at this delay that's 30 * 2ms = 60ms,
-// still far under the strict protocol's 500ms DAUGHTER_RESPONSE_TIMEOUT_MS.
+// still far under the controller's 500 ms response timeout.
 // Tune this to taste -- lower if any zipper sound remains audible, raise
 // slightly if the pop reappears at this speed.
 constexpr uint32_t VOL_RAMP_STEP_DELAY_MS = 2;
@@ -193,7 +193,7 @@ constexpr uint32_t TRIM_PRECONDITION_MS = 8000;
 // Calibration / volume LUT
 // ---------------------------------------------------------------------------
 // Rtotal (Rs+Rsh) is NOT configured: CAL measures what the cells can do and
-// chooses it (AUTO), or takes the master's R= within the measured range; a saved
+// chooses it (AUTO), or takes the controller's R= within the measured range; a saved
 // calibration restores its own value.
 
 // Actual Rref (R2 on the LDR Board sheet), from direct DMM measurement rather than the nominal
@@ -244,7 +244,7 @@ constexpr float RANGE_SAFETY_MARGIN_DB = 2.0f;
 // CAPS_*_MAX_QUANT_DB   the largest worst-case +-half-step gain error allowed at the
 //                       quietest step (resolution, with dithering).
 //   AUTO -- what the calibration picks by itself -- uses the tight pair; RMAX -- the
-//   deepest Rtotal a master may still ASK for -- the looser pair. Neither ever goes
+//   deepest Rtotal a controller may still ASK for -- the looser pair. Neither ever goes
 //   deeper than the deepest point the dark-end walk could settle on both channels.
 // CAPS_DITHER_LEVELS    sub-count levels per PWM count the step-error estimates
 //                       assume -- tied to PWM_DITHER_LEVELS (the real dithering).
@@ -276,9 +276,8 @@ constexpr float    CAPS_DITHER_LEVELS     = (float)PWM_DITHER_LEVELS; // follows
 constexpr float    CAPS_LAG_SLOPE_FACTOR  = 1.6f;
 constexpr uint16_t CAPS_LAG_MAX_GAP       = 10;
 
-// Strict master<->daughter protocol revision, reported as PROTO= in STATUS so the master
-// can detect an incompatible daughter board (daughter-board-uart-protocol-v2.md; the file
-// keeps its v2 name). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the daughter checks the
+// Strict controller<->attenuator protocol revision, reported as PROTO= in STATUS so the controller
+// can detect an incompatible attenuator (ldr-attenuator-protocol.md). Revision 7: a single CAL [R=<ohms>|R=AUTO] -- the attenuator checks the
 // cells against the stored calibration and decides how much work it needs -- and STATUS
 // with LASTCAL=.
-constexpr uint8_t PROTO_VERSION = 18; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: master-controlled power-up; 11: ENV without CELLL/CELLR; 12: SET SRC/LOAD, MODEL, COMP; 13: ENV NTC=, COMP=NONTC; 14: ENV RESYNC= WHY=; 15: VER / FW; 16: SET AUTO, MODEL AUTO= REACH=; 17: WHY=WARMING; 18: BAL
+constexpr uint8_t PROTO_VERSION = 20; // 8: ENV, PROGRESS; 9: LEARN, FORGET; 10: controller-controlled power-up; 11: ENV without CELLL/CELLR; 12: SET SRC/LOAD, MODEL, COMP; 13: ENV NTC=, COMP=NONTC; 14: ENV RESYNC= WHY=; 15: VER / FW; 16: SET AUTO, MODEL AUTO= REACH=; 17: WHY=WARMING; 18: BAL; 19: CAL FULL; 20: VERIFY, VERIFY RESULT, WHY=VERIFY

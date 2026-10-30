@@ -1,5 +1,5 @@
 #pragma once
-// What a running calibration is doing, for the master's display (protocol 8: PROGRESS).
+// What a running calibration is doing, for the controller's display (protocol 8: PROGRESS).
 // Phases carry real progress where it exists (trim step, the hold's countdown, seek probes),
 // otherwise time against the phase's nominal duration (capped below 100 %). The nominal
 // durations are from logged runs on the v1b hardware: full ~378 s, resync ~137 s.
@@ -7,23 +7,27 @@
 
 namespace CalProgress {
 
-enum class Phase : uint8_t { IDLE, CHECK, SWEEP_SERIES, SWEEP_SHUNT, WALK, SOLVE, TRIM, HOLD, SEEK, SAVE, DONE };
-enum class Kind : uint8_t { NONE, FULL, RESYNC, RESOLVE };
-constexpr uint8_t NPHASES = 11;
+enum class Phase : uint8_t { IDLE, CHECK, STEPS, SWEEP_SERIES, SWEEP_SHUNT, WALK, CREEP, SOLVE, TRIM, HOLD, SEEK, SAVE, DONE };
+enum class Kind : uint8_t { NONE, FULL, RESYNC, RESOLVE, VERIFY };
+constexpr uint8_t NPHASES = 13;
 
 inline const char *phaseName(Phase p) {
-  static const char *N[NPHASES] = {"IDLE", "CHECK", "SWEEP_SERIES", "SWEEP_SHUNT", "WALK", "SOLVE",
-                                   "TRIM", "HOLD", "SEEK", "SAVE", "DONE"};
+  static const char *N[NPHASES] = {"IDLE", "CHECK", "STEPS", "SWEEP_SERIES", "SWEEP_SHUNT", "WALK", "CREEP",
+                                   "SOLVE", "TRIM", "HOLD", "SEEK", "SAVE", "DONE"};
   return N[(uint8_t)p < NPHASES ? (uint8_t)p : 0];
 }
 inline const char *kindName(Kind k) {
-  return k == Kind::FULL ? "FULL" : k == Kind::RESYNC ? "RESYNC" : k == Kind::RESOLVE ? "RESOLVE" : "NONE";
+  return k == Kind::FULL ? "FULL" : k == Kind::RESYNC ? "RESYNC" : k == Kind::RESOLVE ? "RESOLVE"
+       : k == Kind::VERIFY ? "VERIFY" : "NONE";
 }
 
 // Nominal seconds of a phase in a kind of calibration (0 = not part of it). NONE = the cell
 // check before the kind is decided (estimated as a resync, the common case).
 inline uint16_t nominal(Kind k, Phase p) {
   switch (k) {
+    case Kind::VERIFY:                 // ~8 min: cell check, every step up/down, the walk, creep
+      switch (p) { case Phase::CHECK: return 10; case Phase::STEPS: return 200; case Phase::WALK: return 120;
+                   case Phase::CREEP: return 125; default: return 0; }
     case Kind::FULL:
       switch (p) { case Phase::SWEEP_SERIES: return 80; case Phase::SWEEP_SHUNT: return 80;
                    case Phase::WALK: return 90; case Phase::SOLVE: return 3; case Phase::TRIM: return 35;

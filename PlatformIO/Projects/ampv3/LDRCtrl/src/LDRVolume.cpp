@@ -1,4 +1,5 @@
 #include "LDRVolume.hpp"
+#include "Console.hpp"
 #include "AudioModel.hpp"
 #include "CalProgress.hpp"
 #include "Balance.hpp"
@@ -276,17 +277,14 @@ void LDRVolume::reapplyCurrentStepOrDefault() {
 void LDRVolume::begin() {
   relay_.begin();
   if (calLoad()) {
-    Serial.print(F("Loaded saved calibration from "));
-    Serial.println(calPath_);
+    usb.line("Loaded saved calibration from %s", calPath_);
   } else {
     // Deliberately NOT calibrating here. A per-channel boot calibration
     // gave each channel its own range (L and R ended up 3 dB apart) and ran
     // the two sweeps back to back. main.cpp now checks both channels once
     // they have loaded and, if either needs it, runs ONE interleaved stereo
     // calibration -- see DualCalibration::calibrate().
-    Serial.print(F("No valid saved calibration ("));
-    Serial.print(calPath_);
-    Serial.println(F(") -- will calibrate once both channels have loaded."));
+    usb.line("No valid saved calibration (%s) -- will calibrate once both channels have loaded.", calPath_);
   }
 
   applyDefinedStartupState();
@@ -468,6 +466,17 @@ void LDRVolume::stepDutiesFine(uint8_t step, uint32_t &ser, uint32_t &shu) const
   ser = mapBetween(cal_.seriesCurve(), U.targetRs, L.targetRs, rsX, U.seriesFine, L.seriesFine, f);
   if (topT) shu = L.shuntFine;                        // shunt "off" above, dark below: dark either way
   else shu = mapBetween(cal_.shuntCurve(), U.targetRsh, L.targetRsh, rshX, U.shuntFine, L.shuntFine, f);
+}
+
+float LDRVolume::readAveraged(float &rsh, Need need) {
+  float s = 0, h = 0; uint8_t m = 0;
+  for (uint8_t r = 0; r < 3; r++) {
+    float vref, rs, sh;
+    if (adcRead(vref, rs, sh) && rs > 0.0f && (need == Need::SERIES || sh > 0.0f)) { s += rs; h += sh; m++; }
+    BusyHook::wait(20);
+  }
+  rsh = (need == Need::BOTH && m) ? h / m : 0.0f;
+  return m ? s / m : 0.0f;
 }
 
 void LDRVolume::setBalanceAttDb(float attDb) {

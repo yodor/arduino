@@ -4,7 +4,7 @@
 // channel plays BETWEEN its table's steps: the target resistances are interpolated on a log
 // scale between the two neighbouring steps and mapped to duties through the stored curves plus
 // each step's trimmed offset from its curve (exact at the steps themselves). Not stored: like the
-// volume, the master keeps it and sends it after power-up.
+// volume, the controller keeps it and sends it after power-up.
 #include <stdint.h>
 #include <math.h>
 

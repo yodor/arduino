@@ -9,7 +9,7 @@
 // the amp's state, and only the outermost end can give it back.
 //
 // The amp is restored to UNMUTED only if it was unmuted when the calibration
-// began. If it was already muted -- by the master, the console, or the power-up
+// began. If it was already muted -- by the controller, the console, or the power-up
 // latch -- it stays muted: a calibration must never un-mute something someone
 // else muted.
 // ============================================================================

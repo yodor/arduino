@@ -32,7 +32,7 @@ public:
   // LED_PWM_CLKDIV) -- that's the one place to change it for bench
   // testing. Kept as DriverChannels::WRAP/CLKDIV here since that's the
   // symbol used throughout the rest of this codebase (DualCalibration,
-  // LDRVolume, SerialConsole) wherever duty needs converting to/from a
+  // LDRVolume, ConsoleCommands) wherever duty needs converting to/from a
   // percentage or raw count.
   static constexpr uint16_t WRAP = LED_PWM_WRAP;
   static constexpr float CLKDIV = LED_PWM_CLKDIV;

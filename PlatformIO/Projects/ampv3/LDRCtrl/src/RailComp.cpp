@@ -86,7 +86,6 @@ void endFullCharacterization() {
   apply(gEma);
 }
 
-float referenceVolts() { return gRef; }
 float averageVolts() { return gEma; }
 
 void forgetReference() {

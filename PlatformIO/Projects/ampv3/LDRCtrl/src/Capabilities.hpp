@@ -292,6 +292,9 @@ inline RtotalChoice chooseRtotal(const ChannelCaps *cc, const LdrCurve *const *s
 // here with integer arithmetic; the host test wraps snprintf and fails on any float
 // conversion, so the host catches what the board would silently drop.
 // ---------------------------------------------------------------------------
+// Fixed-point text for the capability table. Deliberately NOT Console::num(): that one copies
+// Arduino's print(x, n) byte for byte ("-0.00", "ovf") so converted prints stay identical; this
+// one never prints "-0.00" and says "big" on overflow -- what a table column wants.
 inline void fmtFixed(char *buf, size_t n, double v, uint8_t decimals) {
   if (n == 0) return;
   if (v != v) { strncpy(buf, "nan", n); buf[n - 1] = '\0'; return; }
@@ -333,7 +336,7 @@ struct Line {
   void num(double v, uint8_t dec, uint8_t width = 0) { char t[24]; fmtFixed(t, sizeof t, v, dec); txt(t, width, true); }
 };
 
-// The capability report (part of DIAG): what the cells in memory say each Rtotal would give. `OUT` is anything with
+// The capability report (part of DUMP): what the cells in memory say each Rtotal would give. `OUT` is anything with
 // print()/println() of text (the console's Stream, or a capture buffer in the host test).
 // ser[i]/shu[i]: channel i's curves; labels[i]: "L"/"R"; currentR: the Rtotal the LUT now uses.
 template <class OUT>

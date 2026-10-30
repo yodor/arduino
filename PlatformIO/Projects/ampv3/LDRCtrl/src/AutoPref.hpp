@@ -27,7 +27,7 @@ inline bool parse(const char *s, Pref &out) {
   return false;
 }
 
-// ---- runtime (stored in "/auto_pref.txt"; default BALANCED) ----
+// ---- runtime (stored in settings.txt as auto_pref; default BALANCED) ----
 void begin();
 Pref current();
 inline Params now() { return params(current()); }

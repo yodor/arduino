@@ -1,4 +1,5 @@
 #include "Ads1115.hpp"
+#include "Console.hpp"
 #include <math.h>
 
 static constexpr uint8_t REG_CONVERSION = 0x00;
@@ -80,15 +81,14 @@ bool Ads1115::isPresent() {
 }
 
 void Ads1115::scanBus(TwoWire &wire) {
-  Serial.println(F("Scanning I2C bus..."));
+  usb.line("Scanning I2C bus...");
   uint8_t found = 0;
   for (uint8_t addr = 1; addr < 127; addr++) {
     wire.beginTransmission(addr);
     if (wire.endTransmission() == 0) {
-      Serial.print(F("  found device at 0x"));
-      Serial.println(addr, HEX);
+      usb.line("  found device at 0x%X", (unsigned)addr);
       found++;
     }
   }
-  if (found == 0) Serial.println(F("  no devices found"));
+  if (found == 0) usb.line("  no devices found");
 }

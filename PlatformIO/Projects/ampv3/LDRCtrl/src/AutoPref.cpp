@@ -1,32 +1,24 @@
 #include "AutoPref.hpp"
 #include <Arduino.h>
-#include <LittleFS.h>
+#include "Settings.hpp"
 
 namespace {
-constexpr const char *PATH = "/auto_pref.txt";
 AutoPref::Pref gPref = AutoPref::Pref::BALANCED;
 }
 
 namespace AutoPref {
 
-void begin() {
-  File f = LittleFS.open(PATH, "r");
-  if (!f) return;
-  char buf[16] = {0};
-  const size_t n = f.read((uint8_t *)buf, sizeof(buf) - 1);
-  f.close();
-  buf[n] = 0;
-  for (size_t i = 0; i < n; i++) if (buf[i] == '\r' || buf[i] == '\n' || buf[i] == ' ') { buf[i] = 0; break; }
+void begin() {                                     // after Settings::begin(); settings.txt: auto_pref
+  const char *v = Settings::get("auto_pref");
   Pref p;
-  if (parse(buf, p)) gPref = p;
+  if (v && parse(v, p)) gPref = p;
 }
 
 Pref current() { return gPref; }
 
 void set(Pref p) {
   gPref = p;
-  File f = LittleFS.open(PATH, "w");
-  if (f) { f.println(name(p)); f.close(); }
+  Settings::set("auto_pref", name(p));
 }
 
 } // namespace AutoPref

@@ -104,11 +104,13 @@ public:
     SpectrumPipeline();
 
     // Feeds one physical capture chunk through this pipeline's FFT
-    // engine; re-aggregates m_barsL/R (using whichever EnergyMode is
+    // engine; re-aggregates the bars (using whichever EnergyMode is
     // currently active) whenever the engine reports a fresh FFT ran.
     void pushChunk(const uint16_t* interleavedChunk);
 
-    void getBars(float* leftBars, float* rightBars) const;
+    // Copies the latest published bars; returns how many (the band count of
+    // that same FFT).
+    size_t getBars(float* leftBars, float* rightBars) const;
 
     // Mono (L+R) bars in the DOUBLING layout, computed on every FFT frame
     // whatever layout the Spectrum screen uses -- for the Info screen's
@@ -126,7 +128,9 @@ public:
     // DOUBLING_BAND_COUNT, FIXED_BAND_COUNT, or FULL_BAND_COUNT depending
     // on the active BandLayoutMode. Callers should never read past this
     // many entries.
-    size_t bandCount() const { return m_activeBandCount; }
+    // The band count of the latest published FFT (it can differ from the
+    // layout just chosen until the next FFT runs).
+    size_t bandCount() const { return m_out[m_readyOut].count; }
 
     void setBandLayoutMode(BandLayoutMode mode) { m_bandLayoutMode = mode; }
     void setEnergyMode(EnergyMode mode)         { m_energyMode = mode; }
@@ -154,9 +158,19 @@ private:
     size_t m_startBin[MAX_BAND_COUNT] = {};
     size_t m_endBin[MAX_BAND_COUNT]   = {};
 
-    float m_miniBars[DOUBLING_BAND_COUNT] = {};
-    float m_barsL[MAX_BAND_COUNT] = {};
-    float m_barsR[MAX_BAND_COUNT] = {};
+    // The bars, double-buffered across the cores (as WaveformPipeline):
+    // core 1 fills the set core 0 isn't reading -- bars, mini bars and the
+    // band count they belong to -- then flips m_readyOut after a barrier.
+    // A reader copies one consistent set; count and values always come from
+    // the same FFT.
+    struct BarSet {
+        float  barsL[MAX_BAND_COUNT]       = {};
+        float  barsR[MAX_BAND_COUNT]       = {};
+        float  mini[DOUBLING_BAND_COUNT]   = {};
+        size_t count                       = 0;
+    };
+    BarSet           m_out[2];
+    volatile uint8_t m_readyOut = 0;
     bool     m_ranFft  = false;
     uint32_t m_bandsUs = 0;
 };

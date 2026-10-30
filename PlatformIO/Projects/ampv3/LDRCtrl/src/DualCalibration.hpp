@@ -78,7 +78,7 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
 void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out);
 
 // The L/R balance reached at the quiet point by the last calibration (dB, + = R quieter;
-// NAN if never measured). For the master's ENV query.
+// NAN if never measured). For the controller's ENV query.
 float lastQuietMatchDb();
 // FORGET CAL: both calibrations and what belonged to them (reference rail, model, environment,
 // last match). The learning log stays (it describes the driver hardware). Next CAL is full.

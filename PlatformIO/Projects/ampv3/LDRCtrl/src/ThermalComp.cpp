@@ -1,4 +1,5 @@
 #include "ThermalComp.hpp"
+#include "VerifyHistory.hpp"
 #include "ThermalLog.hpp"
 #include "RailComp.hpp"
 #include "DriverChannels.hpp"
@@ -105,7 +106,8 @@ Hint hint() {
   const bool compOn = sideActive(0) && sideActive(1);
   const float rate = blockRatePer10Min();
   const bool warming = Board::msSinceAmpOn() < HINT_WARMUP_MS || isnan(rate) || fabsf(rate) > HINT_STEADY_C;
-  return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed(), Board::ampCommandedMuted(), warming);
+  return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed(), Board::ampCommandedMuted(), warming,
+                    VerifyHistory::pendingResync());
 }
 
 void printHint(Print &out) {
@@ -126,6 +128,7 @@ void printHint(Print &out) {
     case Hint::NOCOMP: out.println(F("the block has moved since the last calibration and the compensation is not active")); break;
     case Hint::SEEK:   out.println(F("the last calibration's quiet-point seek did not converge")); break;
     case Hint::WARMING: break;
+    case Hint::VERIFY: out.println(F("the last VERIFY found the table off (residual or middle steps) -- a resync fixes it")); break;
     default: break;
   }
 }

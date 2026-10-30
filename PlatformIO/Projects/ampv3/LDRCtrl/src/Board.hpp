@@ -30,11 +30,11 @@ public:
   // be engaged regardless of the other's state.
   //
   // Power-up: the amp mute is latched ON in begin() and changes only on command -- the
-  // master decides the power state (protocol 10; there is no timed boot hold any more).
+  // controller decides the power state (protocol 10; there is no timed boot hold any more).
   // Returns false only for an unmute asked while a calibration holds the amp muted.
   bool setAmpMute(bool muted);
   bool ampMuted() const { return ampMuted_; }
-  // The amp state as COMMANDED by the master or the console (AMP_MUTE), not the firmware's
+  // The amp state as COMMANDED by the controller or the console (AMP_MUTE), not the firmware's
   // own brief holds around calibrations: muted = standby. For the resync hint (warm-up).
   static void noteAmpCommand(bool muted);
   static bool ampCommandedMuted();
@@ -89,7 +89,7 @@ public:
   static float railVolts();
 
   // Whole seconds since power-up or reset (millis()/1000). There is no wall
-  // clock on the daughter, and for warm-up analysis time-since-power-on is the
+  // clock on the attenuator, and for warm-up analysis time-since-power-on is the
   // number that matters. Wraps after ~49.7 days of continuous running.
   static uint32_t uptimeSeconds();
 

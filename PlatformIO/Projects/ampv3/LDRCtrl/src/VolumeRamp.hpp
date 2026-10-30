@@ -12,7 +12,7 @@
 // a time toward the target, pausing briefly between each, instead of
 // jumping straight there.
 //
-// Takes 1 or 2 channels (mirrors SerialConsole's own SideSelection
+// Takes 1 or 2 channels (mirrors ConsoleCommands's own SideSelection
 // pattern) since a bench VOL command can target either side alone or
 // both together, and each channel ramps from its OWN current step --
 // they don't need to start from the same position (e.g. one channel

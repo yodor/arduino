@@ -1,6 +1,6 @@
 #pragma once
-// Firmware, build and chip information for the master's "firmware info" screen (protocol 15:
-// VER / FW) and the bench console (VER / FW).
+// Firmware, build and chip information for the controller's "firmware info" screen (protocol 15:
+// VER / FW) and console mode (VER / FW).
 #include <Arduino.h>
 
 namespace VersionInfo {

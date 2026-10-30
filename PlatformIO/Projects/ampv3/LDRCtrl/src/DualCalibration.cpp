@@ -6,6 +6,8 @@
 #include "CalProgress.hpp"
 #include "QuietSeek.hpp"
 #include "AutoPref.hpp"
+#include "Results.hpp"
+#include "VerifyHistory.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
 #include "BusyHook.hpp"
@@ -19,6 +21,8 @@
 namespace DualCalibration {
 
 namespace {
+// The series cell, three readings averaged (the shunt may be too dark to read: not needed).
+float readSeries(LDRVolume *v) { float unused; return v->readAveraged(unused, LDRVolume::Need::SERIES); }
 
 // Coarse point lists, as percentages of full duty.
 constexpr uint16_t FULL_PCT[] = {15, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
@@ -92,26 +96,7 @@ void settleRead(LDRVolume *const *ch, uint8_t na, const bool *active, float *ohm
   }
 }
 
-float readAvg3(LDRVolume *v) {
-  float sum = 0; uint8_t m = 0;
-  for (uint8_t r = 0; r < 3; r++) {
-    float vref, rs, rsh;
-    if (v->adcRead(vref, rs, rsh) && rs > 0.0f) { sum += rs; m++; }
-    BusyHook::wait(20);
-  }
-  return m ? sum / m : 0.0f;
-}
 
-void readAvg3Pair(LDRVolume *v, float &rsOut, float &rshOut) {
-  float s = 0, h = 0; uint8_t m = 0;
-  for (uint8_t r = 0; r < 3; r++) {
-    float vref, rs, rsh;
-    if (v->adcRead(vref, rs, rsh) && rs > 0.0f && rsh > 0.0f) { s += rs; h += rsh; m++; }
-    BusyHook::wait(20);
-  }
-  rsOut = m ? s / m : 0.0f;
-  rshOut = m ? h / m : 0.0f;
-}
 
 } // namespace (helpers)
 
@@ -430,6 +415,7 @@ void solveBoth(LDRVolume &left, LDRVolume &right, Stream &out,
 // bright. Fills prof[c]; prints one line per point. The relay must be energized.
 // ---------------------------------------------------------------------------
 void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfile *prof, Stream &out) {
+  for (uint8_t sd = 0; sd < 2; sd++) for (uint8_t k = 0; k < DarkProfile::MAX_POINTS; k++) { Results::walk.peak[sd][k] = 0; Results::walk.peakS[sd][k] = 0; }
   using namespace DarkWalk;
   const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
   int32_t duty[MAX_CH], prevDuty[MAX_CH];
@@ -484,7 +470,7 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
     uint8_t peakS[MAX_CH] = {0, 0};
     for (uint8_t c = 0; c < na; c++) {
       if (!mem[c]) continue;
-      rb5[c] = readAvg3(ch[c]);
+      rb5[c] = readSeries(ch[c]);
       if (ra[c] > 0.0f && rb5[c] > 0.0f) { peak[c] = ra[c] >= rb5[c] ? ra[c] / rb5[c] : rb5[c] / ra[c]; peakS[c] = (uint8_t)(RETURN_MS / 1000); }
     }
     if (anyMem) {
@@ -492,7 +478,7 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
         BusyHook::wait(3000);
         for (uint8_t c = 0; c < na; c++) {
           if (!mem[c]) continue;
-          const float r = readAvg3(ch[c]);
+          const float r = readSeries(ch[c]);
           if (!(ra[c] > 0.0f) || !(r > 0.0f)) continue;
           const float m = ra[c] >= r ? ra[c] / r : r / ra[c];
           if (m > peak[c]) { peak[c] = m; peakS[c] = (uint8_t)(RETURN_MS / 1000 + 3 * k); }
@@ -511,6 +497,8 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
       const bool darker = !havePrev[c] || ra[c] > prevOhms[c] * MIN_RISE;
       d.ok = (settled[c] && ra[c] > 0.0f && (!mem[c] || rb > 0.0f) && darker) ? 1 : 0;
       prof[c].add(d);
+      { const uint8_t sd = (labels && labels[c] == 'R') ? 1 : 0, k = (uint8_t)(prof[c].n - 1);   // REPORT
+        if (k < DarkProfile::MAX_POINTS) { Results::walk.peak[sd][k] = mem[c] ? peak[c] : 0.0f; Results::walk.peakS[sd][k] = mem[c] ? peakS[c] : 0; } }
       out.print(F("  ")); out.print(labels ? labels[c] : '?');
       out.print(F(" duty ")); out.print(duty[c]);
       out.print(F(": ")); out.print(ra[c] / 1000.0f, 1);
@@ -538,6 +526,10 @@ void walkDarkEnd(LDRVolume *const *ch, uint8_t na, const char *labels, DarkProfi
     out.print(prof[c].deepestOkOhms() / 1000.0f, 1);
     out.println(F("k"));
   }
+  for (uint8_t c = 0; c < na; c++) Results::walk.p[(labels && labels[c] == 'R') ? 1 : 0] = prof[c];   // REPORT
+  Results::walk.ms = millis() | 1; Results::walk.fromVerify = false;
+  Results::walk.shift[0] = Results::walk.shift[1] = NAN;
+  Results::walk.ratioMin[0] = Results::walk.ratioMin[1] = Results::walk.ratioMax[0] = Results::walk.ratioMax[1] = NAN;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,7 +612,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     if (held % 2 || held + 10 < HOLD_MIN_S) continue; // readings every 2 s, from 20 s on
     for (uint8_t c = 0; c < na; c++) {
       for (uint8_t i = 0; i + 1 < HOLD_WINDOW; i++) win[c][i] = win[c][i + 1];
-      win[c][HOLD_WINDOW - 1] = readAvg3(ch[c]);
+      win[c][HOLD_WINDOW - 1] = readSeries(ch[c]);
     }
     if (nWin < HOLD_WINDOW) nWin++;
     if (nWin < HOLD_WINDOW || held < HOLD_MIN_S) continue;
@@ -632,6 +624,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     }
     if (steady) break;
   }
+  Results::cal.holdS = (uint16_t)held;
   out.print(F("  quiet step held ")); out.print(held);
   out.println(steady ? F(" s: settled (both channels within 0.4 % over 10 s)")
                      : F(" s: the full hold (still drifting, or readings unavailable)"));
@@ -687,6 +680,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     out.print(F("k, ")); out.print(probes[c]); out.print(F(" settled probes)"));
     // Only a CONVERGED seek is a measured knee shift; anything else is "unknown" to the learning.
     gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0] = ok[c] ? ((float)f[c] - (float)oldF[c]) / Lc : NAN;
+    Results::cal.shift[(labels && labels[c] == 'R') ? 1 : 0] = gKneeShiftLR[(labels && labels[c] == 'R') ? 1 : 0];
     if (!ok[c]) seekFailedNow = true;
     gLastSeekFailed = seekFailedNow;
     const uint8_t shifted = ch[c]->applyQuietSeek(oldF[c], f[c]);
@@ -703,6 +697,7 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     // At the quiet steps the gain goes as 1/Rs: the series errors give the balance.
     const float rMinusL = 8.6859f * (err[1] - err[0]);
     saveLastMatch(rMinusL);
+    Results::cal.matchDb = rMinusL;
     out.print(F("  stereo match at the quiet point: R is "));
     out.print(fabsf(rMinusL), 2);
     out.println(rMinusL >= 0 ? F(" dB quieter than L") : F(" dB louder than L"));
@@ -727,7 +722,7 @@ void takeFingerprint(LDRVolume *const *ch, uint8_t na, CellFingerprint *fp) {
       BusyHook::wait(CellCheck::SETTLE_MS);
       for (uint8_t c = 0; c < na; c++) {
         float rs, rsh;
-        readAvg3Pair(ch[c], rs, rsh);
+        rs = ch[c]->readAveraged(rsh);
         const float v = series ? rs : rsh;
         if (series) fp[c].ser[i] = v; else fp[c].shu[i] = v;
         if (!(v > 0.0f)) fp[c].valid = 0;
@@ -752,6 +747,10 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
     const float w = CellCheck::worst(st, now[c], e, i);
     const CellState s = CellCheck::judge(true, st, now[c]);
     if (s != CellState::MATCH) all = CellState::CHANGED;
+    { const uint8_t sd = (labels && labels[c] == 'R') ? 1 : 0;           // REPORT
+      Results::cells.worst[sd] = w; Results::cells.nOff[sd] = CellCheck::offDuties(st, now[c]);
+      Results::cells.tol[sd] = CellCheck::matchTol(CellCheck::tempDiff(st, now[c]));
+      Results::cells.changed[sd] = s != CellState::MATCH; Results::cells.ms = millis() | 1; }
     out.print(F("  ")); out.print(labels ? labels[c] : '?');
     if (w <= 0.0f) {
       out.print(F(": a reading failed"));
@@ -770,7 +769,7 @@ CellState checkCells(LDRVolume *const *ch, uint8_t na, const char *labels, Strea
 }
 
 // ---------------------------------------------------------------------------
-// The single CAL (master, console, boot). See CellCheck.hpp for the plan.
+// The single CAL (controller, console, boot). See CellCheck.hpp for the plan.
 // ---------------------------------------------------------------------------
 // The source/load model a stored solution was made with ("/model.txt": "<Rsrc> <Rload>").
 // No file = unknown (solutions made before this existed) -> treated as changed, re-solved once.
@@ -869,7 +868,7 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     out.println(F(" ohm) -- re-solving"));
   }
   if (boot) {
-    // Power-up only CHECKS: nothing is calibrated without the master asking (CAL). STATUS
+    // Power-up only CHECKS: nothing is calibrated without the controller asking (CAL). STATUS
     // reports what is needed (CAL=OK|NONE|CHANGED|STALE); until it is OK the LDR mute stays
     // on and volume commands are refused.
     if (cs == CellState::MATCH && policyR <= 0.0f && !modelChanged) {
@@ -899,6 +898,9 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
   }
   CalProgress::setKind(a == CalAction::FULL ? CalProgress::Kind::FULL
                        : a == CalAction::RESYNC ? CalProgress::Kind::RESYNC : CalProgress::Kind::RESOLVE);
+  const uint32_t calStartMs = millis();
+  Results::cal = Results::Cal{};                         // REPORT: this calibration's record
+  Results::cal.kind = (uint8_t)(a == CalAction::FULL ? CalKind::FULL : a == CalAction::RESYNC ? CalKind::RESYNC : CalKind::RESOLVE);
   switch (a) {
     case CalAction::FULL:
       out.println(cs == CellState::NO_DATA ? F("CAL: full characterization (nothing usable stored)")
@@ -935,6 +937,8 @@ CellState calibrate(LDRVolume &left, LDRVolume &right, const CalRequest &req, St
     }
   }
   gNeed = (left.hasUsableLut() && right.hasUsableLut()) ? CalNeed::NONE : CalNeed::NO_CAL;
+  Results::cal.durS = (millis() - calStartMs) / 1000; Results::cal.ms = millis() | 1;
+  VerifyHistory::noteCalibration(left.calMeta().fullCount, left.calMeta().resyncCount);
   gStaleFromModel = false;
   return cs;
 }
@@ -1017,6 +1021,8 @@ void refineDeepSteps(LDRVolume *ch[], uint8_t n, const char *labels, Stream &out
     out.print(changed); out.print(F(" steps corrected by "));
     if (minC >= 0) out.print('+'); out.print(minC, 2); out.print(F(" .. ")); if (maxC >= 0) out.print('+'); out.print(maxC, 2);
     out.println(F(" counts (0 at the quiet point)"));
+    { const uint8_t sd = (labels && labels[c] == 'R') ? 1 : 0;           // REPORT
+      Results::cal.refineMin[sd] = minC; Results::cal.refineMax[sd] = maxC; Results::cal.refineN[sd] = changed; }
   }
 }
 
@@ -1036,7 +1042,11 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   LDRVolume::trimLoopBoth(ch, n, out, labels);   // both channels together: shared waits
   settleQuietPoint(ch, n, labels, out);
   refineDeepSteps(ch, n, labels, out);   // each deep step its own shift, from probes at middle depths
-  for (uint8_t c = 0; c < n; c++) { ch[c]->guardShunt(out, labels ? labels[c] : '?'); ch[c]->guardSeries(out, labels ? labels[c] : '?'); }
+  for (uint8_t c = 0; c < n; c++) {
+    const uint8_t sd = (labels && labels[c] == 'R') ? 1 : 0;
+    Results::cal.guardShunt[sd] = ch[c]->guardShunt(out, labels ? labels[c] : '?');
+    Results::cal.guardSeries[sd] = ch[c]->guardSeries(out, labels ? labels[c] : '?');
+  }
   CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < n; c++) {
     CalMeta m = ch[c]->calMeta();
@@ -1048,8 +1058,15 @@ void touchUp(LDRVolume *ch[], uint8_t n, Stream &out, const char *labels, CalKin
   for (uint8_t c = 0; c < n; c++) ch[c]->calSave();
   out.println(F("Trimmed calibration saved to flash."));
   RailComp::onCalibrated(false);         // keeps the reference (or sets the first one)
-  ThermalLog::onCalibrated(true, gKneeShiftLR, ThermalLog::snapshot(), out);
-  ThermalComp::onCalibrated();           // refit with this resync, new reference, resume
+  // Only a RESYNC is a learning entry. A re-solve rebuilt the table from the characterization's
+  // curves, so its seek measured the cells' movement since the CHARACTERIZATION -- pairing that
+  // with the temperature change since the LAST calibration made entries that fit nothing (each
+  // SET AUTO / SET SRC / SET LOAD / CAL R= added one). The environment is saved either way, so
+  // the next resync is measured against this calibration.
+  if (kind != CalKind::RESYNC)
+    out.println(F("  thermal log: re-solve -- the table was rebuilt from the stored curves, so this is not a learning entry"));
+  ThermalLog::onCalibrated(kind == CalKind::RESYNC, gKneeShiftLR, ThermalLog::snapshot(), out);
+  ThermalComp::onCalibrated();           // refit, new reference, resume
 
   // Back to each channel's CURRENT volume while the audio is still disconnected, let the
   // cells relax, then reconnect both channels together.
@@ -1103,7 +1120,7 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
 
   // The settled dark-end walk: what the series cells can REALLY do deep in the dark.
   // Its points replace the sweep's lag-biased dark end, so everything after this --
-  // the range, the AUTO choice, the LUT solve, DIAG, the range recomputed at boot --
+  // the range, the AUTO choice, the LUT solve, DUMP, the range recomputed at boot --
   // works from settled measurements.
   {
     DarkProfile prof[MAX_CH];
@@ -1199,7 +1216,11 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // The quiet-end series point (shared by the quietest steps), placed with settled
   // readings -- the quick trim above leaves the deep series duties alone.
   settleQuietPoint(act, na, lab, out);
-  for (uint8_t c = 0; c < na; c++) { act[c]->guardShunt(out, lab ? lab[c] : '?'); act[c]->guardSeries(out, lab ? lab[c] : '?'); }
+  for (uint8_t c = 0; c < na; c++) {
+    const uint8_t sd = (lab && lab[c] == 'R') ? 1 : 0;
+    Results::cal.guardShunt[sd] = act[c]->guardShunt(out, lab ? lab[c] : '?');
+    Results::cal.guardSeries[sd] = act[c]->guardSeries(out, lab ? lab[c] : '?');
+  }
   CalProgress::phase(CalProgress::Phase::SAVE);
   for (uint8_t c = 0; c < na; c++) {
     CalMeta m = act[c]->calMeta();
@@ -1232,10 +1253,10 @@ void characterizeBoth(LDRVolume &left, LDRVolume &right, Stream &out) {
 }
 
 // ---------------------------------------------------------------------------
-// FORGET (console and master protocol share these).
+// FORGET (console and controller protocol share these).
 // ---------------------------------------------------------------------------
 void forgetCalibration(LDRVolume &left, LDRVolume &right) {
-  // Nothing may play until a new calibration AND the master's MUTE OFF (protocol 10), even if
+  // Nothing may play until a new calibration AND the controller's MUTE OFF (protocol 10), even if
   // the attenuator was playing when this came in.
   left.mute();
   right.mute();

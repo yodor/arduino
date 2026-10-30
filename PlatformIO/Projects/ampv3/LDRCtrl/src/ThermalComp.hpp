@@ -37,10 +37,10 @@ inline bool trusted(bool usable, float r2, float k = 0.0f) {
   return usable && !isnan(r2) && r2 >= MIN_R2 && !isnan(k) && fabsf(k) <= MAX_SLOPE;
 }
 
-// When a resync would help (protocol 14: ENV RESYNC= WHY=; TEMP/DIAG). dT = block now minus at
+// When a resync would help (protocol 14: ENV RESYNC= WHY=; TEMP/REPORT). dT = block now minus at
 // the last calibration (NAN if unknown, e.g. a faulty NTC -- ENV NTC= reports that itself);
 // spanC = the largest change the fit learned from; compOn = the compensation is applying offsets.
-enum class Hint : uint8_t { NONE, SPAN, LIMIT, NOCOMP, SEEK, WARMING };
+enum class Hint : uint8_t { NONE, SPAN, LIMIT, NOCOMP, SEEK, WARMING, VERIFY };
 constexpr float HINT_NOCOMP_C = 1.0f;   // moved this much with nothing correcting it
 constexpr float HINT_MIN_SPAN_C = 1.5f; // below this the learned span is too small to judge by
 inline Hint resyncHintBase(bool compOn, float dT, float spanC) {
@@ -58,16 +58,22 @@ inline Hint resyncHintBase(bool compOn, float dT, float spanC) {
 // hint that would apply is reported as WARMING (not a recommendation yet). SEEK is never delayed.
 constexpr uint32_t HINT_WARMUP_MS = 15UL * 60UL * 1000UL;
 constexpr float    HINT_STEADY_C = 0.25f;     // per 10 minutes
-inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed, bool standby = false, bool warming = false) {
+// verifyResync: the newest VERIFY found the table off and no calibration ran since (a measured
+// finding, but held during warm-up like the temperature reasons: a resync then would not last).
+inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed, bool standby = false, bool warming = false,
+                       bool verifyResync = false) {
   if (standby) return Hint::NONE;
   if (seekFailed) return Hint::SEEK;
+  if (verifyResync) return warming ? Hint::WARMING : Hint::VERIFY;
   const Hint h = resyncHintBase(compOn, dT, spanC);
   return (h != Hint::NONE && warming) ? Hint::WARMING : h;
 }
-inline bool hintRecommends(Hint h) { return h == Hint::SPAN || h == Hint::LIMIT || h == Hint::NOCOMP || h == Hint::SEEK; }
+inline bool hintRecommends(Hint h) {
+  return h == Hint::SPAN || h == Hint::LIMIT || h == Hint::NOCOMP || h == Hint::SEEK || h == Hint::VERIFY;
+}
 inline const char *hintName(Hint h) {
   return h == Hint::SPAN ? "SPAN" : h == Hint::LIMIT ? "LIMIT" : h == Hint::NOCOMP ? "NOCOMP" : h == Hint::SEEK ? "SEEK"
-       : h == Hint::WARMING ? "WARMING" : "-";
+       : h == Hint::WARMING ? "WARMING" : h == Hint::VERIFY ? "VERIFY" : "-";
 }
 
 // ---- runtime ----
@@ -80,7 +86,7 @@ void refresh();                       // the log or the reference changed (FORGE
 void setEnabled(bool on);             // COMP ON|OFF (not stored: boots ON)
 bool enabled();
 void report(Stream &out);
-// For the master's ENV query.
+// For the controller's ENV query.
 float blockAverage();                 // the block's 1-minute average, C
 float blockAtCalibration();           // the reference, C
 bool sideActive(uint8_t side);        // 0 = L, 1 = R: a trusted fit is being applied
@@ -89,6 +95,6 @@ float sideSlope(uint8_t side);        // counts per C (NAN if no fit)
 bool ntcOk();                         // the block NTC reads (not OPEN / SHORT / BAD)
 Hint hint();                          // whether a resync is recommended now, and why
 float blockRatePer10Min();            // the block's change over the last 10 min, C (NAN until known)
-void printHint(Print &out);           // the same as a sentence (TEMP / DIAG)
+void printHint(Print &out);           // the same as a sentence (TEMP / REPORT)
 
 } // namespace ThermalComp

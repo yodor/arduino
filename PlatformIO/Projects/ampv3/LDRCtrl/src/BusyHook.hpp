@@ -5,17 +5,17 @@
 // BusyHook
 //
 // Calibration sweeps, trims and settling waits block the main loop for
-// minutes, during which nothing reads the strict master link -- a master
+// minutes, during which nothing reads the strict serial link -- a controller
 // that asks anything meanwhile just times out. This lets those blocking
 // waits keep the link alive: they call BusyHook::wait()/service() instead
-// of delay(), and any registered listener (MasterLink, for the real UART)
+// of delay(), and any registered listener (SerialLink, for the real UART)
 // gets to read its stream and answer "busy" immediately.
 //
 // Listeners are serviced only while a Scope is alive -- i.e. inside a long
-// blocking operation (a calibration, DIAG ALL). A short settle
+// blocking operation (a calibration, VERIFY). A short settle
 // wait elsewhere (the 100 ms after a relay click, say) must NOT answer "busy" and
 // swallow a line a person pasted right behind the command, which matters now
-// that a link in DEBUG mode is serviced too.
+// that a link in console mode is serviced too.
 //
 // Deliberately tiny and dependency-free so both LDRVolume and
 // DualCalibration can use it without including each other.

@@ -1,8 +1,8 @@
 #pragma once
 // The audio model the step tables are solved for: the source's output impedance (the
 // splitter) and the load after the attenuator (the amp's input, or a buffer's bias resistor).
-// Defaults from Config.hpp; SET SRC / SET LOAD (console and master protocol) change them at
-// runtime and store them in flash ("/audio_model.txt"), so no reflash is needed when the
+// Defaults from Config.hpp; SET SRC / SET LOAD (console and controller protocol) change them at
+// runtime and store them in settings.txt (source_ohms, load_ohms), so no reflash is needed when the
 // splitter or the load changes. If the stored calibration was solved for other values, the
 // attenuator reports CAL=STALE and a plain CAL re-solves (DualCalibration::onModelChanged).
 #include <Arduino.h>

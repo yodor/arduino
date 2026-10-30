@@ -1,4 +1,5 @@
 #include "SpectrumPipeline.hpp"
+#include "hardware/sync.h"
 #include "FastMath.hpp"
 #include <cmath>
 
@@ -81,6 +82,9 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
     size_t       binCount = m_engine.binCount();
 
     EnergyMode energyMode = m_energyMode; // snapshot once per call
+    // Fill the set core 0 isn't reading; publish it at the end.
+    uint8_t w   = static_cast<uint8_t>(1 - m_readyOut);
+    BarSet& out = m_out[w];
 
     for (size_t band = 0; band < m_activeBandCount; ++band) {
         size_t startBin = m_startBin[band];
@@ -109,8 +113,8 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
             valueR = fastSqrt(sumSqR);
         }
 
-        m_barsL[band] = valueL;
-        m_barsR[band] = valueR;
+        out.barsL[band] = valueL;
+        out.barsR[band] = valueR;
     }
 
     // The Info screen's small mono spectrum: doubling bands (1, 2, 4... bins
@@ -126,20 +130,28 @@ void SpectrumPipeline::pushChunk(const uint16_t* interleavedChunk) {
             else                                sumSq += m * m;
         }
         if (energyMode != EnergyMode::PEAK) value = fastSqrt(sumSq);
-        m_miniBars[band] = value;
+        out.mini[band] = value;
         start = end;
     }
+    out.count = m_activeBandCount;
+    __dmb();          // the whole set written before it's published
+    m_readyOut = w;
     m_bandsUs = micros() - tBands;
 }
 
 size_t SpectrumPipeline::getMiniBars(float* out) const {
-    for (size_t i = 0; i < DOUBLING_BAND_COUNT; ++i) out[i] = m_miniBars[i];
+    const BarSet& set = m_out[m_readyOut];
+    __dmb();
+    for (size_t i = 0; i < DOUBLING_BAND_COUNT; ++i) out[i] = set.mini[i];
     return DOUBLING_BAND_COUNT;
 }
 
-void SpectrumPipeline::getBars(float* leftBars, float* rightBars) const {
-    for (size_t i = 0; i < m_activeBandCount; ++i) {
-        if (leftBars)  leftBars[i]  = m_barsL[i];
-        if (rightBars) rightBars[i] = m_barsR[i];
+size_t SpectrumPipeline::getBars(float* leftBars, float* rightBars) const {
+    const BarSet& set = m_out[m_readyOut];
+    __dmb();
+    for (size_t i = 0; i < set.count; ++i) {
+        if (leftBars)  leftBars[i]  = set.barsL[i];
+        if (rightBars) rightBars[i] = set.barsR[i];
     }
+    return set.count;
 }

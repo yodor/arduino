@@ -27,7 +27,7 @@
 // playback. calBegin() routes through this same method, so the bench
 // RELAY ON/OFF and calibration share identical behavior.
 //
-// Method names track the original master-board protocol doc deliberately
+// Method names track the original controller-board protocol doc deliberately
 // (VOL <n> -> setStep, VOL UP/DOWN -> stepUp/stepDown, MUTE ON/OFF ->
 // mute/unmute) so wiring that protocol in later is a thin mapping.
 // ============================================================================
@@ -125,7 +125,7 @@ public:
   // measured floors (optionally capped, see calSolveStereo()). Returns the
   // number of valid steps; 0 with a message if the range can't be computed.
   // out: where progress/errors print -- pass whichever Stream actually invoked this (the calling
-  // SerialConsole's own stream), so output lands wherever the command
+  // ConsoleCommands's own stream), so output lands wherever the command
   // came from rather than always on USB. Defaults to the USB Serial for
   // boot-time auto-characterization, which has no calling console.
   uint8_t calSolve(uint8_t steps, Stream &out = Serial);
@@ -255,6 +255,13 @@ public:
   float balanceAttDb() const { return balanceAttDb_; }
   // The duties step `step` plays at, balance included.
   void stepDutiesFine(uint8_t step, uint32_t &ser, uint32_t &shu) const;
+
+  // The average of three sensor readings, 20 ms apart. Need::BOTH: a reading counts only when
+  // both cells read (rsh = their shunt average); Need::SERIES: when the series reads -- at deep
+  // steps the shunt can be too dark to read, its value is not needed then (rsh = 0).
+  // Returns the series average, 0 if no reading counted.
+  enum class Need : uint8_t { BOTH, SERIES };
+  float readAveraged(float &rsh, Need need = Need::BOTH);
 
   void setStepSeriesFine(uint8_t i, uint32_t fine) {
     if (!hasLut() || i >= numSteps()) return;

@@ -1,4 +1,5 @@
 #include "Board.hpp"
+#include "Console.hpp"
 #include "hardware/clocks.h"
 #include "Pins.hpp"
 #include "Config.hpp"
@@ -11,72 +12,41 @@
 #endif
 
 void Board::bootInfo() {
-  Serial.println("\n--- HARDWARE & CLOCK VALIDATION ---");
-  Serial.println("Firmware: " FW_VERSION ", built " __DATE__ " " __TIME__);
-
-  #if defined(PICO_RP2350) && PICO_RP2350
-    Serial.println("Compile Target: RP2350 Core (Pico 2)");
-    uint8_t chip_rev = (sysinfo_hw->chip_id >> 28) & 0xF;
-    Serial.print("Silicon Revision: RP2350 A");
-    Serial.println(chip_rev);
-    #if defined(__riscv) || defined(__riscv__)
-      Serial.println("Arch: NATIVE RISC-V (Hazard3 Core Active!)");
-    #elif defined(__arm__)
-      Serial.println("Arch: NATIVE ARM (Cortex-M33 Core Active)");
-    #else
-      Serial.println("Arch: Unknown Core Architecture");
-    #endif
+  usb.blank();
+  usb.line("--- HARDWARE & CLOCK VALIDATION ---");
+  usb.line("Firmware: %s, built %s %s", FW_VERSION, __DATE__, __TIME__);
+#if defined(PICO_RP2350) && PICO_RP2350
+  usb.line("Compile Target: RP2350 Core (Pico 2)");
+  usb.line("Silicon Revision: RP2350 A%u", (unsigned)((sysinfo_hw->chip_id >> 28) & 0xF));
+  #if defined(__riscv) || defined(__riscv__)
+  usb.line("Arch: NATIVE RISC-V (Hazard3 Core Active!)");
+  #elif defined(__arm__)
+  usb.line("Arch: NATIVE ARM (Cortex-M33 Core Active)");
   #else
-    Serial.println("Compile Target: RP2040 Core (Pico)");
+  usb.line("Arch: Unknown Core Architecture");
   #endif
-
-  // BOARD_NAME is defined automatically by the Arduino-Pico build system
-  // for whichever specific board PlatformIO is targeting (pico, rpipicow,
-  // rpipico2, rpipico2w, ...) -- this stays correct on its own for any
-  // future board swap, no per-variant list to maintain here.
-  Serial.print("Board: ");
-  #ifdef BOARD_NAME
-    Serial.println(BOARD_NAME);
-  #else
-    Serial.println("(unknown -- BOARD_NAME not defined by this platform package)");
-  #endif
-
-  // LDR_BOARD_IS_PICO_W is OUR OWN flag (set in platformio.ini, not a
-  // core-internal one) confirming whether the wireless-chip-specific code
-  // path (WiFi.end() + cyw43_arch_gpio_put regulator fix, WL_GPIO0/1 pin
-  // mapping) is actually compiled into THIS build -- the one thing that
-  // directly affects this firmware's own behavior, as distinct from just
-  // knowing which physical chip is on the board.
-  Serial.print("Driver board: ");
-  Serial.print(DRIVER_BOARD_NAME);
-  Serial.print("  (calibration hardware rev ");
-  Serial.print(CAL_HW_REV);
-  Serial.println(")");
-  Serial.print("Wireless-chip code path active (LDR_BOARD_IS_PICO_W): ");
-  #ifdef LDR_BOARD_IS_PICO_W
-    Serial.println("YES");
-  #else
-    Serial.println("NO");
-  #endif
-
-  Serial.print("Unique Flash ID: ");
-  Serial.println(rp2040.getChipID());
-
-  Serial.print("Active CPU Clock: ");
-  Serial.print(rp2040.f_cpu() / 1000000);
-  Serial.println(" MHz");
-
-  Serial.print("Peripheral Clock (clk_peri): ");
-  Serial.print(clock_get_hz(clk_peri) / 1000000);
-  Serial.println(" MHz");
-
-  Serial.print("ADC Clock (clk_adc): ");
-  Serial.print(clock_get_hz(clk_adc) / 1000000);
-  Serial.println(" MHz");
-
-  Serial.print("LED driver PWM frequency: ");
-  Serial.print(DriverChannels::frequencyHz());
-  Serial.println(" Hz");
+#else
+  usb.line("Compile Target: RP2040 Core (Pico)");
+#endif
+  // BOARD_NAME comes from the Arduino-Pico build for the board PlatformIO targets.
+#ifdef BOARD_NAME
+  usb.line("Board: %s", BOARD_NAME);
+#else
+  usb.line("Board: (unknown -- BOARD_NAME not defined by this platform package)");
+#endif
+  // LDR_BOARD_IS_PICO_W is our own flag (platformio.ini): whether the wireless-chip code path
+  // (WiFi.end() + the regulator fix, WL_GPIO pin mapping) is compiled into this build.
+  usb.line("Driver board: %s  (calibration hardware rev %u)", DRIVER_BOARD_NAME, (unsigned)CAL_HW_REV);
+#ifdef LDR_BOARD_IS_PICO_W
+  usb.line("Wireless-chip code path active (LDR_BOARD_IS_PICO_W): YES");
+#else
+  usb.line("Wireless-chip code path active (LDR_BOARD_IS_PICO_W): NO");
+#endif
+  usb.line("Unique Flash ID: %s", rp2040.getChipID());
+  usb.line("Active CPU Clock: %lu MHz", (unsigned long)(rp2040.f_cpu() / 1000000));
+  usb.line("Peripheral Clock (clk_peri): %lu MHz", (unsigned long)(clock_get_hz(clk_peri) / 1000000));
+  usb.line("ADC Clock (clk_adc): %lu MHz", (unsigned long)(clock_get_hz(clk_adc) / 1000000));
+  usb.line("LED driver PWM frequency: %lu Hz", (unsigned long)DriverChannels::frequencyHz());
 }
 
 void Board::begin() {
@@ -154,15 +124,15 @@ void Board::begin() {
   // fresh board (no LittleFS partition written yet), begin() fails once;
   // format and retry -- standard pattern for this core's LittleFS wrapper.
   if (!LittleFS.begin()) {
-    Serial.println(F("LittleFS mount failed -- formatting flash filesystem..."));
+    usb.line("LittleFS mount failed -- formatting flash filesystem...");
     LittleFS.format();
     if (!LittleFS.begin()) {
-      Serial.println(F("LittleFS mount failed even after format -- saved calibrations will not work."));
+      usb.line("LittleFS mount failed even after format -- saved calibrations will not work.");
     } else {
-      Serial.println(F("LittleFS formatted and mounted."));
+      usb.line("LittleFS formatted and mounted.");
     }
   } else {
-    Serial.println(F("LittleFS mounted."));
+    usb.line("LittleFS mounted.");
   }
   LittleFS.remove("/relay_hold.txt"); // left over from the withdrawn PWM coil hold (2026-10-15e..i)
 
@@ -176,7 +146,7 @@ void Board::writeAmpMute(bool muted) {
 }
 
 bool Board::setAmpMute(bool muted) {
-  // The amp mute is latched ON at power-up and changes only on command (the master decides
+  // The amp mute is latched ON at power-up and changes only on command (the controller decides
   // the power state). No timed boot hold any more.
   if (hold_.active()) {
     // A calibration is holding the amp muted. Asking for mute is already true;
@@ -208,7 +178,7 @@ void Board::setRelayActive(bool active) {
 }
 
 void Board::update() {
-  // (The timed boot-hold auto-unmute is gone: the amp stays muted until the master says so.)
+  // (The timed boot-hold auto-unmute is gone: the amp stays muted until the controller says so.)
 }
 
 float Board::dieTempC() {

@@ -129,7 +129,7 @@ private:
     int16_t m_envMinL[kEnvCols] = {}, m_envMaxL[kEnvCols] = {};
     int16_t m_envMinR[kEnvCols] = {}, m_envMaxR[kEnvCols] = {};
     int16_t m_envMinM[kEnvCols] = {}, m_envMaxM[kEnvCols] = {};
-    volatile uint32_t m_envColumns = 0;            // columns written so far
+    volatile uint32_t m_envWrite = 0;              // the next column to write (= the oldest); wraps at kEnvCols
     int16_t m_accMinL = 0, m_accMaxL = 0, m_accMinR = 0, m_accMaxR = 0, m_accMinM = 0, m_accMaxM = 0;
     int     m_accChunks = 0;
     void accumulateEnvelope(const uint16_t* interleavedChunk, float meanL, float meanR);

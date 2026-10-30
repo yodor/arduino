@@ -96,7 +96,7 @@ void WaveformPipeline::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t
         // Hysteresis: the signal must first dip below -hyst before a rise
         // through zero counts, so noise around zero can't trigger.
         int32_t peak = 0;
-        for (size_t i = 0; i < windowSamples; i += 4) {
+        for (size_t i = 0; i < windowSamples; ++i) {
             int32_t v = static_cast<int32_t>(srcL[i]) + srcR[i];
             if (v < 0) v = -v;
             if (v > peak) peak = v;
@@ -147,7 +147,7 @@ void WaveformPipeline::getScopeMono(int16_t* out, size_t count, size_t spanSampl
 
     // Rising zero crossing with hysteresis, as in getWaveform().
     int32_t peak = 0;
-    for (size_t i = 0; i < windowSamples; i += 4) {
+    for (size_t i = 0; i < windowSamples; ++i) {
         int32_t v = static_cast<int32_t>(srcL[i]) + srcR[i];
         if (v < 0) v = -v;
         if (v > peak) peak = v;
@@ -195,12 +195,12 @@ void WaveformPipeline::accumulateEnvelope(const uint16_t* chunk, float meanL, fl
     }
     if (++m_accChunks < static_cast<int>(WAVEFORM_DAW_CHUNKS_PER_COLUMN)) return;
     m_accChunks = 0;
-    uint32_t col = m_envColumns % kEnvCols;
+    uint32_t col = m_envWrite;
     m_envMinL[col] = m_accMinL; m_envMaxL[col] = m_accMaxL;
     m_envMinR[col] = m_accMinR; m_envMaxR[col] = m_accMaxR;
     m_envMinM[col] = m_accMinM; m_envMaxM[col] = m_accMaxM;
     __dmb();
-    m_envColumns = m_envColumns + 1;
+    m_envWrite = (col + 1 < kEnvCols) ? col + 1 : 0;   // wraps with the ring itself
 }
 
 // Core 0: the timeline, oldest column first. (Core 1 may store one column
@@ -208,10 +208,10 @@ void WaveformPipeline::accumulateEnvelope(const uint16_t* chunk, float meanL, fl
 void WaveformPipeline::getEnvelope(int16_t* minL, int16_t* maxL, int16_t* minR, int16_t* maxR,
                                    size_t count, bool mono) const {
     if (!minL || !maxL || count != static_cast<size_t>(kEnvCols)) return;
-    uint32_t n = m_envColumns;
+    uint32_t oldest = m_envWrite;   // the next slot to write = the oldest column
     __dmb();
     for (int i = 0; i < kEnvCols; ++i) {
-        uint32_t col = (n + static_cast<uint32_t>(i)) % kEnvCols; // n % kEnvCols is the oldest
+        uint32_t col = (oldest + static_cast<uint32_t>(i)) % kEnvCols;
         if (mono) {
             minL[i] = m_envMinM[col]; maxL[i] = m_envMaxM[col];
         } else {

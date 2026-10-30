@@ -270,8 +270,8 @@ void AudioEngine::runCore1() {
     }
 }
 
-void AudioEngine::getSpectrumBars(float* leftBars, float* rightBars) const {
-    m_spectrum.getBars(leftBars, rightBars);
+size_t AudioEngine::getSpectrumBars(float* leftBars, float* rightBars) const {
+    return m_spectrum.getBars(leftBars, rightBars);
 }
 
 size_t AudioEngine::getSpectrumBandCount() const {

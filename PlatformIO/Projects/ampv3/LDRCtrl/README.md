@@ -1,6 +1,6 @@
-# LDR Volume Control — Daughter Board
+# LDR Volume Control — Attenuator
 
-A dual-mono, light-dependent-resistor (vactrol) volume attenuator with automatic calibration, controlled by a Raspberry Pi Pico W. It is one part of a larger audio project; a master board handles the user interface, the display and power, and talks to this board over a simple serial protocol.
+A dual-mono, light-dependent-resistor (vactrol) volume attenuator with automatic calibration, controlled by a Raspberry Pi Pico W. It is one part of a larger audio project; a controller handles the user interface, the display and power, and talks to this board over a simple serial protocol.
 
 This is a hobby project. It works well in my system, and I am sharing it in case some of it is useful to others who enjoy the same kind of tinkering. It is not a product, and there are certainly things that could be done differently or better.
 
@@ -27,7 +27,7 @@ Absolute dB accuracy is not the goal; tracking between the channels and depth ar
 - **LED drivers:** a BC547C/BC557C pair per LED, with matched PNP pairs per function (series, shunt), 100 kΩ bleed resistors and WIMA MKS film capacitors in the filters.
 - **All eight transistors sit on one aluminium block** with an NTC thermistor, so the drivers share one temperature and that temperature can be measured. The drivers' base-emitter drift turned out to be the dominant cause of level drift.
 - **A TL431 reference** monitors the 3.3 V rail, which sets the PWM amplitude.
-- Relay drive for both LDR boards, the amplifier mute output, and the UART link to the master board.
+- Relay drive for both LDR boards, the amplifier mute output, and the UART link to the controller.
 
 ### LDR boards (one per channel, second edition)
 
@@ -40,6 +40,48 @@ The KiCad files and the 3D-printed parts are on the project page.
 
 ## How it works
 
+### The big picture: a system that keeps itself calibrated
+
+The attenuator learns two things -- its cells, and how they follow temperature -- and from then on
+keeps itself right without help:
+
+1. **Characterization** measures each cell's individual properties once: its curves and how deep it
+   settles reliably. From these the step table is built. It runs when nothing is stored or when the
+   power-up cell check finds new cells (or on request, `CAL FULL`).
+2. **Resyncs** re-trim the table to the cells as they are at that moment. Each resync is also one
+   **learning** entry: how far the cells' operating point moved, against how much the temperature
+   changed.
+3. **The compensation** applies what was learned continuously while listening. The better the
+   learning, the less often a resync is needed; the **resync hint** says when one would help, and
+   waits while the device is still warming up.
+4. **Verify** (`CAL VERIFY`) measures how well the table holds and reports what changed since the
+   previous run. During development it is the debugging tool; afterwards an occasional health check.
+
+Three refinements to that picture:
+
+- **"Temperature" mostly means the driver block, not the cells.** The drift follows the driver
+  block's temperature almost perfectly (R² close to 1), not the cells' own -- the transistors'
+  temperature changes the LED current, and the LED current sets the cells' resistance. So the
+  compensation corrects the LED drive, which is the actual cause, using the NTC on the block.
+- **The cells do change slowly, so verify does not become redundant.** In daily use temperature
+  dominates. Over months and years the LEDs inside the vactrols lose some efficiency, and CdS cells
+  drift too -- most noticeably while new cells settle in during their first weeks. A uniform drift
+  is simply absorbed by the next resync, like temperature. What a resync cannot fix is a change of
+  the curve's **shape**, or one channel ageing differently from the other: that is what verify
+  detects (`VERDICT=CHECK`), and a `CAL FULL` fixes it. A verify once a season -- and a few times in
+  the first weeks after fitting new cells -- is enough.
+- **Two effects are outside the temperature loop.** The cells' **memory** after loud passages (slower
+  settling at the quiet steps) is a property of CdS itself; it is managed by how deep the attenuator
+  goes (`SET AUTO SNAPPY | BALANCED | DEEP`), not by learning. The **source and load impedances** are
+  part of the table's design, so changing them needs a re-solve, which the firmware requests
+  (`CAL=STALE`).
+
+Faults such as a leaking driver (flux residue around the transistors) show up in a verify as one
+channel behaving differently, and the health checks name the likely place to look.
+
+The terms are defined one by one in `ldr-attenuator-console.md` ("Concepts"); the details of each
+stage follow below.
+
 ### Calibration
 
 A full characterization runs in about six minutes and needs no external equipment:
@@ -50,17 +92,17 @@ A full characterization runs in about six minutes and needs no external equipmen
 4. **Every step is solved** for its target attenuation, taking the source impedance and the amplifier's input impedance into account, then **trimmed** on the real cells, both channels in parallel.
 5. **The quietest point is matched** with settled readings between the channels, and plausibility guards catch trims that ended on a misleading reading.
 
-A **resync** repeats only the trims and the quiet-point match, in about two minutes. A cell check at power-up recognizes when the cells have been replaced.
+A **resync** repeats only the trims, the quiet-point match and a check of the middle depths, in about two to three minutes. A **re-solve** chooses a new total resistance from the stored curves without measuring the cells again. A cell check at power-up recognizes when the cells have been replaced.
 
 ### Temperature and supply compensation
 
-After every resync the firmware records how far the cells' operating point moved and how much the driver block's temperature changed. From that history it fits a slope (in my system about −5.4 PWM counts per °C, R² ≈ 0.98–0.99) and applies it continuously while listening. A resync is suggested when the temperature has moved beyond the range the fit has learned. Small changes of the 3.3 V rail are corrected against the TL431.
+After every resync the firmware records how far the cells' operating point moved and how much the driver block's temperature changed. From that history it fits a slope (in my system about −5.4 PWM counts per °C, R² ≈ 0.98–0.99) and applies it continuously while listening. A resync is suggested when the temperature has moved beyond the range the fit has learned, or when a verify found the table off. Only resyncs feed the learning; a re-solve does not. Small changes of the 3.3 V rail are corrected against the TL431.
 
-### Interface to the master board
+### Interface to the controller
 
-A line-based ASCII protocol over UART (currently revision 14) with commands for volume, mute, amplifier mute and calibration, and queries for status, calibration progress, temperatures and compensation, the learning state and the audio model. The master board owns the power state: the attenuator powers up muted, reports whether it is calibrated for the fitted cells, and never unmutes or calibrates on its own. The full specification is in `daughter-board-uart-protocol-v2.md`.
+A line-based ASCII protocol over UART or USB (currently revision 20) with commands for volume, balance, mute, amplifier mute, calibration and verify, and queries for status, progress, temperatures and compensation, the learning state, the audio model, the last verify and the firmware version. The controller owns the power state: the attenuator powers up muted, reports whether it is calibrated for the fitted cells, and never unmutes or calibrates on its own. The full specification is in `ldr-attenuator-protocol.md`.
 
-A separate bench console (`DEBUG` on the same link) exposes everything for testing and diagnosis, including a combined `DIAG ALL` report. It is described in `daughter-board-debug-console.md`.
+A console mode (`DEBUG` on the same link, `EXIT` back) exposes everything for testing and diagnosis -- among it `CAL VERIFY` with its full output, `REPORT` (a compact summary for analysis), `DUMP`, and `EXPORT` / `IMPORT` for backing up and restoring the stored state. It is described in `ldr-attenuator-console.md`.
 
 ## Building
 

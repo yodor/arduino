@@ -18,7 +18,7 @@ bool savedBlock(float &t);                               // block temperature at
 // The learned slopes vs the BLOCK (counts per C, L/R) and their R2; false where the fit is
 // not usable yet (n, spread).
 void blockSlopes(float k[2], float r2[2], bool usable[2]);
-// For the master's LEARN query: resyncs in the log and the RMS block-temperature spread.
+// For the controller's LEARN query: resyncs in the log and the RMS block-temperature spread.
 void fitCounts(uint8_t &n, float &spread);
 float learnedSpanC();                                    // largest block change in the fit, C
 void forgetEnvironment();                                // FORGET CAL: the calibration it described is gone

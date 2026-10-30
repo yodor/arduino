@@ -20,7 +20,7 @@ constexpr uint8_t DIAGNOSTIC_LED_PIN = 25;
 #endif
 
 /**
- * UART link to a master board handling mute/volume/calibration commands, using
+ * UART link to a controller board handling mute/volume/calibration commands, using
  * RP2040 UART0 alternative pin location.
  */
 constexpr uint8_t UART_TX_PIN = 16;

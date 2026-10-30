@@ -17,7 +17,8 @@ public:
     static AudioEngine& instance();
 
     void runCore1();
-    void getSpectrumBars(float* leftBars, float* rightBars) const;
+    // Copies the latest bars; returns their count (the same FFT's band count).
+    size_t getSpectrumBars(float* leftBars, float* rightBars) const;
     size_t getSpectrumBandCount() const;
     // trigger: start at a rising zero crossing (oscilloscope trigger) -- see
     // WaveformPipeline::getWaveform(). The meters use the plain full window.

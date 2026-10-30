@@ -1,4 +1,5 @@
 #include "CalStorage.hpp"
+#include "Console.hpp"
 #include "AudioModel.hpp"
 #include "LDRVolume.hpp" // full type needed here, not just the forward declaration
 #include <LittleFS.h>
@@ -69,7 +70,7 @@ struct Header {
   float rangeDb;  // informational (read back from the LUT); ignored on load
   float rMinOhms; // the Rtotal range the calibration measured (0/0 = unknown)
   float rMaxOhms;
-  uint32_t rAuto; // 1 = Rtotal was chosen by the calibration (AUTO), 0 = by the master
+  uint32_t rAuto; // 1 = Rtotal was chosen by the calibration (AUTO), 0 = by the controller
   uint32_t crc32; // over rTotalOhms, rangeDb, then the series/shunt/entry arrays, in that order
 };
 
@@ -156,33 +157,21 @@ bool load(const char *path, LDRVolume &vol) {
   if (hdr.magic != MAGIC || hdr.version != FORMAT_VERSION) { f.close(); return false; }
   if (hdr.pwmWrap != DriverChannels::WRAP) {
     // Saved at a different PWM resolution -- duties would misapply.
-    Serial.print(F("Saved calibration was taken at PWM WRAP="));
-    Serial.print(hdr.pwmWrap);
-    Serial.print(F(", firmware is now "));
-    Serial.print(DriverChannels::WRAP);
-    Serial.println(F(" -- discarding it, recalibration required."));
+    usb.line("Saved calibration was taken at PWM WRAP=%u, firmware is now %u -- discarding it, recalibration required.",
+             (unsigned)hdr.pwmWrap, (unsigned)DriverChannels::WRAP);
     f.close();
     return false;
   }
   switch (CalStamp::check(hdr.hwRev, hdr.calRev, CAL_HW_REV, CAL_ALGO_REV)) {
     case CalStamp::Verdict::HW_MISMATCH:
-      Serial.print(F("Saved calibration "));
-      Serial.print(path);
-      Serial.print(F(" was taken on hardware rev "));
-      Serial.print(hdr.hwRev);
-      Serial.print(F(", this firmware is built for rev "));
-      Serial.print(CAL_HW_REV);
-      Serial.println(F(" -- REFUSED (a stale LUT would put the cells at the wrong brightness); recalibration required."));
+      usb.line("Saved calibration %s was taken on hardware rev %u, this firmware is built for rev %u"
+               " -- REFUSED (a stale LUT would put the cells at the wrong brightness); recalibration required.",
+               path, (unsigned)hdr.hwRev, (unsigned)CAL_HW_REV);
       f.close();
       return false;
     case CalStamp::Verdict::ALGO_MISMATCH:
-      Serial.print(F("Saved calibration "));
-      Serial.print(path);
-      Serial.print(F(" has calibration rev "));
-      Serial.print(hdr.calRev);
-      Serial.print(F(", this firmware uses rev "));
-      Serial.print(CAL_ALGO_REV);
-      Serial.println(F(" -- refused; recalibration required."));
+      usb.line("Saved calibration %s has calibration rev %u, this firmware uses rev %u -- refused; recalibration required.",
+               path, (unsigned)hdr.calRev, (unsigned)CAL_ALGO_REV);
       f.close();
       return false;
     case CalStamp::Verdict::OK:
@@ -259,10 +248,7 @@ bool load(const char *path, LDRVolume &vol) {
                                          RANGE_SAFETY_MARGIN_DB, CAPS_DITHER_LEVELS);
     if (rc.rangeOk) vol.setRange(rc.rMin, rc.rMax);
   }
-  Serial.print(F("Calibration stamp accepted: hardware rev "));
-  Serial.print(hdr.hwRev);
-  Serial.print(F(", calibration rev "));
-  Serial.println(hdr.calRev);
+  usb.line("Calibration stamp accepted: hardware rev %u, calibration rev %u", (unsigned)hdr.hwRev, (unsigned)hdr.calRev);
   return true;
 }
 
