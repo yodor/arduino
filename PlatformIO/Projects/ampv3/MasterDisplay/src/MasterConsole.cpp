@@ -1,6 +1,6 @@
 #include "MasterConsole.hpp"
 #include "Console.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 #include "Version.hpp"
 #include "RtcClock.hpp"
 #include "InputEngine.hpp"
@@ -36,11 +36,11 @@ void MasterConsole::enterPassthrough() {
     Console::log("Console", "Pass-through to the attenuator console. Type ~. at the start of a line to return.");
     m_atLineStart = true;
     m_heldTilde   = false;
-    DaughterBoardLink::instance().enterPassthrough(); // sends DEBUG
+    AttenuatorBoardLink::instance().enterPassthrough(); // sends DEBUG
 }
 
 void MasterConsole::leavePassthrough() {
-    DaughterBoardLink::instance().exitPassthrough(); // sends EXIT
+    AttenuatorBoardLink::instance().exitPassthrough(); // sends EXIT
     m_len = 0;
     Console::blank();
     Console::log("Console", "Back on the master console (attenuator returned to strict protocol).");
@@ -125,7 +125,7 @@ void MasterConsole::handleLine(char* line) {
 }
 
 void MasterConsole::update() {
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
 
     if (link.isPassthrough()) {
         link.passthroughPump(Serial);

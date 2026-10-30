@@ -15,12 +15,12 @@
 // it has something to say): COMP green when the thermal compensation is on,
 // gray when off; the last calibration's L/R match; the driver-block
 // temperature (red "NTC!" on a sensor fault); an alert slot shared by MUTE
-// (red) and RESYNC (yellow, the daughter recommends one) -- alternating each
+// (red) and RESYNC (yellow, the attenuator recommends one) -- alternating each
 // second when both apply; the Rtotal value on the right (auto/manual and the
 // full form are one Options-key press away, in the middle-right readout). Text rather than icons: at 16 px with the
 // panel's bitmap font, words read instantly where icons would be blobs.
 //
-// When the daughter is calibrating, uncalibrated or not answering, the big
+// When the attenuator is calibrating, uncalibrated or not answering, the big
 // area says so instead of showing a stale number. Everything is redrawn only
 // when it changes.
 class InfoScreen : public Screen {

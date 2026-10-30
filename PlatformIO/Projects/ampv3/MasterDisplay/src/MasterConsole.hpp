@@ -3,19 +3,19 @@
 
 // The master's USB serial console. Line-based commands:
 //   HELP       list commands
-//   DAUGHTER   pass-through to the daughter board's bench console
+//   ATTEN      pass-through to the attenuator board's bench console (also DAUGHTER, D)
 //   SETTINGS [RESET]  print / delete the settings file
 //   BUTTONS    button monitor on/off (raw edges + debounced presses)
 //   TIME [YYYY-MM-DD HH:MM:SS]   show / set the DS3231 clock
 //
-// Pass-through: every byte typed goes straight to the daughter (the link
+// Pass-through: every byte typed goes straight to the attenuator (the link
 // first switches it into its DEBUG bench console), every byte it sends comes
 // straight back -- so its own echo, HELP, DIAG ALL etc. all work as if
 // plugged into it directly. Type ~. at the start of a line to return (ssh-
-// style escape; ~~ sends a single ~). The link sends the daughter EXIT on the
+// style escape; ~~ sends a single ~). The link sends the attenuator EXIT on the
 // way out, so it's always back on the strict protocol afterwards. While in
 // pass-through the master's own periodic logging ([Perf]) is paused and the
-// daughter link stops polling, so nothing interleaves with the session.
+// attenuator link stops polling, so nothing interleaves with the session.
 class MasterConsole {
 public:
     static MasterConsole& instance();

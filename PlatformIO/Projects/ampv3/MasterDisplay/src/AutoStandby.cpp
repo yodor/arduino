@@ -3,7 +3,7 @@
 #include "AudioEngine.hpp"
 #include "DisplaySettings.hpp"
 #include "PowerControl.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 
 AutoStandby& AutoStandby::instance() {
     static AutoStandby inst;
@@ -37,7 +37,7 @@ bool AutoStandby::update(bool keyActivity) {
         m_peak = peak;
     }
 
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
     bool calibrating = s.valid && s.running();   // a verify too: it holds the amp muted for minutes
     uint8_t minutes  = DisplaySettings::instance().getAutoStandbyMinutes();
 

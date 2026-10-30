@@ -41,12 +41,14 @@ BarPhysics::BarPhysics() {
 // Timed in seconds, so the same at any frame rate and any bar height.
 namespace {
 struct PeakSpeed { uint32_t holdMs; float fallS; };
+// Tuned by eye at 100 fps: Turtle and Slow were the first round's Normal
+// and Fast, Cheetah unchanged; Normal and Fast sit evenly between.
 constexpr PeakSpeed kPeakSpeeds[] = {
-    { 1500, 6.0f },   // TURTLE
-    { 1000, 3.5f },   // SLOW
-    {  600, 2.0f },   // NORMAL
-    {  300, 1.1f },   // FAST
-    {  120, 0.5f },   // CHEETAH
+    {  600, 2.0f  },  // TURTLE
+    {  300, 1.1f  },  // SLOW
+    {  220, 0.85f },  // NORMAL
+    {  160, 0.65f },  // FAST
+    {  120, 0.5f  },  // CHEETAH
 };
 const PeakSpeed& peakSpeed(PeakDecaySpeed s) {
     size_t i = static_cast<size_t>(s);

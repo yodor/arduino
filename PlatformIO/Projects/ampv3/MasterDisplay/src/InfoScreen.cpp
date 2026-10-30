@@ -1,7 +1,7 @@
 #include "InfoScreen.hpp"
 #include "Renderer.hpp"
 #include "ColorTheme.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 #include "VolumeControl.hpp"
 #include "DisplaySettings.hpp"
 #include "BeatDetector.hpp"
@@ -80,13 +80,13 @@ bool InfoScreen::filterFirstVolumePress(bool& up, bool& down, bool onThisScreen)
 }
 
 void InfoScreen::update() {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
 
     if (link.statusCount() != m_lastStatusCount) {
         m_lastStatusCount = link.statusCount();
-        const DaughterStatus& s = link.status();
+        const AttenuatorStatus& s = link.status();
         if (!s.busy) {
-            // Pop up for changes made anywhere (the daughter's console, a
+            // Pop up for changes made anywhere (the attenuator's console, a
             // calibration landing on a new step...) -- but not for the very
             // first status after boot, which is just adoption.
             if (m_haveBaseline && (s.vol != m_baseVol || s.mute != m_baseMute)) poke();
@@ -104,16 +104,16 @@ void InfoScreen::update() {
 // --- Drawing --------------------------------------------------------------------
 
 InfoScreen::View InfoScreen::currentView() const {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     if (!link.isStatusFresh()) return View::NO_LINK;
-    const DaughterStatus& s = link.status();
+    const AttenuatorStatus& s = link.status();
     if (s.busy) {
         // The power-up cell check is a (short) calibration run too.
-        const DaughterProgress& pr = link.progress();
+        const AttenuatorProgress& pr = link.progress();
         return (pr.valid && !strcmp(pr.phase, "CHECK")) ? View::CHECKING : View::CALIBRATING;
     }
-    // Until CAL=OK the daughter keeps the volume muted and refuses VOL.
-    if (s.cal != DaughterCalState::OK) return View::NOT_CALIBRATED;
+    // Until CAL=OK the attenuator keeps the volume muted and refuses VOL.
+    if (s.cal != AttenuatorCalState::OK) return View::NOT_CALIBRATED;
     if (s.vol < 0 || s.volMin < 0 || s.volMax < s.volMin) return View::NOT_CALIBRATED;
     return View::VOLUME;
 }
@@ -135,7 +135,7 @@ void InfoScreen::drawCentered(const char* text, uint8_t size, int16_t y, uint16_
 void InfoScreen::drawStaticForView(View v) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     gfx->fillScreen(COLOR_BLACK);
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
 
     switch (v) {
         case View::NO_LINK:
@@ -151,13 +151,13 @@ void InfoScreen::drawStaticForView(View v) {
             drawCentered("volume locked until it finishes", 2, kMsgY + 44, kColorSubtle);
             break;
         case View::NOT_CALIBRATED: {
-            const char* title = (s.cal == DaughterCalState::NONE)    ? "NO CALIBRATION"
-                              : (s.cal == DaughterCalState::CHANGED) ? "CELLS CHANGED"
-                              : (s.cal == DaughterCalState::STALE)   ? "RE-SOLVE NEEDED"
-                              : (s.cal == DaughterCalState::ERR)     ? "CALIBRATION ERROR"
+            const char* title = (s.cal == AttenuatorCalState::NONE)    ? "NO CALIBRATION"
+                              : (s.cal == AttenuatorCalState::CHANGED) ? "CELLS CHANGED"
+                              : (s.cal == AttenuatorCalState::STALE)   ? "RE-SOLVE NEEDED"
+                              : (s.cal == AttenuatorCalState::ERR)     ? "CALIBRATION ERROR"
                                                                      : "NOT CALIBRATED";
             drawCentered(title, 4, kMsgY, COLOR_RED);
-            if (s.cal == DaughterCalState::ERR && s.hasErr) {
+            if (s.cal == AttenuatorCalState::ERR && s.hasErr) {
                 gfx->setTextSize(1);
                 gfx->setTextColor(kColorSubtle, COLOR_BLACK);
                 gfx->setCursor(kMargin, kMsgY + 44);
@@ -318,8 +318,8 @@ void InfoScreen::drawSlot(uint8_t slot, int16_t x, uint8_t widthChars, const cha
 
 // The header row: the status tags and the time, each in its own slot.
 void InfoScreen::drawTags() {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterEnv&       e    = link.env();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorEnv&       e    = link.env();
     bool fresh = link.isStatusFresh();
     uint32_t now = millis();
 
@@ -360,7 +360,7 @@ void InfoScreen::drawTags() {
 
     // Rtotal value, right-aligned in the last slot: "95K" (auto/manual and
     // the "R=" form are in the middle-right readout, one Options press away).
-    const DaughterStatus& st = link.status();
+    const AttenuatorStatus& st = link.status();
     char rv[12] = "";
     if (fresh && st.rOhms > 0) snprintf(rv, sizeof(rv), "%luK", static_cast<unsigned long>((st.rOhms + 500) / 1000));
     char padded[12];
@@ -369,7 +369,7 @@ void InfoScreen::drawTags() {
 }
 
 // The big value on the left: "-23.5 dB", or -- Settings -> Volume Display =
-// Steps -- "14/31": the step (0-based, as the daughter numbers it) in white,
+// Steps -- "14/31": the step (0-based, as the attenuator numbers it) in white,
 // the last step in gray, like the dB unit.
 void InfoScreen::drawValue(int16_t vol, int16_t volMax, int32_t dbTenths) {
     Arduino_GFX* gfx = Renderer::instance().gfx();
@@ -466,7 +466,7 @@ void InfoScreen::render() {
 
     if (v != View::VOLUME) return;
 
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
     int32_t dbTenths = static_cast<int32_t>(lroundf(s.db * 10.0f));
 
     VolumeDisplay mode = DisplaySettings::instance().getVolumeDisplay();

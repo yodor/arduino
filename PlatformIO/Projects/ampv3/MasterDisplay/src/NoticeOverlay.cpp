@@ -1,6 +1,6 @@
 #include "NoticeOverlay.hpp"
 #include "Console.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 #include "Renderer.hpp"
 #include <cstring>
 #include <cstdio>
@@ -42,13 +42,13 @@ void NoticeOverlay::render() {
     m_needFull = false;
 }
 
-// Revision 13/14 ENV (called every loop by main.cpp): while the daughter recommends a resync (RESYNC=1), the
+// Revision 13/14 ENV (called every loop by main.cpp): while the attenuator recommends a resync (RESYNC=1), the
 // notice (with its reason) pops up again with each background ENV reading --
-// every DAUGHTER_ENV_BACKGROUND_POLL_MS, at most -- until a calibration
+// every ATTENUATOR_ENV_BACKGROUND_POLL_MS, at most -- until a calibration
 // clears it: not intrusive, but insistent. Also once when the block NTC
 // develops a fault (which turns the thermal compensation off).
-void NoticeOverlay::watchDaughter(bool unitOn) {
-    const DaughterEnv& e = DaughterBoardLink::instance().env();
+void NoticeOverlay::watchAttenuator(bool unitOn) {
+    const AttenuatorEnv& e = AttenuatorBoardLink::instance().env();
     static uint32_t s_envSeenMs  = 0;
     static bool     s_lastNtcOk  = true;
     static bool     s_wasOn      = false;
@@ -77,7 +77,7 @@ void NoticeOverlay::watchDaughter(bool unitOn) {
     // Each fresh reading with the hint up shows it again -- but no more often
     // than the background poll (a calibration page polls ENV every 5 s).
     if (e.resync == 1 && on &&
-        (!s_resyncShown || millis() - s_resyncShownMs >= DAUGHTER_ENV_BACKGROUND_POLL_MS - 1000)) {
+        (!s_resyncShown || millis() - s_resyncShownMs >= ATTENUATOR_ENV_BACKGROUND_POLL_MS - 1000)) {
         showResync();
     }
     if (e.resync == 0) s_resyncShown = false; // cleared (a calibration ran): log it afresh next time

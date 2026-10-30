@@ -45,20 +45,20 @@ constexpr uint8_t BTN_LT_PIN = 12;
 constexpr uint8_t IR_PIN  = 11; 
 
 // DRV8833 motor driver pins (motorized volume pot) -- REFERENCE ONLY: the
-// motor control was removed (volume is the daughter board's), and nothing in
+// motor control was removed (volume is the attenuator board's), and nothing in
 // the firmware drives these pins; they stay inputs.
 constexpr uint8_t DRV8833_IN1_PIN = 6;
 constexpr uint8_t DRV8833_IN2_PIN = 7;
 
 // GPIO8 is free: it used to drive the master-side 4N25 mute, which was
-// removed -- muting is handled entirely by the daughter board now.
+// removed -- muting is handled entirely by the attenuator board now.
 
 /**
- * UART link to a daughter board handling mute/volume/calibration, using
+ * UART link to an attenuator board handling mute/volume/calibration, using
  * RP2040 UART0 on its default pin location (GPIO0=TX, GPIO1=RX).
  */
-constexpr uint8_t DAUGHTER_UART_TX_PIN = 0;
-constexpr uint8_t DAUGHTER_UART_RX_PIN = 1;
+constexpr uint8_t ATTENUATOR_UART_TX_PIN = 0;
+constexpr uint8_t ATTENUATOR_UART_RX_PIN = 1;
 
 /**
  * Power Control 

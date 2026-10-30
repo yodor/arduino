@@ -4,7 +4,7 @@
 
 // A short popup in the style of the volume overlay: a title and up to two
 // lines, for NOTICE_POPUP_MS -- e.g. "CALIBRATION ADVISED" with the reason
-// the daughter gives (revision 14's resync hint), or an NTC fault.
+// the attenuator gives (revision 14's resync hint), or an NTC fault.
 //
 // Like the other overlays, main.cpp renders it INSTEAD of the current screen
 // while it's up, then re-enters the screen. It gives way to the volume
@@ -22,7 +22,7 @@ public:
 
     // Watches the volume board's ENV readings and raises the resync and NTC
     // notices (see NoticeOverlay.cpp). unitOn: no notices in standby.
-    void watchDaughter(bool unitOn);
+    void watchAttenuator(bool unitOn);
     void update();                     // expiry
     bool isActive() const { return m_active; }
     void dismiss() { m_active = false; }

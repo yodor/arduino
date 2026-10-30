@@ -14,7 +14,7 @@
 #include "PersistentSettings.hpp"
 #include "Renderer.hpp"
 #include "BarPhysics.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 #include "RtcClock.hpp"
 #include "DisplayTestScreen.hpp"
 #include "AutoStandby.hpp"
@@ -77,13 +77,13 @@ void addWrapped(char (*lines)[kInfoLineLen], size_t& n, size_t maxLines, const c
     }
 }
 
-// Calibration -> Status: everything the daughter reports in its
+// Calibration -> Status: everything the attenuator reports in its
 // STATUS line, live (the menu re-fills this twice a second while it's open).
 size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
     // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&    s    = link.status();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorStatus&    s    = link.status();
 
     if (link.isPassthrough()) {
         addLine(lines, n, maxLines, "Console pass-through");
@@ -93,8 +93,8 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
         addLine(lines, n, maxLines, "No reply from attenuator");
         if (!s.valid) return n;
         addLine(lines, n, maxLines, "(last known values)");
-    } else if (s.proto != DAUGHTER_PROTO_EXPECTED) {
-        addLine(lines, n, maxLines, "Protocol %u (need %u)", s.proto, DAUGHTER_PROTO_EXPECTED);
+    } else if (s.proto != ATTENUATOR_PROTO_EXPECTED) {
+        addLine(lines, n, maxLines, "Protocol %u (need %u)", s.proto, ATTENUATOR_PROTO_EXPECTED);
     } else {
         addLine(lines, n, maxLines, "Link OK, protocol %u", s.proto);
     }
@@ -130,8 +130,8 @@ size_t fillCalibrationStatus(char (*lines)[kInfoLineLen], size_t maxLines) {
 
     // ENV (rev 8): temperatures, rail, compensation, last stereo match --
     // polled while this page is open.
-    DaughterBoardLink::instance().requestEnv();
-    const DaughterEnv& e = link.env();
+    AttenuatorBoardLink::instance().requestEnv();
+    const AttenuatorEnv& e = link.env();
     if (e.valid) {
         addLine(lines, n, maxLines, "Block %s C", e.block);
         addLine(lines, n, maxLines, "Rail %s V", e.rail);
@@ -465,12 +465,12 @@ constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kC
 
 // --- Calibration ---
 //
-// Rtotal: the Rs+Rsh the daughter's volume steps are solved for. The choice
+// Rtotal: the Rs+Rsh the attenuator's volume steps are solved for. The choice
 // made here is only a request for the NEXT calibration ("Start"): it starts
-// out as whatever the daughter currently uses (RAUTO / R from STATUS), and
-// Start sends plain "CAL" when the choice equals that (the daughter then
+// out as whatever the attenuator currently uses (RAUTO / R from STATUS), and
+// Start sends plain "CAL" when the choice equals that (the attenuator then
 // decides how much work it needs), or "CAL R=AUTO" / "CAL R=<ohms>" when it
-// was changed (the daughter re-solves from its stored measurements).
+// was changed (the attenuator re-solves from its stored measurements).
 
 // The Rtotal picked in the selector, used by the Start right after it.
 bool     g_rSelAuto = true;
@@ -482,31 +482,31 @@ uint32_t g_rSelOhms = 0;
 void menuAction_StartCalibration();   // below: sends CAL with the chosen R
 
 // "Rtotal" selector: ONE field covering both modes -- index 0 is AUTO,
-// then RMIN..RMAX (the daughter's measured range) in kRStepOhms steps,
-// rounded inward. It opens on the daughter's current setting; Up/Down step
+// then RMIN..RMAX (the attenuator's measured range) in kRStepOhms steps,
+// rounded inward. It opens on the attenuator's current setting; Up/Down step
 // (wrapping), Right confirms, then Cancel / Start.
 constexpr uint32_t kRStepOhms = 5000;
 int16_t g_rLoadedIndex = -1; // what the selector opened on (unchanged = the exact current value)
 
 uint32_t rFirstOhms() {
-    uint32_t rmin = DaughterBoardLink::instance().status().rMinOhms;
+    uint32_t rmin = AttenuatorBoardLink::instance().status().rMinOhms;
     return ((rmin + kRStepOhms - 1) / kRStepOhms) * kRStepOhms;
 }
 int16_t rStepCount() {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
     if (s.rMinOhms == 0 || s.rMaxOhms == 0) return 0; // range not measured yet: AUTO only
     uint32_t first = rFirstOhms(), last = (s.rMaxOhms / kRStepOhms) * kRStepOhms;
     return (last < first) ? 0 : static_cast<int16_t>((last - first) / kRStepOhms + 1);
 }
 uint32_t rIndexOhms(int16_t i) { return rFirstOhms() + static_cast<uint32_t>(i - 1) * kRStepOhms; }
 
-// Doesn't open while the daughter is busy or not answering -- the item then
+// Doesn't open while the attenuator is busy or not answering -- the item then
 // shows the progress page instead (a calibration running is the usual case).
 // Before a full characterization has measured RMIN/RMAX (a fresh unit) it
 // offers AUTO only, so the first calibration can always be started.
 bool loadRTotal(int16_t* v) {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&    s    = link.status();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorStatus&    s    = link.status();
     if (!link.isStatusFresh() || s.busy) return false;
     if (s.rAuto || rStepCount() == 0) {
         v[0] = 0;
@@ -528,8 +528,8 @@ void formatRTotal(const int16_t* v, uint8_t, char* out, size_t outSize) {
     else           snprintf(out, outSize, "%3luK", static_cast<unsigned long>(rIndexOhms(v[0]) / 1000));
 }
 bool saveRTotal(const int16_t* v) {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (v[0] == g_rLoadedIndex) {          // unchanged: exactly what the daughter uses now
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
+    if (v[0] == g_rLoadedIndex) {          // unchanged: exactly what the attenuator uses now
         g_rSelAuto = s.rAuto;
         g_rSelOhms = s.rOhms;
     } else if (v[0] == 0) {
@@ -541,19 +541,19 @@ bool saveRTotal(const int16_t* v) {
     menuAction_StartCalibration();   // Right on the value runs it: no Cancel / Start step
     return true;
 }
-// Under the item in the list: the daughter's current Rtotal, e.g. "650K (auto)".
+// Under the item in the list: the attenuator's current Rtotal, e.g. "650K (auto)".
 void describeRTotal(char* out, size_t outSize) {
-    const DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&    s    = link.status();
+    const AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorStatus&    s    = link.status();
     if (!link.isStatusFresh() || s.rOhms == 0) { snprintf(out, outSize, "--"); return; }
     snprintf(out, outSize, "%luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
 }
 const MenuEditor kRTotalEditor = { 1, {4}, ' ', loadRTotal, limitsRTotal, saveRTotal, formatRTotal, describeRTotal };
 
-// Start: plain CAL if the selection equals what the daughter uses now (it
+// Start: plain CAL if the selection equals what the attenuator uses now (it
 // then decides how much work it needs), otherwise CAL R=AUTO / R=<ohms>.
 void menuAction_StartCalibration() {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
     VolumeControl& vc = VolumeControl::instance();
     bool same = s.valid && (g_rSelAuto ? s.rAuto : (!s.rAuto && s.rOhms == g_rSelOhms));
     if (same) {
@@ -591,9 +591,9 @@ const char* phaseLabel(const char* phase) {
 size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
     // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&   s  = link.status();
-    const DaughterProgress& pr = link.progress();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorStatus&   s  = link.status();
+    const AttenuatorProgress& pr = link.progress();
     link.requestEnv();
 
     if (!link.isStatusFresh()) {
@@ -628,11 +628,11 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
         return n;
     }
 
-    if (link.calStart() == DaughterCalStart::PENDING || VolumeControl::instance().isCalibrationPending()) {
+    if (link.calStart() == AttenuatorCalStart::PENDING || VolumeControl::instance().isCalibrationPending()) {
         addLine(lines, n, maxLines, "Starting...");
         return n;
     }
-    if (link.calStart() == DaughterCalStart::REJECTED) {
+    if (link.calStart() == AttenuatorCalStart::REJECTED) {
         addLine(lines, n, maxLines, "Did not start:");
         addWrapped(lines, n, maxLines, "  ", link.getCalStartError());
         return n;
@@ -640,10 +640,10 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
 
     // Idle: the result of the last calibration, and of the last verify.
     addLine(lines, n, maxLines, "Result: %s", calStateText(s.cal));
-    const DaughterVerify& vr = link.verifyResult();
+    const AttenuatorVerify& vr = link.verifyResult();
     if (vr.valid && vr.seq > 0) addLine(lines, n, maxLines, "Verify: %s", vr.verdict);
     if (s.lastCal[0]) addLine(lines, n, maxLines, "Last: %s", s.lastCal);
-    if (s.cal == DaughterCalState::ERR && s.hasErr) addWrapped(lines, n, maxLines, "  ", s.err);
+    if (s.cal == AttenuatorCalState::ERR && s.hasErr) addWrapped(lines, n, maxLines, "  ", s.err);
     if (link.env().valid) addLine(lines, n, maxLines, "Match %s dB", link.env().match);
     char a[12];
     formatTenths(a, sizeof(a), s.rangeDb);
@@ -654,13 +654,13 @@ size_t fillCalibrationProgress(char (*lines)[kInfoLineLen], size_t maxLines) {
 
 // Calibration -> Temperature: the driver block's NTC (the
 // temperature the thermal compensation works from), the change since the
-// last calibration, and whether the daughter recommends a resync (rev 13/14).
+// last calibration, and whether the attenuator recommends a resync (rev 13/14).
 size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     link.requestEnv();
-    const DaughterEnv&    e = link.env();
-    const DaughterStatus& s = link.status();
+    const AttenuatorEnv&    e = link.env();
+    const AttenuatorStatus& s = link.status();
     if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!e.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
 
@@ -690,15 +690,15 @@ size_t fillTemperature(char (*lines)[kInfoLineLen], size_t maxLines) {
     return n;
 }
 
-// Calibration -> Learning: the daughter's thermal learning
+// Calibration -> Learning: the attenuator's thermal learning
 // (rev 9 LEARN) -- how many resyncs it has, how far the block temperature
 // has varied, and the per-side fit against the bar it must clear.
 size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
     // Lines fit kInfoCols (23) characters: the page is shown large.
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     link.requestLearn();
-    const DaughterLearn& l = link.learn();
+    const AttenuatorLearn& l = link.learn();
     if (!link.isStatusFresh()) {
         addLine(lines, n, maxLines, "No reply from attenuator");
         return n;
@@ -721,9 +721,9 @@ size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
 // Calibration -> Forget (rev 9 FORGET). Cancel is first and
 // focused; picking one of the others shows the Status page, where the ~3 s
 // of BUSY and the resulting state can be watched.
-void menuAction_ForgetCal()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::CAL);  Console::log("Menu", "FORGET CAL requested"); }
-void menuAction_ForgetComp() { VolumeControl::instance().forget(DaughterBoardLink::Forget::COMP); Console::log("Menu", "FORGET COMP requested"); }
-void menuAction_ForgetAll()  { VolumeControl::instance().forget(DaughterBoardLink::Forget::ALL);  Console::log("Menu", "FORGET ALL requested"); }
+void menuAction_ForgetCal()  { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::CAL);  Console::log("Menu", "FORGET CAL requested"); }
+void menuAction_ForgetComp() { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::COMP); Console::log("Menu", "FORGET COMP requested"); }
+void menuAction_ForgetAll()  { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::ALL);  Console::log("Menu", "FORGET ALL requested"); }
 
 const MenuValueOption kForgetOptions[] = {
     { "Cancel",      nullptr,               nullptr },
@@ -749,51 +749,51 @@ void limitsDigit(const int16_t*, uint8_t, int16_t* lo, int16_t* hi) { *lo = 0; *
 // The audio model the steps are solved for: the source's output impedance
 // (the splitter -- about 300 ohm for the JFET splitter, 47 for an op-amp one)
 // and the load after the attenuator (the amplifier input; 0 = unloaded).
-// Each editor opens on the daughter's MODEL value; confirming offers Cancel /
-// Apply, since applying a different value makes the daughter CAL=STALE
+// Each editor opens on the attenuator's MODEL value; confirming offers Cancel /
+// Apply, since applying a different value makes the attenuator CAL=STALE
 // (volume muted) until a calibration re-solves -- quick, no full scan.
 
 uint32_t g_editSrc  = 0;
 uint32_t g_editLoad = 0;
 
 void describeOhms(char* out, size_t outSize, int32_t ohms, bool zeroIsUnloaded) {
-    DaughterBoardLink::instance().requestModel();
+    AttenuatorBoardLink::instance().requestModel();
     if (ohms < 0)                         snprintf(out, outSize, "--");
     else if (ohms == 0 && zeroIsUnloaded) snprintf(out, outSize, "unloaded");
     else                                  snprintf(out, outSize, "%ld ohm", static_cast<long>(ohms));
 }
 
 bool loadSrc(int16_t* v) {
-    const DaughterModel& m = DaughterBoardLink::instance().model();
-    DaughterBoardLink::instance().requestModel();
-    if (!m.valid || m.src < 0 || DaughterBoardLink::instance().status().busy) return false;
+    const AttenuatorModel& m = AttenuatorBoardLink::instance().model();
+    AttenuatorBoardLink::instance().requestModel();
+    if (!m.valid || m.src < 0 || AttenuatorBoardLink::instance().status().busy) return false;
     splitDigits(static_cast<uint32_t>(m.src > 9999 ? 9999 : m.src), v, 4);
     return true;
 }
 bool saveSrc(const int16_t* v) { g_editSrc = joinDigits(v, 4); return true; }
-void describeSrc(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink::instance().model().src, false); }
+void describeSrc(char* out, size_t n) { describeOhms(out, n, AttenuatorBoardLink::instance().model().src, false); }
 
 bool loadLoad(int16_t* v) {
-    const DaughterModel& m = DaughterBoardLink::instance().model();
-    DaughterBoardLink::instance().requestModel();
-    if (!m.valid || m.load < 0 || DaughterBoardLink::instance().status().busy) return false;
+    const AttenuatorModel& m = AttenuatorBoardLink::instance().model();
+    AttenuatorBoardLink::instance().requestModel();
+    if (!m.valid || m.load < 0 || AttenuatorBoardLink::instance().status().busy) return false;
     splitDigits(static_cast<uint32_t>(m.load > 999999 ? 999999 : m.load), v, 6);
     return true;
 }
 bool saveLoad(const int16_t* v) {
     g_editLoad = joinDigits(v, 6);
-    if (g_editLoad > 0 && g_editLoad < 1000) g_editLoad = 1000; // the daughter takes 0 (unloaded) or 1000 and up
+    if (g_editLoad > 0 && g_editLoad < 1000) g_editLoad = 1000; // the attenuator takes 0 (unloaded) or 1000 and up
     return true;
 }
-void describeLoad(char* out, size_t n) { describeOhms(out, n, DaughterBoardLink::instance().model().load, true); }
+void describeLoad(char* out, size_t n) { describeOhms(out, n, AttenuatorBoardLink::instance().model().load, true); }
 
 void menuAction_ApplySrc() {
-    if (static_cast<int32_t>(g_editSrc) == DaughterBoardLink::instance().model().src) return; // unchanged
+    if (static_cast<int32_t>(g_editSrc) == AttenuatorBoardLink::instance().model().src) return; // unchanged
     VolumeControl::instance().setModelSource(g_editSrc);
     Console::log("Menu", "Source impedance -> %lu ohm", static_cast<unsigned long>(g_editSrc));
 }
 void menuAction_ApplyLoad() {
-    if (static_cast<int32_t>(g_editLoad) == DaughterBoardLink::instance().model().load) return;
+    if (static_cast<int32_t>(g_editLoad) == AttenuatorBoardLink::instance().model().load) return;
     VolumeControl::instance().setModelLoad(g_editLoad);
     Console::log("Menu", "Load impedance -> %lu ohm", static_cast<unsigned long>(g_editLoad));
 }
@@ -807,10 +807,10 @@ const MenuValueOption kApplyLoadOptions[] = { { "Cancel", nullptr, nullptr }, { 
 // Model -> Overview: in use vs solved, and whether a re-solve is needed.
 size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     link.requestModel();
-    const DaughterModel&  m = link.model();
-    const DaughterStatus& s = link.status();
+    const AttenuatorModel&  m = link.model();
+    const AttenuatorStatus& s = link.status();
     if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!m.valid)              { addLine(lines, n, maxLines, "Waiting for data...");    return n; }
     auto ohms = [](char* b, size_t sz, int32_t v, bool unl) {
@@ -835,7 +835,7 @@ size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
         }
     }
     addLine(lines, n, maxLines, "Cal: %s", calStateText(s.cal));
-    if (s.cal == DaughterCalState::STALE) addLine(lines, n, maxLines, "Calibrate to re-solve");
+    if (s.cal == AttenuatorCalState::STALE) addLine(lines, n, maxLines, "Calibrate to re-solve");
     return n;
 }
 
@@ -843,10 +843,10 @@ size_t fillModelInfo(char (*lines)[kInfoLineLen], size_t maxLines) {
 // settling -- deeper Rtotal sits the series cell darker at the quiet steps,
 // where it's slowest. Shown from MODEL's AUTO=; choosing one sends SET AUTO
 // and shows the Model overview (CAL may go STALE: a calibration re-solves).
-void menuSet_AutoSnappy()   { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::SNAPPY);   Console::log("Menu", "SET AUTO SNAPPY"); }
-void menuSet_AutoBalanced() { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::BALANCED); Console::log("Menu", "SET AUTO BALANCED"); }
-void menuSet_AutoDeep()     { VolumeControl::instance().setAutoPref(DaughterBoardLink::AutoPref::DEEP);     Console::log("Menu", "SET AUTO DEEP"); }
-bool autoPrefIs(const char* p) { DaughterBoardLink::instance().requestModel(); return !strcmp(DaughterBoardLink::instance().model().autoPref, p); }
+void menuSet_AutoSnappy()   { VolumeControl::instance().setAutoPref(AttenuatorBoardLink::AutoPref::SNAPPY);   Console::log("Menu", "SET AUTO SNAPPY"); }
+void menuSet_AutoBalanced() { VolumeControl::instance().setAutoPref(AttenuatorBoardLink::AutoPref::BALANCED); Console::log("Menu", "SET AUTO BALANCED"); }
+void menuSet_AutoDeep()     { VolumeControl::instance().setAutoPref(AttenuatorBoardLink::AutoPref::DEEP);     Console::log("Menu", "SET AUTO DEEP"); }
+bool autoPrefIs(const char* p) { AttenuatorBoardLink::instance().requestModel(); return !strcmp(AttenuatorBoardLink::instance().model().autoPref, p); }
 bool menuIsActive_AutoSnappy()   { return autoPrefIs("SNAPPY"); }
 bool menuIsActive_AutoBalanced() { return autoPrefIs("BALANCED"); }
 bool menuIsActive_AutoDeep()     { return autoPrefIs("DEEP"); }
@@ -865,15 +865,15 @@ constexpr size_t kModelSubmenuItemCount = sizeof(kModelSubmenuItems) / sizeof(kM
 
 // Offered right after the Rtotal selector is confirmed: Cancel (focused)
 // or start -- the second label names the Rtotal, then the progress page.
-// Calibration. "Rtotal" shows the daughter's current Rtotal;
+// Calibration. "Rtotal" shows the attenuator's current Rtotal;
 // entering it opens the selector on that value, confirming offers Cancel /
 // Start R=..., and Start shows the progress page.
 // Calibration > Last Verify: the newest CAL VERIFY run (rev 20 VERIFY RESULT).
 size_t fillVerifyResult(char (*lines)[kInfoLineLen], size_t maxLines) {
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     link.requestVerifyResult();
-    const DaughterVerify& v = link.verifyResult();
+    const AttenuatorVerify& v = link.verifyResult();
     if (!link.isStatusFresh()) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (link.status().proto < 20) { addLine(lines, n, maxLines, "Needs protocol 20"); return n; }
     if (!v.valid) { addLine(lines, n, maxLines, "Waiting for data"); return n; }
@@ -903,11 +903,11 @@ size_t fillVerifyResult(char (*lines)[kInfoLineLen], size_t maxLines) {
 // label is the Rtotal ("970K (auto)") or the state, the line under it what
 // to know (a resync advised, a run's progress...).
 void describeCalibration(char* label, size_t ls, char* hint, size_t hs, uint16_t* color) {
-    DaughterBoardLink& link = DaughterBoardLink::instance();
-    const DaughterStatus&   s  = link.status();
-    const DaughterEnv&      e  = link.env();
-    const DaughterProgress& pr = link.progress();
-    const DaughterVerify&   v  = link.verifyResult();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    const AttenuatorStatus&   s  = link.status();
+    const AttenuatorEnv&      e  = link.env();
+    const AttenuatorProgress& pr = link.progress();
+    const AttenuatorVerify&   v  = link.verifyResult();
     if (!link.isStatusFresh()) {
         snprintf(label, ls, "No link");
         snprintf(hint, hs, "attenuator not answering"); *color = COLOR_RED;
@@ -921,13 +921,13 @@ void describeCalibration(char* label, size_t ls, char* hint, size_t hs, uint16_t
         return;
     }
     switch (s.cal) {
-        case DaughterCalState::NONE:
-        case DaughterCalState::CHANGED:
+        case AttenuatorCalState::NONE:
+        case AttenuatorCalState::CHANGED:
             snprintf(label, ls, "No calibration");
-            snprintf(hint, hs, "%s", s.cal == DaughterCalState::CHANGED ? "new cells: calibrate" : "calibrate to play");
+            snprintf(hint, hs, "%s", s.cal == AttenuatorCalState::CHANGED ? "new cells: calibrate" : "calibrate to play");
             *color = COLOR_RED;
             return;
-        case DaughterCalState::ERR:
+        case AttenuatorCalState::ERR:
             snprintf(label, ls, "Calibration error");
             snprintf(hint, hs, "%s", s.hasErr ? s.err : "see Status");
             *color = COLOR_RED;
@@ -935,7 +935,7 @@ void describeCalibration(char* label, size_t ls, char* hint, size_t hs, uint16_t
         default: break;
     }
     snprintf(label, ls, "%luK (%s)", static_cast<unsigned long>((s.rOhms + 500) / 1000), s.rAuto ? "auto" : "manual");
-    if (s.cal == DaughterCalState::STALE) { snprintf(hint, hs, "re-solve needed: Start"); *color = COLOR_YELLOW; return; }
+    if (s.cal == AttenuatorCalState::STALE) { snprintf(hint, hs, "re-solve needed: Start"); *color = COLOR_YELLOW; return; }
     if (e.valid && e.resync == 1)         { snprintf(hint, hs, "resync advised: Start");  *color = COLOR_YELLOW; return; }
     if (v.valid && v.seq > 0 && !strcmp(v.verdict, "CHECK")) { snprintf(hint, hs, "verify: check console"); *color = COLOR_RED; return; }
     if (e.valid && e.resync == 0 && !strcmp(e.why, "WARMING")) { snprintf(hint, hs, "resync after warm-up"); return; }
@@ -947,19 +947,19 @@ void describeCalStart(char*, size_t, char* hint, size_t hs, uint16_t*) {
     snprintf(hint, hs, "choose R, then it runs");
 }
 void describeCalVerify(char*, size_t, char* hint, size_t hs, uint16_t* color) {
-    if (DaughterBoardLink::instance().status().cal != DaughterCalState::OK) { snprintf(hint, hs, "needs a calibration"); *color = COLOR_RED; return; }
+    if (AttenuatorBoardLink::instance().status().cal != AttenuatorCalState::OK) { snprintf(hint, hs, "needs a calibration"); *color = COLOR_RED; return; }
     snprintf(hint, hs, "8 min, amp muted, no change");
 }
 void describeCalFull(char*, size_t, char* hint, size_t hs, uint16_t*) {
     snprintf(hint, hs, "6 min, re-measures cells");
 }
 void menuAction_CalVerify() {
-    const DaughterStatus& s = DaughterBoardLink::instance().status();
-    if (s.running() || s.cal != DaughterCalState::OK) return;   // the page says why
+    const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
+    if (s.running() || s.cal != AttenuatorCalState::OK) return;   // the page says why
     VolumeControl::instance().calibrate(VolumeControl::CalR::VERIFY);
 }
 void menuAction_CalFull() {
-    if (DaughterBoardLink::instance().status().running()) return;
+    if (AttenuatorBoardLink::instance().status().running()) return;
     VolumeControl::instance().calibrate(VolumeControl::CalR::FULL);
 }
 
@@ -988,7 +988,7 @@ const MenuItem kCalibrationSubmenuItems[] = {
 // screen state).
 void menuAction_DisplayTest() { DisplayTestScreen::requestStart(); }
 
-// Amp Mute: the daughter's AMP_MUTE, by hand. The power sequence drives it
+// Amp Mute: the attenuator's AMP_MUTE, by hand. The power sequence drives it
 // too (muted in standby, released at the end of power-on), so this is for
 // checks while the unit is on.
 void menuSet_AmpMuteOn()  { VolumeControl::instance().ampMuteOn();  Console::log("Menu", "AMP_MUTE ON"); }
@@ -1000,13 +1000,13 @@ const MenuValueOption kAmpMuteOptions[] = {
     { "Off", menuSet_AmpMuteOff, menuIsActive_AmpMuteOff },
 };
 
-// Compensation: the daughter's thermal compensation (COMP ON/OFF), e.g. for
-// an A/B listen. The daughter doesn't store it -- it boots ON. Shown from
+// Compensation: the attenuator's thermal compensation (COMP ON/OFF), e.g. for
+// an A/B listen. The attenuator doesn't store it -- it boots ON. Shown from
 // ENV's COMP (ON / PART / LEARNING count as on), polled while the menu reads it.
 void menuSet_CompOn()  { VolumeControl::instance().setCompensation(true);  Console::log("Menu", "COMP ON"); }
 void menuSet_CompOff() { VolumeControl::instance().setCompensation(false); Console::log("Menu", "COMP OFF"); }
-bool menuIsActive_CompOn()  { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 1; }
-bool menuIsActive_CompOff() { DaughterBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 0; }
+bool menuIsActive_CompOn()  { AttenuatorBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 1; }
+bool menuIsActive_CompOff() { AttenuatorBoardLink::instance().requestEnv(); return VolumeControl::instance().compensationState() == 0; }
 const MenuValueOption kCompOptions[] = {
     { "On",  menuSet_CompOn,  menuIsActive_CompOn  },
     { "Off", menuSet_CompOff, menuIsActive_CompOff },
@@ -1032,18 +1032,18 @@ size_t fillMasterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
     addLine(lines, n, maxLines, "UID %s", SystemInfo::uniqueId());
     if (*SystemInfo::coreVersion()) addLine(lines, n, maxLines, "Core %s", SystemInfo::coreVersion());
     if (*SystemInfo::sdkVersion())  addLine(lines, n, maxLines, "SDK %s", SystemInfo::sdkVersion());
-    addLine(lines, n, maxLines, "Expects protocol %u", DAUGHTER_PROTO_EXPECTED);
+    addLine(lines, n, maxLines, "Expects protocol %u", ATTENUATOR_PROTO_EXPECTED);
     unsigned long up = millis() / 1000;
     addLine(lines, n, maxLines, "Up %lud %02lu:%02lu:%02lu", up / 86400, (up / 3600) % 24, (up / 60) % 60, up % 60);
     return n;
 }
 
-// The volume (daughter) board, from its VER reply (rev 15).
-size_t fillDaughterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
+// The volume (attenuator) board, from its VER reply (rev 15).
+size_t fillAttenuatorVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
     size_t n = 0;
-    DaughterBoardLink& link = DaughterBoardLink::instance();
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
     link.requestVer();
-    const DaughterVersion& v = link.version();
+    const AttenuatorVersion& v = link.version();
     if (!link.isStatusFresh() && !v.valid) { addLine(lines, n, maxLines, "No reply from attenuator"); return n; }
     if (!v.valid) {
         if (link.status().valid && link.status().proto < 15) addLine(lines, n, maxLines, "Needs protocol 15+");
@@ -1081,7 +1081,7 @@ size_t fillDaughterVersion(char (*lines)[kInfoLineLen], size_t maxLines) {
 
 const MenuItem kVersionsSubmenuItems[] = {
     { "Master",       MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillMasterVersion },
-    { "Attenuator", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillDaughterVersion },
+    { "Attenuator", MenuItemType::INFO, nullptr, nullptr, 0, nullptr, 0, fillAttenuatorVersion },
 };
 
 // Diagnostics > Debug Output: the serial debug lines, at run time (not saved).
@@ -1222,7 +1222,7 @@ const MenuValueOption kVolumeDisplayOptions[] = {
 // Settings -> Balance (rev 18 BAL): -16..+16 in 0.25 dB (+-4 dB). The slider
 // shows where the sound sits: right of centre lowers the LEFT channel
 // (positive BAL), left of centre the right one. Applied live; saved with the
-// settings (written when the menu closes) and sent at the daughter's power-up.
+// settings (written when the menu closes) and sent at the attenuator's power-up.
 int16_t balanceGet()          { return VolumeControl::instance().balance(); }
 void    balanceSet(int16_t v) {
     VolumeControl::instance().setBalance(static_cast<int8_t>(v));

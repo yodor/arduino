@@ -14,7 +14,7 @@ void PowerControl::init() {
     // up -- main.cpp logs the state later.)
     // Always starts in standby, relay off. With POWER_ON_AT_BOOT, update()
     // then runs the normal power-on sequence: since protocol revision 10 the
-    // daughter keeps the amp muted from power-up until the master releases
+    // attenuator keeps the amp muted from power-up until the master releases
     // it, so jumping straight to ON would leave the amp muted for good.
     digitalWrite(RELAY_CTRL_PIN, LOW);
     pinMode(RELAY_CTRL_PIN, OUTPUT);

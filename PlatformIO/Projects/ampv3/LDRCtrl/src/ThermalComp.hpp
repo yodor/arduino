@@ -56,8 +56,21 @@ inline Hint resyncHintBase(bool compOn, float dT, float spanC) {
 // on). warming: the amp was switched on less than HINT_WARMUP_MS ago, or the block still moves
 // faster than HINT_STEADY_C per 10 min: a resync now would be out of date within minutes, so a
 // hint that would apply is reported as WARMING (not a recommendation yet). SEEK is never delayed.
-constexpr uint32_t HINT_WARMUP_MS = 15UL * 60UL * 1000UL;
-constexpr float    HINT_STEADY_C = 0.25f;     // per 10 minutes
+constexpr uint32_t HINT_WARMUP_MS = 10UL * 60UL * 1000UL;   // compensation active: after the amp is switched on
+constexpr float    HINT_STEADY_C = 0.5f;                     // compensation active: per 10 minutes
+constexpr float    HINT_STEADY_LEARNING_C = 1.0f;            // learning: only a fast change is held (per 10 min)
+
+// Whether to hold a recommendation as WARMING. It depends on the state:
+//  - LEARNING (no trusted compensation yet): a resync at a new temperature is exactly what the
+//    learning needs, so warm-up is NOT held -- only a block moving faster than 1 C per 10 min (a
+//    resync then cannot measure cleanly). The trend being unknown (first minutes) is no reason.
+//  - COMPENSATION ACTIVE: the drift is being corrected, and a resync mid-warm-up would soon be out
+//    of date -- held for 10 min after the amp is switched on, and while the block moves faster than
+//    0.5 C per 10 min (or the trend is still unknown).
+inline bool warmingHold(bool compOn, uint32_t msSinceAmpOn, float ratePer10Min) {
+  if (!compOn) return !isnan(ratePer10Min) && fabsf(ratePer10Min) > HINT_STEADY_LEARNING_C;
+  return msSinceAmpOn < HINT_WARMUP_MS || isnan(ratePer10Min) || fabsf(ratePer10Min) > HINT_STEADY_C;
+}
 // verifyResync: the newest VERIFY found the table off and no calibration ran since (a measured
 // finding, but held during warm-up like the temperature reasons: a resync then would not last).
 inline Hint resyncHint(bool compOn, float dT, float spanC, bool seekFailed, bool standby = false, bool warming = false,

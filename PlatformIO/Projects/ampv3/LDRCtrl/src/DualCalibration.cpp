@@ -1216,6 +1216,10 @@ void characterize(LDRVolume *channels[], uint8_t count, Stream &out, const char 
   // The quiet-end series point (shared by the quietest steps), placed with settled
   // readings -- the quick trim above leaves the deep series duties alone.
   settleQuietPoint(act, na, lab, out);
+  // The walk was measured minutes earlier; on a cold start the block warms during the
+  // characterization, so its middle steps would drive the cells brighter than they now need
+  // (louder). The resync's middle-depth probes bring them to the temperature it ends at.
+  refineDeepSteps(act, na, lab, out);
   for (uint8_t c = 0; c < na; c++) {
     const uint8_t sd = (lab && lab[c] == 'R') ? 1 : 0;
     Results::cal.guardShunt[sd] = act[c]->guardShunt(out, lab ? lab[c] : '?');

@@ -1,5 +1,4 @@
 #include "MenuScreen.hpp"
-#include "MenuFont.hpp"
 #include "InputEngine.hpp"
 #include "Renderer.hpp"
 #include <cstdio>
@@ -16,11 +15,22 @@ constexpr int16_t kCharH = 8;
 constexpr uint8_t  kHeaderSize  = 2;    // the header of INFO pages, editors, color, slider
 constexpr int16_t  kHeaderY     = 4;
 constexpr int16_t  kDividerY    = 24;
-// The list view (one item per screen) uses the proportional MenuFonts:
-constexpr int16_t  kListHeaderY  = 2;   // 16 px line box
-constexpr int16_t  kListDividerY = 21;
-constexpr int16_t  kListLabelMid = 56;  // vertical centre of the item's name
-constexpr int16_t  kListHintY    = 96;  // top of the line under it (27 px box)
+// The list view follows the Info screen's three bands: the header (as above),
+// the item's name at the size of its big dB number, and the line under it at
+// the size and grey of its unit label -- two rows when it needs them.
+constexpr uint8_t  kItemSize    = 5;    // 30x40 px characters: 14 fit across
+constexpr int16_t  kItemY       = 32;
+constexpr int16_t  kItemMargin  = 4;
+constexpr uint8_t  kSubSize     = 3;    // 18x24 px characters: 23 per row
+constexpr int16_t  kSubCols     = 23;
+constexpr int16_t  kSubY        = 95;   // one row
+constexpr int16_t  kSubY1       = 81;   // two rows (24 px glyphs, 4 px apart)
+constexpr int16_t  kSubY2       = 109;
+// A name too long for the width scrolls: a pause, a slide to its end, a
+// pause, back to the start.
+constexpr uint32_t kMarqueePauseMs = 1500;
+constexpr uint32_t kMarqueeStepMs  = 40;  // 2 px per step: 50 px/s
+constexpr int16_t  kMarqueeStepPx  = 2;
 constexpr uint16_t kHeaderColor = 0x8410; // gray
 
 // The focused item: big and centered, with a hint line under it.
@@ -367,6 +377,8 @@ void MenuScreen::render() {
     if (m_inInfo && (millis() - m_lastInfoFillMs >= kInfoRefreshMs)) {
         if (refillInfo()) m_dirty = true;
     }
+    // A long item name scrolls (list view only).
+    if (!m_dirty && !m_inInfo && !m_inEditor && !m_inColor && !m_inSlider) marqueeStep();
     // A focused item with a live label: re-ask twice a second, redraw on change.
     if (!m_dirty && !m_inInfo && !m_inEditor && !m_inColor && !m_inSlider && !m_inValueChoice &&
         millis() - m_describeCheckMs >= 500) {
@@ -385,34 +397,72 @@ void MenuScreen::render() {
 }
 
 // Header: location on the left, "n/total" on the right, divider under it.
-// The list view's header: the title left, "3/12" and arrows right, in the
-// small proportional font; a thin divider below.
-void MenuScreen::drawListHeader(const char* title, size_t index, size_t count) {
-    Arduino_GFX* gfx = Renderer::instance().gfx();
-    menuDrawText(gfx, kMenuFontHeader, 6, kListHeaderY, title, kHeaderColor);
-    if (count > 0) {
-        char pos[12];
-        snprintf(pos, sizeof(pos), "%u/%u", static_cast<unsigned>(index + 1), static_cast<unsigned>(count));
-        int16_t posX = SCREEN_WIDTH - 6 - menuTextWidth(kMenuFontHeader, pos);
-        menuDrawText(gfx, kMenuFontHeader, posX, kListHeaderY, pos, kHeaderColor);
-        if (count > 1) {
-            constexpr int16_t w = 10, h = 5;
-            int16_t x = posX - w - 8, y = kListHeaderY + 2;
-            gfx->fillTriangle(x, y + h, x + w, y + h, x + w / 2, y, kHeaderColor);
-            gfx->fillTriangle(x, y + h + 3, x + w, y + h + 3, x + w / 2, y + 2 * h + 3, kHeaderColor);
-        }
+// The item's name, centred at the big size -- or, if it's wider than the
+// screen, left-aligned and scrolled by marqueeStep().
+void MenuScreen::drawItemName(const char* text) {
+    snprintf(m_marqueeText, sizeof(m_marqueeText), "%s", text);
+    int16_t w = textWidth(m_marqueeText, kItemSize);
+    m_marqueeActive = (w > SCREEN_WIDTH - 2 * kItemMargin);
+    m_marqueeOffset = 0;
+    m_marqueeAtEnd  = false;
+    m_marqueeMs     = millis();
+    if (!m_marqueeActive) {
+        drawCentered(Renderer::instance().gfx(), m_marqueeText, kItemSize, kItemY, COLOR_WHITE);
+    } else {
+        drawMarquee();
     }
-    gfx->drawFastHLine(0, kListDividerY, SCREEN_WIDTH, COLOR_DIM_GREEN);
 }
 
-// A line of the list view, centred; the next smaller font if it doesn't fit.
-void MenuScreen::drawListLine(const char* text, bool big, int16_t y, uint16_t color) {
+void MenuScreen::drawMarquee() {
     Arduino_GFX* gfx = Renderer::instance().gfx();
-    const MenuFont* f = big ? &kMenuFontLabel : &kMenuFontHint;
-    if (menuTextWidth(*f, text) > SCREEN_WIDTH - 12) f = big ? &kMenuFontHint : &kMenuFontHeader;
-    if (big) y = kListLabelMid - f->height / 2;   // centred on the name's line
-    int16_t x = (SCREEN_WIDTH - menuTextWidth(*f, text)) / 2;
-    menuDrawText(gfx, *f, x < 0 ? 0 : x, y, text, color);
+    gfx->setTextWrap(false);
+    gfx->setTextSize(kItemSize);
+    gfx->setTextColor(COLOR_WHITE, COLOR_BLACK);   // each cell paints its own background: no flicker
+    gfx->setCursor(kItemMargin - m_marqueeOffset, kItemY);
+    gfx->print(m_marqueeText);
+    gfx->setTextWrap(true);
+    constexpr int16_t h = kCharH * kItemSize;
+    gfx->fillRect(0, kItemY, kItemMargin, h, COLOR_BLACK);                           // keep the margins clear
+    gfx->fillRect(SCREEN_WIDTH - kItemMargin, kItemY, kItemMargin, h, COLOR_BLACK);
+}
+
+// Called every frame from render(): moves a long name along.
+void MenuScreen::marqueeStep() {
+    if (!m_marqueeActive) return;
+    uint32_t now = millis();
+    int16_t maxOffset = textWidth(m_marqueeText, kItemSize) - (SCREEN_WIDTH - 2 * kItemMargin);
+    if (m_marqueeOffset == 0 && !m_marqueeAtEnd) {
+        if (now - m_marqueeMs < kMarqueePauseMs) return;             // pause at the start
+    } else if (m_marqueeAtEnd) {
+        if (now - m_marqueeMs < kMarqueePauseMs) return;             // pause at the end, then back
+        m_marqueeOffset = 0;
+        m_marqueeAtEnd  = false;
+        m_marqueeMs     = now;
+        drawMarquee();
+        return;
+    }
+    if (now - m_marqueeMs < kMarqueeStepMs) return;
+    m_marqueeMs     = now;
+    m_marqueeOffset = static_cast<int16_t>(m_marqueeOffset + kMarqueeStepPx);
+    if (m_marqueeOffset >= maxOffset) { m_marqueeOffset = maxOffset; m_marqueeAtEnd = true; }
+    drawMarquee();
+}
+
+// The line under the name: one row, or two split at a space; longer is cut.
+void MenuScreen::drawSubText(const char* text, uint16_t color) {
+    Arduino_GFX* gfx = Renderer::instance().gfx();
+    size_t len = strlen(text);
+    if (len <= static_cast<size_t>(kSubCols)) { drawCentered(gfx, text, kSubSize, kSubY, color); return; }
+    size_t cut = kSubCols;
+    while (cut > 0 && text[cut] != ' ') --cut;
+    if (cut == 0) cut = kSubCols;
+    char row1[kSubCols + 1], row2[kSubCols + 1];
+    snprintf(row1, sizeof(row1), "%.*s", static_cast<int>(cut), text);
+    const char* rest = text + cut;
+    while (*rest == ' ') ++rest;
+    snprintf(row2, sizeof(row2), "%s", rest);
+    drawCentered(gfx, row1, kSubSize, kSubY1, color);
+    drawCentered(gfx, row2, kSubSize, kSubY2, color);
 }
 
 void MenuScreen::drawHeader(const char* title, size_t index, size_t count) {
@@ -444,6 +494,7 @@ void MenuScreen::drawHeader(const char* title, size_t index, size_t count) {
 void MenuScreen::drawFull() {
     Arduino_GFX* gfx = Renderer::instance().gfx();
     if (!gfx) return;
+    m_marqueeActive = false;   // set again below by the list view, if needed
     if (m_inInfo)   { drawInfo();       return; }
     if (m_inEditor) { drawEditorFull(); return; }
     if (m_inColor)  { drawColorFull();  return; }
@@ -453,8 +504,9 @@ void MenuScreen::drawFull() {
 
     const StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) {
-        drawListHeader("Menu", 0, 0);
-        drawListLine("(empty)", true, 0, kHintColor);
+        m_marqueeActive = false;
+        drawHeader("MENU", 0, 0);
+        drawCentered(gfx, "(empty)", kItemSize, kItemY, kHintColor);
         return;
     }
     const MenuItem& item = frame.items[frame.focusedIdx];
@@ -473,7 +525,7 @@ void MenuScreen::drawFull() {
         index = m_optionIdx;
         count = item.optionCount;
     } else {
-        title = (m_stackDepth == 1) ? "Menu" : m_stack[m_stackDepth - 2].items[m_stack[m_stackDepth - 2].focusedIdx].label;
+        title = (m_stackDepth == 1) ? "MENU" : m_stack[m_stackDepth - 2].items[m_stack[m_stackDepth - 2].focusedIdx].label;
         label = item.label;
         index = frame.focusedIdx;
         count = frame.itemCount;
@@ -546,12 +598,12 @@ void MenuScreen::drawFull() {
     }
     rememberDescribe(item);
 
-    drawListHeader(title, index, count);
-    drawListLine(label, true, 0, COLOR_WHITE);
-    if (hint[0]) drawListLine(hint, false, kListHintY, hintColor);
+    drawHeader(title, index, count);
+    drawItemName(label);
+    if (hint[0]) drawSubText(hint, hintColor);
     if (!m_inValueChoice && item.type == MenuItemType::COLOR && item.color && item.color->get) {
-        constexpr int16_t w = 96, h = 20;
-        gfx->fillRect((SCREEN_WIDTH - w) / 2, kListHintY + 3, w, h, item.color->get());
+        constexpr int16_t w = 96, h = 24;
+        gfx->fillRect((SCREEN_WIDTH - w) / 2, kSubY, w, h, item.color->get());
     }
 
 }

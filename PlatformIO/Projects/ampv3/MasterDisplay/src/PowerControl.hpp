@@ -5,7 +5,7 @@
 // whose drain pulls the SSR's input -- pin HIGH = FET on = SSR on = amp
 // powered. PWR_BTN_LED_PIN (the power button's LED) follows the relay.
 //
-// The master and the daughter are always powered (only the physical AC
+// The master and the attenuator are always powered (only the physical AC
 // switch cuts them); "off" here means STANDBY: amp mains off, amp muted.
 //
 //   switching on:  mute the amp (AMP_MUTE ON, confirmed or POWER_MUTE_WAIT_MS)
@@ -19,7 +19,7 @@
 // isn't saved: the unit boots into standby, or -- with POWER_ON_AT_BOOT
 // (Config.hpp) -- runs the power-on sequence right away.
 //
-// Fits the daughter's revision-10 power-up: it boots with both mutes on and
+// Fits the attenuator's revision-10 power-up: it boots with both mutes on and
 // never releases them itself. AMP_MUTE is released here (end of the on
 // sequence); the LDR mute is released by VolumeControl once CAL=OK, and is
 // deliberately left alone in standby, so leaving standby is instant and

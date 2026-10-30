@@ -52,8 +52,10 @@ keeps itself right without help:
    **learning** entry: how far the cells' operating point moved, against how much the temperature
    changed.
 3. **The compensation** applies what was learned continuously while listening. The better the
-   learning, the less often a resync is needed; the **resync hint** says when one would help, and
-   waits while the device is still warming up.
+   learning, the less often a resync is needed. The **resync hint** says when one would help: while
+   learning, whenever the block has moved 1 C since the last calibration (warm-up included -- that
+   is exactly the data the learning needs); once the compensation is active, only beyond what it
+   has learned, and not while the device is still warming up.
 4. **Verify** (`CAL VERIFY`) measures how well the table holds and reports what changed since the
    previous run. During development it is the debugging tool; afterwards an occasional health check.
 

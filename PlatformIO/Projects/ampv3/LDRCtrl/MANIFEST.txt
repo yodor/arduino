@@ -1,4 +1,4 @@
-Firmware source package: 2026-10-30j
+Firmware source package: 2026-10-30k
 
 0b22e67b7cb8db07  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
@@ -38,7 +38,7 @@ b0b7a09efe1d991a  src/ConsoleCommands.hpp
 b4baf1bc76555548  src/DividerMath.hpp
 6fb24a6ecd356d2a  src/DriverChannels.cpp
 16438e883cfb58ae  src/DriverChannels.hpp
-174008569975ea9f  src/DualCalibration.cpp
+86b7081f6adbf6b5  src/DualCalibration.cpp
 dbc205660de86cf8  src/DualCalibration.hpp
 9c39b65fb52357e9  src/LDRVolume.cpp
 5e7d562c1fac7022  src/LDRVolume.hpp
@@ -59,8 +59,8 @@ df402d1995852465  src/SerialLink.hpp
 747ef9032cc8ba7a  src/Settings.hpp
 a24f8ccba15df53a  src/SettingsText.hpp
 f908c7e9f7a97b11  src/SweepLadder.hpp
-0dd5010bbe2f3964  src/ThermalComp.cpp
-f95379c65b67abd9  src/ThermalComp.hpp
+607aedf76ff0cfdb  src/ThermalComp.cpp
+c4253849c4457c38  src/ThermalComp.hpp
 4958d7426c3cc8ee  src/ThermalFit.hpp
 61e41d5a240a053f  src/ThermalLog.cpp
 f5e253c98aec62c0  src/ThermalLog.hpp
@@ -68,7 +68,7 @@ f5e253c98aec62c0  src/ThermalLog.hpp
 9505da6c1baa3e88  src/VerifyAnalysis.hpp
 b460553762d4dec4  src/VerifyHistory.cpp
 8cc22650c5e8568c  src/VerifyHistory.hpp
-862ae28881fd62a0  src/Version.hpp
+4cffe54590016eb8  src/Version.hpp
 62cec520f5825c86  src/VersionInfo.cpp
 ec6f3d5bdcd50429  src/VersionInfo.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
@@ -99,9 +99,9 @@ fcad35e58e85d446  test/test_seek_fix.cpp
 c1cd47b900ea0cf9  test/test_verify_verdict.cpp
 02527e09efce114d  test/test_walk_comparison.cpp
 1d653b2b99de660e  test/test_walk_memory.cpp
-c2dd4fb701e33932  test/test_warmup_hint.cpp
+199c2f08d09c9c51  test/test_warmup_hint.cpp
 93f51324e2ec2d9b  tools/protocol_capture.py
 1bba7cee96dcc5e8  platformio.ini
-7816e314881da27b  README.md
+0119c2325e39333a  README.md
 f31950b4f666153c  ldr-attenuator-console.md
-f5dda731a49b6259  ldr-attenuator-protocol.md
+d2f4ee9a0d4d5d2a  ldr-attenuator-protocol.md

@@ -157,7 +157,7 @@ struct LegacyV13 {
     uint16_t autoStandbyThreshold; // input peak, ADC counts
     uint8_t  volumeDisplay;        // VolumeDisplay (Info screen: dB or steps)
     uint8_t  clockFollowTheme;     // 1 = clock colour from the theme, 0 = clockColor
-    int8_t   balance;              // -16..+16 (0.25 dB, positive lowers the left) -- sent to the daughter at its power-up
+    int8_t   balance;              // -16..+16 (0.25 dB, positive lowers the left) -- sent to the attenuator at its power-up
     uint8_t  checksum; // simple additive checksum over every other byte -- catches blank/corrupt/torn-write flash, not cryptographic integrity
 };
 #pragma pack(pop)

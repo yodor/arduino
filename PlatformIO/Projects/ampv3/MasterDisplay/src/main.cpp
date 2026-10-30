@@ -31,7 +31,7 @@
 #include "BeatDetector.hpp"
 #include "RtcClock.hpp"
 #include "MasterConsole.hpp"
-#include "DaughterBoardLink.hpp"
+#include "AttenuatorBoardLink.hpp"
 #include "MenuContent.hpp"
 #include "PersistentSettings.hpp"
 #include "ScreenRegistry.hpp"
@@ -160,7 +160,7 @@ static void autoStandbyUpdate(bool keyActivity) {
 void loop() {
     uint32_t loopStartUs = micros();
 
-    MasterConsole::instance().update(); // USB console + daughter pass-through
+    MasterConsole::instance().update(); // USB console + attenuator pass-through
     Console::service();                 // send the lines core 1 queued
 
     // DOWN's double-click (mute) only outside the menu, the display test and
@@ -194,7 +194,7 @@ void loop() {
         PersistentSettings::instance().saveIfDirty();
     }
     BeatDetector::instance().update(); // tempo estimate, about once a second
-    g_noticeOverlay.watchDaughter(PowerControl::instance().isOn());
+    g_noticeOverlay.watchAttenuator(PowerControl::instance().isOn());
     g_noticeOverlay.update();
 
     // Not on (standby, or a power sequence running): nothing but the power
@@ -320,7 +320,7 @@ void loop() {
     // actual button states, so navigating the menu (which repurposes the
     // same physical volume buttons) never also changes real volume.
     // VolumeControl::update() is still called every loop either way, since
-    // it must keep servicing the daughter board link regardless.
+    // it must keep servicing the attenuator board link regardless.
     // The Display Test menu action fires inside the menu's enter() above.
     if (DisplayTestScreen::consumeStartRequest()) g_views.openDisplayTest();
 
@@ -333,7 +333,7 @@ void loop() {
     bool showInfo     = g_infoScreen.filterFirstVolumePress(wantVolUp, wantVolDown, onInfoScreen);
     VolumeControl::instance().update(wantVolUp, wantVolDown);
 
-    // Info popup: any volume input keeps it up (the daughter's own VOL/DB
+    // Info popup: any volume input keeps it up (the attenuator's own VOL/DB
     // arrive a few ms later via STATUS and update the readout); update() also
     // pops it for changes seen in STATUS and expires it. Not needed while the
     // info screen itself is showing.
@@ -367,7 +367,7 @@ void loop() {
         float elapsedMs    = static_cast<float>(nowMs - g_lastReportMs);
         float fps          = (g_loopStat.count * 1000.0f) / elapsedMs;
 
-        if (DebugFlags::perf && !DaughterBoardLink::instance().isPassthrough()) { // quiet during a pass-through session
+        if (DebugFlags::perf && !AttenuatorBoardLink::instance().isPassthrough()) { // quiet during a pass-through session
             const char* screen = g_views.shownName();
             // RTC time -- one short I2C read, once a second.
             char timeBuf[20] = "--";

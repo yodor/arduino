@@ -112,9 +112,16 @@ private:
     bool m_editorFieldsDirty = false;
     uint32_t m_holdStartMs  = 0;   // handleUpDownButtons(): the held-key repeat
     uint32_t m_lastRepeatMs = 0;
-    // The list view (proportional fonts) and live labels (MenuItem::describe).
-    void drawListHeader(const char* title, size_t index, size_t count);
-    void drawListLine(const char* text, bool big, int16_t y, uint16_t color);
+    // The list view (the Info screen's proportions) and live labels.
+    void drawItemName(const char* text);
+    void drawSubText(const char* text, uint16_t color);
+    void drawMarquee();
+    void marqueeStep();
+    char     m_marqueeText[48] = "";
+    bool     m_marqueeActive   = false;
+    bool     m_marqueeAtEnd    = false;
+    int16_t  m_marqueeOffset   = 0;
+    uint32_t m_marqueeMs       = 0;
     void rememberDescribe(const MenuItem& item);
     bool describeChanged(const MenuItem& item) const;
     uint32_t m_describeHash    = 0;

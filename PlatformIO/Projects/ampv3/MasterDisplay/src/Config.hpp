@@ -5,18 +5,18 @@
 
 // The remote only reports a held volume key as a train of repeat codes
 // (~every 108ms), so a GAIN_UP/GAIN_DOWN counts as "still held" until this
-// long after the last one -- that's what drives the daughter's VOL UP/DOWN
+// long after the last one -- that's what drives the attenuator's VOL UP/DOWN
 // repeats while the key is down. Physical buttons report held directly.
 constexpr unsigned long IR_VOLUME_HOLD_MS = 150;
 
-// Volume and mute are the daughter board's alone (its LDR network; the amp
+// Volume and mute are the attenuator board's alone (its LDR network; the amp
 // mute/boot hold is its own AMP_MUTE).
 
 // Amp mains power (PowerControl): the relay state right after boot. The
 // power key toggles it; it isn't remembered across a power cut.
 constexpr bool POWER_ON_AT_BOOT = false;
 
-// Power sequence (PowerControl): how long to wait for the daughter to
+// Power sequence (PowerControl): how long to wait for the attenuator to
 // confirm the amp is muted before switching mains (it usually confirms in a
 // few ms; this is only the cap if it doesn't answer), and how long the amp
 // gets to power up with mains on before it's unmuted.
@@ -36,62 +36,70 @@ constexpr int16_t  AUTO_STANDBY_AUDIO_THRESHOLD = 24;
 constexpr uint32_t AUTO_STANDBY_CHECK_MS        = 250;
 constexpr uint8_t  STANDBY_DIM_PERCENT  = 15;
 
-// UART daughter board link (pins in Pins.hpp).
-constexpr uint32_t DAUGHTER_UART_BAUD = 115200; // confirm against the daughter board's actual firmware
+// UART attenuator board link (pins in Pins.hpp).
+constexpr uint32_t ATTENUATOR_UART_BAUD = 115200; // confirm against the attenuator board's actual firmware
 
 // Protocol revision 7: the volume range is no longer a master-side
-// constant -- it comes from the daughter's STATUS line (VOLMIN/VOLMAX,
+// constant -- it comes from the attenuator's STATUS line (VOLMIN/VOLMAX,
 // 0-based, normally 0..31), so nothing here hard-codes it.
 
-// Protocol revision this master is written for. A daughter reporting a
+// Protocol revision this master is written for. An attenuator reporting a
 // different PROTO= is logged loudly (the protocol doc says a master
 // written for another revision will misbehave), but still parsed.
-constexpr uint8_t DAUGHTER_PROTO_EXPECTED = 20;
+constexpr uint8_t ATTENUATOR_PROTO_EXPECTED = 20;
 
 // How often to re-fire VOL UP/DOWN while a volume button is held -- each
-// command is a single discrete step on the daughter board.
-constexpr uint32_t DAUGHTER_VOL_REPEAT_MS = 250;
+// command is a single discrete step on the attenuator board.
+constexpr uint32_t ATTENUATOR_VOL_REPEAT_MS = 250;
 
 // How long to wait for a reply to any command before giving up and
 // reporting a timeout. Revision 7 answers EVERY command within this,
 // including STATUS during a calibration (~10ms).
-constexpr uint32_t DAUGHTER_RESPONSE_TIMEOUT_MS = 500;
+constexpr uint32_t ATTENUATOR_RESPONSE_TIMEOUT_MS = 500;
 
 // STATUS is the only getter in revision 7, so the master polls it: every
-// IDLE_MS normally, every BUSY_MS while the daughter reports BUSY
+// IDLE_MS normally, every BUSY_MS while the attenuator reports BUSY
 // (calibrating, or its boot hold -- the hold poll is shortened further to
 // the remaining time it reports). Also sent right after every successful
 // VOL/MUTE/AMP_MUTE command, so the on-screen volume reflects the
-// daughter's real VOL/DB rather than a local guess.
-constexpr uint32_t DAUGHTER_STATUS_POLL_IDLE_MS = 5000;
-constexpr uint32_t DAUGHTER_STATUS_POLL_BUSY_MS = 2000;
+// attenuator's real VOL/DB rather than a local guess.
+constexpr uint32_t ATTENUATOR_STATUS_POLL_IDLE_MS = 5000;
+constexpr uint32_t ATTENUATOR_STATUS_POLL_BUSY_MS = 2000;
 
 // Revision 8 read-only queries: PROGRESS polled this often while a
 // calibration runs (for the progress page), ENV this often while a page
 // that shows it is open (LEARN, rev 9, likewise).
-constexpr uint32_t DAUGHTER_PROGRESS_POLL_MS = 1000;
-constexpr uint32_t DAUGHTER_ENV_POLL_MS      = 5000;
-// ...and, in the background, this often anyway while the daughter is idle --
+constexpr uint32_t ATTENUATOR_PROGRESS_POLL_MS = 1000;
+constexpr uint32_t ATTENUATOR_ENV_POLL_MS      = 5000;
+// ...and, in the background, this often anyway while the attenuator is idle --
 // for revision 14's resync hint and revision 13's NTC state (both based on a
 // 1-minute average, so a slow poll misses nothing).
-constexpr uint32_t DAUGHTER_ENV_BACKGROUND_POLL_MS = 10000; // COMP / resync hint on the Info screen follow it
+constexpr uint32_t ATTENUATOR_ENV_BACKGROUND_POLL_MS = 10000; // COMP / resync hint on the Info screen follow it
+
+// The longest line the attenuator sends, with its terminator. VER is the
+// longest (~230 characters before its free-text NOTE), so this leaves room
+// for long release notes; a longer line is dropped and logged. The UART
+// receive FIFO holds a whole reply plus the start of the next, so a reply
+// arriving while the main loop is busy is never cut.
+constexpr size_t ATTENUATOR_LINE_MAX     = 512;
+constexpr size_t ATTENUATOR_RX_FIFO_SIZE = 2 * ATTENUATOR_LINE_MAX;
 
 // Notices (resync advised, NTC fault): how long the popup stays up.
 constexpr uint32_t NOTICE_POPUP_MS = 5000;
 
-// A STATUS older than this is treated as "no link" (the daughter stopped
+// A STATUS older than this is treated as "no link" (the attenuator stopped
 // answering, or isn't fitted on this unit) -- comfortably more than two
 // idle polls, so a single lost reply doesn't flip the display.
-constexpr uint32_t DAUGHTER_STATUS_STALE_MS = 12000;
+constexpr uint32_t ATTENUATOR_STATUS_STALE_MS = 12000;
 
-// After a local mute toggle, ignore the daughter's reported MUTE for this
+// After a local mute toggle, ignore the attenuator's reported MUTE for this
 // long before adopting it -- a STATUS that was already in flight when the
 // user pressed mute would otherwise "undo" the press.
-constexpr uint32_t DAUGHTER_MUTE_ADOPT_GRACE_MS = 1000;
+constexpr uint32_t ATTENUATOR_MUTE_ADOPT_GRACE_MS = 1000;
 
 // Set true to log every UART line in both directions ([UART TX]/[UART RX])
 // -- bring-up/debug only; with STATUS polled every few seconds it's noisy.
-constexpr bool DAUGHTER_LINK_TRACE = false;
+constexpr bool ATTENUATOR_LINK_TRACE = false;
 
 // Debug serial output, off for normal use:
 //  - DEBUG_AUDIO_DIAGNOSTICS: core1's once-a-second [Timing]/[RawADC]
@@ -131,7 +139,7 @@ constexpr uint32_t MENU_REPEAT_RATE_MS  = 120;
 constexpr uint32_t RTC_I2C_CLOCK_HZ = 400000;
 
 // On-screen volume overlay: how long it stays up after the last volume/
-// mute change (from the buttons/IR, or seen in the daughter's STATUS).
+// mute change (from the buttons/IR, or seen in the attenuator's STATUS).
 constexpr uint32_t VOLUME_OVERLAY_TIMEOUT_MS = 2000;
 
 

@@ -105,7 +105,7 @@ Hint hint() {
   const float dT = (isnan(gEma) || isnan(gRef)) ? NAN : gEma - gRef;
   const bool compOn = sideActive(0) && sideActive(1);
   const float rate = blockRatePer10Min();
-  const bool warming = Board::msSinceAmpOn() < HINT_WARMUP_MS || isnan(rate) || fabsf(rate) > HINT_STEADY_C;
+  const bool warming = warmingHold(compOn, Board::msSinceAmpOn(), rate);
   return resyncHint(compOn, dT, gSpanC, DualCalibration::lastSeekFailed(), Board::ampCommandedMuted(), warming,
                     VerifyHistory::pendingResync());
 }
