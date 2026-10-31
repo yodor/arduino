@@ -64,18 +64,21 @@ inline bool common(const Shift &l, const Shift &r, float commonCounts = 2.0f) {
 // A run's verdict, for the controller (VERIFY RESULT) and the resync hint:
 //   CHECK   L and R are off differently (residuals more than 3 counts apart), or a channel's
 //           cells changed shape (spread over 2.5 counts): worth a look on the console
-//   RESYNC  the table is off -- a residual beyond 3 counts, or the middle steps' mean error
-//           beyond 1 dB -- and a resync fixes that
+//   RESYNC  the table is off -- a residual beyond 3 counts, the middle steps' mean error beyond
+//           1 dB, or the quiet steps' beyond 1.5 dB (where an offset is most audible) -- and a
+//           resync fixes that
 //   OK      otherwise
 // NAN inputs (not measured) do not count.
 enum class Verdict : uint8_t { OK, RESYNC, CHECK };
 inline const char *verdictName(Verdict v) { return v == Verdict::CHECK ? "CHECK" : v == Verdict::RESYNC ? "RESYNC" : "OK"; }
-inline Verdict verdict(const float residual[2], const float spread[2], const float middleDb[2]) {
+inline Verdict verdict(const float residual[2], const float spread[2], const float middleDb[2],
+                       const float quietDb[2] = nullptr) {
   if (!isnan(residual[0]) && !isnan(residual[1]) && fabsf(residual[0] - residual[1]) > 3.0f) return Verdict::CHECK;
   for (uint8_t c = 0; c < 2; c++) if (!isnan(spread[c]) && spread[c] > 2.5f) return Verdict::CHECK;
   for (uint8_t c = 0; c < 2; c++) {
     if (!isnan(residual[c]) && fabsf(residual[c]) > 3.0f) return Verdict::RESYNC;
     if (!isnan(middleDb[c]) && fabsf(middleDb[c]) > 1.0f) return Verdict::RESYNC;
+    if (quietDb && !isnan(quietDb[c]) && fabsf(quietDb[c]) > 1.5f) return Verdict::RESYNC;
   }
   return Verdict::OK;
 }

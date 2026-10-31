@@ -473,6 +473,7 @@ void SerialLink::cmdVerifyResult(const String &) {
   kv(stream_, F("MOVED_L"), r->moved[0], 1);  kv(stream_, F("MOVED_R"), r->moved[1], 1);
   kv(stream_, F("SPREAD_L"), s.spread[0], 1); kv(stream_, F("SPREAD_R"), s.spread[1], 1);
   kv(stream_, F("MID_L"), s.middleDb[0], 2);  kv(stream_, F("MID_R"), s.middleDb[1], 2);
+  kv(stream_, F("QUIET_L"), s.quietDb[0], 2); kv(stream_, F("QUIET_R"), s.quietDb[1], 2);
   kv(stream_, F("RMS_L"), s.rms[0], 2);       kv(stream_, F("RMS_R"), s.rms[1], 2);
   kv(stream_, F("LR"), s.worstLR, 2);
   stream_.print(F(" ADOPTED=")); stream_.print(Commands::walkAdopted(*r, left_, right_) ? '1' : '0');

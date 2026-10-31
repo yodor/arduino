@@ -50,7 +50,7 @@ void restoreResults();               // the newest run back into Results (after 
 // hint knows whether the newest run still describes the table.
 void noteCalibration(uint32_t full, uint32_t resync);
 // A stored run's figures and verdict (VerifyAnalysis::verdict).
-struct Summary { float residual[2], spread[2], middleDb[2], rms[2], worstLR; uint8_t verdict; };
+struct Summary { float residual[2], spread[2], middleDb[2], quietDb[2], rms[2], worstLR; uint8_t verdict; };
 Summary summarize(const Record &r);
 // The newest run said RESYNC and no calibration has run since (the hint's WHY=VERIFY).
 bool pendingResync();

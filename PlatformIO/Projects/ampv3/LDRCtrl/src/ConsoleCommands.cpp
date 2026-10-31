@@ -718,12 +718,17 @@ void ConsoleCommands::printHealth() {
   for (uint8_t c = 0; c < 2; c++) {
     const DarkProfile &p = v[c]->darkProfile();
     if (!p.okCount()) { warns++; stream_.print(F("  WARN ")); stream_.print(LAB[c]); stream_.println(F(" series: no dark-end profile -- send CAL")); continue; }
+    // Judged within the OPERATING depth only (up to 1.1 x Rtotal): the walk measures deeper than
+    // the table uses, and a slow or memory-prone point beyond it never plays. The memory limit is
+    // the AUTO preference's (what AUTO deliberately accepted is no fault).
+    const float opLimit = v[c]->rTotalOhms() * 1.1f;
     float worstMem = 0; float worstAt = 0; uint8_t slowest = 0; float slowAt = 0;
     for (uint8_t k = 0; k < p.okCount(); k++) {
+      if (p.p[k].ohms > opLimit) continue;
       if (p.p[k].memory > worstMem) { worstMem = p.p[k].memory; worstAt = p.p[k].ohms; }
       if (p.p[k].settleS > slowest) { slowest = p.p[k].settleS; slowAt = p.p[k].ohms; }
     }
-    if (worstMem > CAPS_AUTO_MAX_MEMORY && worstAt <= v[c]->rTotalOhms() * 1.5f) {
+    if (worstMem > AutoPref::now().memMax) {
       warns++;
       stream_.print(F("  WARN ")); stream_.print(LAB[c]); stream_.print(F(" series: memory x")); stream_.print(worstMem, 2);
       stream_.print(F(" at ")); stream_.print(worstAt / 1000.0f, 0);
@@ -1425,9 +1430,9 @@ void ConsoleCommands::runVerify() {
     out.line("WALK     %s: %s instead of %s", Commands::adoptText(ad), fx(pick, 0).s, fx(left_.rTotalOhms(), 0).s);
   else out.line("WALK     %s", Commands::adoptText(ad));
   const VerifyHistory::Summary sm = VerifyHistory::summarize(rec);
-  out.line("VERDICT  %s  (residual L %s R %s counts, middle steps L %s R %s dB)",
+  out.line("VERDICT  %s  (residual L %s R %s counts, quiet steps L %s R %s dB, middle steps L %s R %s dB)",
            VerifyAnalysis::verdictName((VerifyAnalysis::Verdict)sm.verdict), fx(sm.residual[0], 1, true).s, fx(sm.residual[1], 1, true).s,
-           fx(sm.middleDb[0], 2, true).s, fx(sm.middleDb[1], 2, true).s);
+           fx(sm.quietDb[0], 2, true).s, fx(sm.quietDb[1], 2, true).s, fx(sm.middleDb[0], 2, true).s, fx(sm.middleDb[1], 2, true).s);
   Board::reportDieTemp(stream_, F("Die temp at the end"), millis() - t0);
   out.line("===== VERIFY END (#%u stored) -- send REPORT for the summary =====", (unsigned)rec.seq);
 }

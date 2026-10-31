@@ -1,4 +1,4 @@
-Firmware source package: 2026-10-30k
+Firmware source package: 2026-10-31a
 
 0b22e67b7cb8db07  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
@@ -30,7 +30,7 @@ cc0e7500895ff8c7  src/Commands.cpp
 c1a89237fc94f32a  src/Config.hpp
 516224ac45e17e99  src/Console.cpp
 bd4812e63957f620  src/Console.hpp
-af4a3ac5322eb496  src/ConsoleCommands.cpp
+1670995bc77cb9a9  src/ConsoleCommands.cpp
 b0b7a09efe1d991a  src/ConsoleCommands.hpp
 71c1646457dee47c  src/ConsoleNum.hpp
 2662c0dee07705c5  src/DarkProfile.hpp
@@ -53,7 +53,7 @@ d098a8f1e6258ed4  src/RailComp.cpp
 1518a7d671993e89  src/Relay.hpp
 201237e4f6ed2ecb  src/Results.cpp
 ddc811903c4f6aff  src/Results.hpp
-09ba2125c92836c9  src/SerialLink.cpp
+c7e25ad174fa5e29  src/SerialLink.cpp
 df402d1995852465  src/SerialLink.hpp
 4186544f13916286  src/Settings.cpp
 747ef9032cc8ba7a  src/Settings.hpp
@@ -65,10 +65,10 @@ c4253849c4457c38  src/ThermalComp.hpp
 61e41d5a240a053f  src/ThermalLog.cpp
 f5e253c98aec62c0  src/ThermalLog.hpp
 6e71fac86e21cfac  src/TrimSearch.hpp
-9505da6c1baa3e88  src/VerifyAnalysis.hpp
-b460553762d4dec4  src/VerifyHistory.cpp
-8cc22650c5e8568c  src/VerifyHistory.hpp
-4cffe54590016eb8  src/Version.hpp
+3596bf4b6e09aa68  src/VerifyAnalysis.hpp
+28024377dfcea895  src/VerifyHistory.cpp
+7af6b74fbc8723a4  src/VerifyHistory.hpp
+f6286acbca9d9a62  src/Version.hpp
 62cec520f5825c86  src/VersionInfo.cpp
 ec6f3d5bdcd50429  src/VersionInfo.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
@@ -96,7 +96,7 @@ fcad35e58e85d446  test/test_seek_fix.cpp
 43e53e8a1a27ebb3  test/test_series_guard.cpp
 1885e8074e18bee8  test/test_settings_text.cpp
 2a3991abd6025a29  test/test_verify_analysis.cpp
-c1cd47b900ea0cf9  test/test_verify_verdict.cpp
+c134104be9246b46  test/test_verify_verdict.cpp
 02527e09efce114d  test/test_walk_comparison.cpp
 1d653b2b99de660e  test/test_walk_memory.cpp
 199c2f08d09c9c51  test/test_warmup_hint.cpp
@@ -104,4 +104,4 @@ c1cd47b900ea0cf9  test/test_verify_verdict.cpp
 1bba7cee96dcc5e8  platformio.ini
 0119c2325e39333a  README.md
 f31950b4f666153c  ldr-attenuator-console.md
-d2f4ee9a0d4d5d2a  ldr-attenuator-protocol.md
+6ca55274e59bc4e5  ldr-attenuator-protocol.md

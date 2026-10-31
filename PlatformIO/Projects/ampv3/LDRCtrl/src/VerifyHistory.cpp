@@ -77,6 +77,13 @@ Summary summarize(const Record &r) {
     s.spread[c] = r.movedSpread[c];
     float reg[3]; VerifyAnalysis::regionMeans(r.up[c], r.target, r.region, r.n, reg);
     s.middleDb[c] = reg[VerifyAnalysis::MIDDLE];
+    // The quiet steps from the volume-up pass (each approached from the darker side, the clean
+    // direction for CdS), step 0 left out: it is the pass's first reading, arriving from whatever
+    // state came before.
+    float up0[STEPS];
+    for (uint8_t i = 0; i < STEPS; i++) up0[i] = (i == 0) ? NAN : r.up[c][i];
+    float regQ[3]; VerifyAnalysis::regionMeans(up0, r.target, r.region, r.n, regQ);
+    s.quietDb[c] = regQ[VerifyAnalysis::QUIET];
     float worst; uint8_t cnt; Results::errorStats(r.up[c], r.target, r.n, s.rms[c], worst, cnt);
   }
   s.worstLR = NAN;
@@ -85,7 +92,7 @@ Summary summarize(const Record &r) {
     const float d = fabsf(r.up[0][i] - r.up[1][i]);
     if (isnan(s.worstLR) || d > s.worstLR) s.worstLR = d;
   }
-  s.verdict = (uint8_t)VerifyAnalysis::verdict(s.residual, s.spread, s.middleDb);
+  s.verdict = (uint8_t)VerifyAnalysis::verdict(s.residual, s.spread, s.middleDb, s.quietDb);
   return s;
 }
 

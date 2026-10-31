@@ -1,12 +1,9 @@
-LDR attenuator firmware -- 2026-10-30k  (driver v1b, 2nd-edition LDR boards)
+LDR attenuator firmware -- 2026-10-31a  (driver v1b, 2nd-edition LDR boards)
 
-* Resync hint, state-dependent warm-up hold:
-  - LEARNING (no trusted compensation): no warm-up hold. RESYNC=1 WHY=NOCOMP as soon as the block
-    has moved 1 C since the last calibration -- warm-up included, that is the data the learning
-    needs. Only a block moving faster than 1 C per 10 min is held (WARMING).
-  - COMPENSATION ACTIVE: held 10 min after the amp is switched on and while the block moves more
-    than 0.5 C per 10 min (was 15 min / 0.25 C, which held a slowly warming enclosure for hours).
-* A characterization now ends with the resync's middle-depth refinement (~30 s more): on a cold
-  start the block warms during it, and its middle steps were driving the cells brighter than
-  needed at the end (too loud) until the first resync.
-Protocol unchanged (20). Tests: python3 test/run_tests.py (22).
+* VERIFY's verdict now also watches the QUIET steps (volume-up pass, step 0 left out): a mean
+  error beyond 1.5 dB gives RESYNC, and with it the hint RESYNC=1 WHY=VERIFY. Your VERIFY #6
+  (quiet steps +1.7 dB) would have said RESYNC instead of OK. VERIFY RESULT gains QUIET_L/R.
+* Health: series memory and settling are judged within the operating depth only (up to
+  1.1 x Rtotal), with the AUTO preference's memory limit. The walk measures deeper than the
+  table uses; points beyond it never play (your 2348k / 2628k warnings).
+Everything from 30k included. Protocol 20 (one more key in VERIFY RESULT). Tests: 22.
