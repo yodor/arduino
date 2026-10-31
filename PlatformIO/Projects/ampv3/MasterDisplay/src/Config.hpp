@@ -154,6 +154,12 @@ static_assert(WAVEFORM_SAMPLES * 2 <= SCREEN_WIDTH,
 // WAVEFORM_MIN_FULL_SCALE (ADC counts, of 2048) stops a quiet input from
 // being blown up into noise. Off: fixed scale, full ADC range = lane.
 constexpr float WAVEFORM_GAIN_DECAY     = 0.995f;
+
+// Theme > Wave > Scope / DAW: one-press presets of the Scale. Scope: samples
+// per oscilloscope screen, 256 .. 8192 (a power of two). DAW: chunks per
+// timeline column, 2 = 1.2 s, 4 = 2.5 s, 8 = 5 s, 16 = 10 s, 32 = 20 s across.
+constexpr uint16_t WAVE_PRESET_SCOPE_SAMPLES = 2048;
+constexpr uint8_t  WAVE_PRESET_DAW_CHUNKS    = 4;
 constexpr float WAVEFORM_MIN_FULL_SCALE = 256.0f;
 
 // Target frame period. The main loop paces itself against this instead of

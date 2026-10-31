@@ -406,7 +406,37 @@ void waveScaleFormat(int16_t v, char* out, size_t n) {
 }
 const MenuSlider kWaveScaleSlider = { 0, WaveformPipeline::kZoomSteps - 1, waveScaleGet, waveScaleSet, waveScaleFormat, "-", "+" };
 
+// Theme > Wave > Scope / DAW: one-press presets of the Scale (Config.hpp:
+// WAVE_PRESET_SCOPE_SAMPLES, WAVE_PRESET_DAW_CHUNKS) -- as zoom steps.
+constexpr uint8_t zoomStepForSamples(uint32_t samples, uint8_t step = 0) {
+    return (WaveformPipeline::scopeSamplesForScale(step) >= samples || step + 1 >= WaveformPipeline::kScopeScaleSteps)
+               ? step : zoomStepForSamples(samples, step + 1);
+}
+constexpr uint8_t zoomStepForChunks(uint32_t chunks, uint8_t step = 0) {
+    return (WaveformPipeline::dawChunksForScale(step) >= chunks || step + 1 >= WaveformPipeline::kDawScaleSteps)
+               ? WaveformPipeline::kScopeScaleSteps + step : zoomStepForChunks(chunks, step + 1);
+}
+constexpr uint8_t kScopePresetStep = zoomStepForSamples(WAVE_PRESET_SCOPE_SAMPLES);
+constexpr uint8_t kDawPresetStep   = zoomStepForChunks(WAVE_PRESET_DAW_CHUNKS);
+static_assert(WaveformPipeline::scopeSamplesForScale(kScopePresetStep) == WAVE_PRESET_SCOPE_SAMPLES,
+              "WAVE_PRESET_SCOPE_SAMPLES: 256, 512, 1024, 2048, 4096 or 8192");
+static_assert(WaveformPipeline::dawChunksForScale(kDawPresetStep - WaveformPipeline::kScopeScaleSteps) == WAVE_PRESET_DAW_CHUNKS,
+              "WAVE_PRESET_DAW_CHUNKS: 2, 4, 8, 16 or 32");
+
+template <uint8_t Step>
+void waveZoomPreset() {
+    AudioEngine::instance().setWaveformZoom(Step);
+    PersistentSettings::instance().markDirty();
+}
+template <uint8_t Step>
+void describeWavePreset(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    waveScaleFormat(Step, hint, hs);                                   // e.g. "2048 samples, 46 ms"
+    if (AudioEngine::instance().getWaveformZoom() == Step) *color = COLOR_YELLOW;   // the zoom right now
+}
+
 const MenuItem kWaveSubmenuItems[] = {
+    { "Scope",       MenuItemType::ACTION,       waveZoomPreset<kScopePresetStep>, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeWavePreset<kScopePresetStep> },
+    { "DAW",         MenuItemType::ACTION,       waveZoomPreset<kDawPresetStep>,   nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeWavePreset<kDawPresetStep> },
     { "Scale",       MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kWaveScaleSlider },
     { "Auto Gain",   MenuItemType::VALUE_CHOICE, nullptr, kWaveAutoGainOptions,   2 },
 };
