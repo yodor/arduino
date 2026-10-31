@@ -25,8 +25,9 @@ const char* const kTmpPath = "/settings.tmp";
 // never change what a saved setting means.
 const char* const kChannelModes[]   = { "STEREO", "MONO" };
 const char* const kStereoLayouts[]  = { "SIDE_BY_SIDE", "TOP_BOTTOM" };
-const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT", "CUSTOM",
-                                        "USER1", "USER2", "USER3", "USER4", "USER5" };
+// The palettes, in ColorPreset order; NASTYFFT and CUSTOM (retired) still read, as SUNSET.
+const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "PUNK", "USER1", "USER2", "USER3", "USER4", "USER5",
+                                        "NASTYFFT", "CUSTOM" };
 const char* const kBandLayouts[]    = { "DOUBLING", "FIXED_BANDS", "FULL" };
 const char* const kEnergyModes[]    = { "PEAK", "QUADRATURE_SUM" };
 const char* const kPeakDecays[]     = { "TURTLE", "SLOW", "NORMAL", "FAST", "CHEETAH" };
@@ -103,31 +104,22 @@ DisplaySettings& ds() { return DisplaySettings::instance(); }
 
 const Key kKeys[] = {
     ENUM_KEY("theme",           kThemes,         ColorTheme::instance().getPreset(),
-             ColorTheme::instance().setPreset(static_cast<ColorPreset>(i))),
-    // The theme mix colour, per theme (Theme > Mix Position / Mix Brightness), percent.
+             ColorTheme::instance().setPreset(i < kPalettes ? static_cast<ColorPreset>(i) : ColorPreset::SUNSET)),
+    // The built-in palettes' mix colour (Theme > Palette > ...), percent; the
+    // slots keep theirs in their user1..user5 lines.
     INT_KEY ("mix_position_classic",  0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::CLASSIC),  ColorTheme::instance().setMixPositionPct(ColorPreset::CLASSIC,  static_cast<uint8_t>(x))),
     INT_KEY ("mix_position_sunset",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::SUNSET),   ColorTheme::instance().setMixPositionPct(ColorPreset::SUNSET,   static_cast<uint8_t>(x))),
     INT_KEY ("mix_position_aurora",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::AURORA),   ColorTheme::instance().setMixPositionPct(ColorPreset::AURORA,   static_cast<uint8_t>(x))),
-    INT_KEY ("mix_position_nastyfft", 0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::NASTYFFT), ColorTheme::instance().setMixPositionPct(ColorPreset::NASTYFFT, static_cast<uint8_t>(x))),
-    INT_KEY ("mix_position_custom",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::CUSTOM),   ColorTheme::instance().setMixPositionPct(ColorPreset::CUSTOM,   static_cast<uint8_t>(x))),
-    INT_KEY ("mix_brightness_custom",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::CUSTOM),   ColorTheme::instance().setMixGainPct(ColorPreset::CUSTOM,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_position_punk",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::PUNK),   ColorTheme::instance().setMixPositionPct(ColorPreset::PUNK,   static_cast<uint8_t>(x))),
     // The saved theme slots (Theme > Save Current): LOW,MID,HIGH (RGB565
     // hex),STYLE (0 zones, 1 smooth, 2 per bar),SPREAD (degrees round the
     // colour wheel, 0 = a straight blend),MIX POSITION,MIX BRIGHTNESS (%);
     // "-" = never saved.
     USER_KEY("user1", 0), USER_KEY("user2", 1), USER_KEY("user3", 2), USER_KEY("user4", 3), USER_KEY("user5", 4),
-    // The Custom theme: its colour (RGB565 hex) and spread (degrees).
-    { "custom_color",
-      [](char* o, size_t n) { snprintf(o, n, "%04X", static_cast<unsigned>(ColorTheme::instance().customColor())); },
-      [](const char* v) { char* e = nullptr; unsigned long c = strtoul(v, &e, 16);
-                          if (e == v || *e != '\0' || c > 0xFFFF) return false;
-                          ColorTheme::instance().setCustom(static_cast<uint16_t>(c), ColorTheme::instance().customSpread()); return true; } },
-    INT_KEY ("custom_spread",   15, 120, ColorTheme::instance().customSpread(),
-             ColorTheme::instance().setCustom(ColorTheme::instance().customColor(), static_cast<uint8_t>(x))),
     INT_KEY ("mix_brightness_classic",  10, 250, ColorTheme::instance().mixGainPct(ColorPreset::CLASSIC),  ColorTheme::instance().setMixGainPct(ColorPreset::CLASSIC,  static_cast<uint8_t>(x))),
     INT_KEY ("mix_brightness_sunset",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::SUNSET),   ColorTheme::instance().setMixGainPct(ColorPreset::SUNSET,   static_cast<uint8_t>(x))),
     INT_KEY ("mix_brightness_aurora",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::AURORA),   ColorTheme::instance().setMixGainPct(ColorPreset::AURORA,   static_cast<uint8_t>(x))),
-    INT_KEY ("mix_brightness_nastyfft", 10, 250, ColorTheme::instance().mixGainPct(ColorPreset::NASTYFFT), ColorTheme::instance().setMixGainPct(ColorPreset::NASTYFFT, static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_punk",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::PUNK),   ColorTheme::instance().setMixGainPct(ColorPreset::PUNK,   static_cast<uint8_t>(x))),
     INT_KEY ("brightness",      1, 100,          ds().getBrightnessPercent(),
              { ds().setBrightnessPercent(static_cast<uint8_t>(x)); Renderer::instance().setBacklightPercent(static_cast<uint8_t>(x)); }),
     ENUM_KEY("channel_mode",    kChannelModes,   ds().getChannelMode(),
@@ -296,7 +288,8 @@ bool PersistentSettings::importLegacy() {
     s.setChannelMode(static_cast<ChannelMode>(d->channelMode));
     s.setStereoLayout(static_cast<StereoLayout>(d->stereoLayout));
     s.setMirrorLeftBars(d->mirrorLeftBars != 0);
-    ColorTheme::instance().setPreset(static_cast<ColorPreset>(d->colorPreset));
+    // The old layout stored CLASSIC 0, SUNSET 1, AURORA 2, NASTYFFT 3 (retired: Sunset).
+    ColorTheme::instance().setPreset(d->colorPreset <= 2 ? static_cast<ColorPreset>(d->colorPreset) : ColorPreset::SUNSET);
     AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(d->bandLayoutMode));
     AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(d->energyMode));
     // The old layout stored OSCILLOSCOPE 0, TRACK_PREVIEW 1 -- both the oscilloscope now.

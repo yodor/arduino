@@ -328,7 +328,8 @@ void MenuScreen::enter() {
             break;
         case MenuItemType::SUBMENU:
             if (m_stackDepth >= kMaxDepth) return; // never overrun the fixed stack
-            m_stack[m_stackDepth] = { item.submenuItems, item.submenuCount, 0 };
+            m_stack[m_stackDepth] = { item.submenuItems, item.submenuCount,
+                                      item.initialFocus ? item.initialFocus() % (item.submenuCount ? item.submenuCount : 1) : 0 };
             ++m_stackDepth;
             m_dirty = true;
             break;

@@ -120,4 +120,5 @@ struct MenuItem {
     const MenuSlider* slider     = nullptr; // SLIDER only
 
     MenuDescribe      describe   = nullptr; // any type: live label / hint in the list
+    size_t          (*initialFocus)() = nullptr; // SUBMENU: which item to open at (default the first)
 };

@@ -244,29 +244,6 @@ void menuSet_Mono()   { DisplaySettings::instance().setChannelMode(ChannelMode::
 bool menuIsActive_Stereo() { return DisplaySettings::instance().getChannelMode() == ChannelMode::STEREO; }
 bool menuIsActive_Mono()   { return DisplaySettings::instance().getChannelMode() == ChannelMode::MONO; }
 
-void menuSet_ColorClassic()  { ColorTheme::instance().setPreset(ColorPreset::CLASSIC);  PersistentSettings::instance().markDirty(); }
-void menuSet_ColorSunset()   { ColorTheme::instance().setPreset(ColorPreset::SUNSET);   PersistentSettings::instance().markDirty(); }
-void menuSet_ColorAurora()   { ColorTheme::instance().setPreset(ColorPreset::AURORA);   PersistentSettings::instance().markDirty(); }
-void menuSet_ColorNastyFFT() { ColorTheme::instance().setPreset(ColorPreset::NASTYFFT); PersistentSettings::instance().markDirty(); }
-bool menuIsActive_ColorClassic()  { return ColorTheme::instance().getPreset() == ColorPreset::CLASSIC; }
-bool menuIsActive_ColorSunset()   { return ColorTheme::instance().getPreset() == ColorPreset::SUNSET; }
-bool menuIsActive_ColorAurora()   { return ColorTheme::instance().getPreset() == ColorPreset::AURORA; }
-void menuSet_ColorCustom()   { ColorTheme::instance().setPreset(ColorPreset::CUSTOM);   PersistentSettings::instance().markDirty(); }
-bool menuIsActive_ColorCustom() { return ColorTheme::instance().getPreset() == ColorPreset::CUSTOM; }
-// Theme > Colors: the saved slots; Theme > Save Current: store the current
-// look in a slot (and switch to it).
-template <uint8_t Slot>
-void menuSet_ColorUser() { ColorTheme::instance().setPreset(static_cast<ColorPreset>(static_cast<uint8_t>(ColorPreset::USER1) + Slot)); PersistentSettings::instance().markDirty(); }
-template <uint8_t Slot>
-bool menuIsActive_ColorUser() { return ColorTheme::instance().getPreset() == static_cast<ColorPreset>(static_cast<uint8_t>(ColorPreset::USER1) + Slot); }
-template <uint8_t Slot>
-void menuSet_SaveTheme() {
-    ColorTheme::instance().saveCurrentTo(Slot);
-    Console::log("Theme", "Saved the current look to slot %u", static_cast<unsigned>(Slot + 1));
-    PersistentSettings::instance().markDirty();
-}
-bool menuIsActive_ColorNastyFFT() { return ColorTheme::instance().getPreset() == ColorPreset::NASTYFFT; }
-
 // Band Layout: Doubling (derived bar count from FFT_SIZE, formerly
 // Bar9Pipeline's only behavior) vs Fixed Bands (31-band ISO table,
 // formerly OctavePipeline's only behavior) vs Full (uncompressed, evenly-
@@ -352,29 +329,11 @@ bool menuIsActive_PeaksNormal()  { return peaksAre(true, PeakDecaySpeed::NORMAL)
 bool menuIsActive_PeaksFast()    { return peaksAre(true, PeakDecaySpeed::FAST); }
 bool menuIsActive_PeaksCheetah() { return peaksAre(true, PeakDecaySpeed::CHEETAH); }
 
-const MenuValueOption kColorOptions[] = {
-    { "Classic",  menuSet_ColorClassic,  menuIsActive_ColorClassic  },
-    { "NastyFFT", menuSet_ColorNastyFFT, menuIsActive_ColorNastyFFT },
-    { "Sunset",   menuSet_ColorSunset,   menuIsActive_ColorSunset   },
-    { "Aurora",   menuSet_ColorAurora,   menuIsActive_ColorAurora   },
-    { "Custom",   menuSet_ColorCustom,   menuIsActive_ColorCustom   },
-    { "Slot 1",   menuSet_ColorUser<0>,  menuIsActive_ColorUser<0>  },
-    { "Slot 2",   menuSet_ColorUser<1>,  menuIsActive_ColorUser<1>  },
-    { "Slot 3",   menuSet_ColorUser<2>,  menuIsActive_ColorUser<2>  },
-    { "Slot 4",   menuSet_ColorUser<3>,  menuIsActive_ColorUser<3>  },
-    { "Slot 5",   menuSet_ColorUser<4>,  menuIsActive_ColorUser<4>  },
-};
-const MenuValueOption kSaveThemeOptions[] = {
-    { "Slot 1", menuSet_SaveTheme<0>, menuIsActive_ColorUser<0> },
-    { "Slot 2", menuSet_SaveTheme<1>, menuIsActive_ColorUser<1> },
-    { "Slot 3", menuSet_SaveTheme<2>, menuIsActive_ColorUser<2> },
-    { "Slot 4", menuSet_SaveTheme<3>, menuIsActive_ColorUser<3> },
-    { "Slot 5", menuSet_SaveTheme<4>, menuIsActive_ColorUser<4> },
-};
 
+// Theme > Mono Mix: On = one trace / bar set of the L+R mix (mono), Off = stereo.
 const MenuValueOption kChannelModeOptions[] = {
-    { "Stereo", menuSet_Stereo, menuIsActive_Stereo },
-    { "Mono",   menuSet_Mono,   menuIsActive_Mono   },
+    { "On",  menuSet_Mono,   menuIsActive_Mono   },
+    { "Off", menuSet_Stereo, menuIsActive_Stereo },
 };
 
 const MenuValueOption kFftLayoutOptions[] = {
@@ -465,63 +424,147 @@ const MenuValueOption kPeaksOptions[] = {
 
 // "Theme" submenu, nested at root -- display/appearance settings grouped
 // together, with "FFT", "Wave", and "Peaks" themselves one further level in.
-// Theme > Custom Color / Custom Spread: the Custom theme -- the chosen colour
-// in the middle, the bottom and top that many degrees either side of it on
-// the colour wheel. Choosing either switches the theme to Custom.
-uint16_t customThemeColorGet()           { return ColorTheme::instance().customColor(); }
-void     customThemeColorSet(uint16_t c) {
-    ColorTheme& t = ColorTheme::instance();
-    t.setCustom(c, t.customSpread());
-    t.setPreset(ColorPreset::CUSTOM);
-    PersistentSettings::instance().markDirty();
-}
-const MenuColor kCustomThemeColor = { customThemeColorGet, customThemeColorSet };
-uint16_t customSpreadFill()       { return ColorTheme::instance().highColor(); }
-int16_t  customSpreadGet()        { return ColorTheme::instance().customSpread() / 5; }
-void     customSpreadSet(int16_t v) {
-    ColorTheme& t = ColorTheme::instance();
-    t.setCustom(t.customColor(), static_cast<uint8_t>(v * 5));
-    t.setPreset(ColorPreset::CUSTOM);
-    PersistentSettings::instance().markDirty();
-}
-void customSpreadFormat(int16_t v, char* out, size_t n) { snprintf(out, n, "%d degrees", v * 5); }
-const MenuSlider kCustomSpreadSlider = { 3, 24, customSpreadGet, customSpreadSet, customSpreadFormat, "-", "+", customSpreadFill }; // 15..120
 
-// Theme > Mix Position / Mix Brightness: the current theme's mix colour (the
-// mono waveform, the clock in Theme colour), each theme remembering its own.
-// The bar is drawn in the mix colour, live.
-uint16_t mixFill() { return ColorTheme::instance().mixColor(); }
-int16_t  mixPosGet()           { return ColorTheme::instance().mixPositionPct() / 5; }
-void     mixPosSet(int16_t v)  { ColorTheme::instance().setMixPositionPct(static_cast<uint8_t>(v * 5)); PersistentSettings::instance().markDirty(); }
-void     mixPosFormat(int16_t v, char* out, size_t n) {
+// --- Theme > Palette ------------------------------------------------------------------
+//
+// The palettes, each with its own submenu: Sunset, Aurora, Classic (built in)
+// and Slot 1..5 (your own). Inside: Apply (make it the one in use), Color and
+// Spread (slots only: a colour of your own, bottom and top derived from it),
+// Mix Position / Mix Brightness (the single-colour mix), Save to Slot (copy
+// this palette into a slot -- the way to customise a built-in one). Sliders
+// draw their bar in this palette's colours, live.
+
+template <uint8_t P> constexpr ColorPreset kPal = static_cast<ColorPreset>(P);
+
+template <uint8_t P>
+void paletteApply() {
+    ColorTheme::instance().setPreset(kPal<P>);
+    PersistentSettings::instance().markDirty();
+    Console::log("Theme", "Palette in use: %u", static_cast<unsigned>(P));
+}
+template <uint8_t P>
+void describeApply(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    bool inUse = ColorTheme::instance().getPreset() == kPal<P>;
+    snprintf(hint, hs, "%s", inUse ? "in use" : "make it the one in use");
+    if (inUse) *color = COLOR_YELLOW;
+}
+
+// Mix Position / Mix Brightness for palette P.
+template <uint8_t P> uint16_t paletteMixFill()        { return ColorTheme::instance().mix(kPal<P>); }
+template <uint8_t P> int16_t  paletteMixPosGet()      { return ColorTheme::instance().mixPositionPct(kPal<P>) / 5; }
+template <uint8_t P> void     paletteMixPosSet(int16_t v) {
+    ColorTheme::instance().setMixPositionPct(kPal<P>, static_cast<uint8_t>(v * 5));
+    PersistentSettings::instance().markDirty();
+}
+void mixPosFormat(int16_t v, char* out, size_t n) {
     int pct = v * 5;
     if      (pct == 0)   snprintf(out, n, "0%% (bottom)");
     else if (pct == 50)  snprintf(out, n, "50%% (middle)");
     else if (pct == 100) snprintf(out, n, "100%% (top)");
     else                 snprintf(out, n, "%d%%", pct);
 }
-int16_t  mixGainGet()          { return ColorTheme::instance().mixGainPct() / 10; }
-void     mixGainSet(int16_t v) { ColorTheme::instance().setMixGainPct(static_cast<uint8_t>(v * 10)); PersistentSettings::instance().markDirty(); }
-void     mixGainFormat(int16_t v, char* out, size_t n) {
+template <uint8_t P> int16_t paletteMixGainGet()      { return ColorTheme::instance().mixGainPct(kPal<P>) / 10; }
+template <uint8_t P> void    paletteMixGainSet(int16_t v) {
+    ColorTheme::instance().setMixGainPct(kPal<P>, static_cast<uint8_t>(v * 10));
+    PersistentSettings::instance().markDirty();
+}
+template <uint8_t P> void    paletteMixGainFormat(int16_t v, char* out, size_t n) {
     int pct = v * 10;
-    unsigned limit = ColorTheme::instance().mixGainLimitPct();
+    unsigned limit = ColorTheme::instance().mixGainLimitPct(kPal<P>);
     if (pct > static_cast<int>(limit)) snprintf(out, n, "%d%% (limit %u%%)", pct, limit);
     else                               snprintf(out, n, "%d%%", pct);
 }
-const MenuSlider kMixPosSlider  = { 0, 20, mixPosGet,  mixPosSet,  mixPosFormat,  "B", "T", mixFill };   // 0..100 % in 5s
-const MenuSlider kMixGainSlider = { 5, 20, mixGainGet, mixGainSet, mixGainFormat, "-", "+", mixFill };   // 50..200 % in 10s
+template <uint8_t P> const MenuSlider kPaletteMixPos  = { 0, 20, paletteMixPosGet<P>,  paletteMixPosSet<P>,  mixPosFormat,            "B", "T", paletteMixFill<P> };  // 0..100 %
+template <uint8_t P> const MenuSlider kPaletteMixGain = { 5, 20, paletteMixGainGet<P>, paletteMixGainSet<P>, paletteMixGainFormat<P>, "-", "+", paletteMixFill<P> };  // 50..200 %
+
+// Save to Slot: copy palette P into slot S.
+template <uint8_t P, uint8_t S>
+void paletteSaveTo() {
+    ColorTheme::instance().saveTo(kPal<P>, S);
+    PersistentSettings::instance().markDirty();
+    Console::log("Theme", "Saved palette %u to slot %u", static_cast<unsigned>(P), static_cast<unsigned>(S + 1));
+}
+template <uint8_t P> const MenuValueOption kPaletteSaveOptions[] = {
+    { "Slot 1", paletteSaveTo<P, 0>, nullptr }, { "Slot 2", paletteSaveTo<P, 1>, nullptr },
+    { "Slot 3", paletteSaveTo<P, 2>, nullptr }, { "Slot 4", paletteSaveTo<P, 3>, nullptr },
+    { "Slot 5", paletteSaveTo<P, 4>, nullptr },
+};
+
+// Color / Spread (slots): the slot's own colour.
+template <uint8_t P> uint16_t paletteColorGet()           { return ColorTheme::instance().slotColor(ColorTheme::slotOf(kPal<P>)); }
+template <uint8_t P> void     paletteColorSet(uint16_t c) { ColorTheme::instance().setSlotColor(ColorTheme::slotOf(kPal<P>), c); PersistentSettings::instance().markDirty(); }
+template <uint8_t P> const MenuColor kPaletteColor = { paletteColorGet<P>, paletteColorSet<P> };
+template <uint8_t P> uint16_t paletteSpreadFill()         { return ColorTheme::instance().high(kPal<P>); }
+template <uint8_t P> int16_t  paletteSpreadGet()          { return ColorTheme::instance().slotSpread(ColorTheme::slotOf(kPal<P>)) / 5; }
+template <uint8_t P> void     paletteSpreadSet(int16_t v) { ColorTheme::instance().setSlotSpread(ColorTheme::slotOf(kPal<P>), static_cast<uint8_t>(v * 5)); PersistentSettings::instance().markDirty(); }
+void spreadFormat(int16_t v, char* out, size_t n) { snprintf(out, n, "%d degrees", v * 5); }
+template <uint8_t P> const MenuSlider kPaletteSpread = { 3, 24, paletteSpreadGet<P>, paletteSpreadSet<P>, spreadFormat, "-", "+", paletteSpreadFill<P> };  // 15..120
+template <uint8_t P>
+void describeSpread(char*, size_t, char* hint, size_t hs, uint16_t*) {
+    const ColorTheme::UserTheme& u = ColorTheme::instance().userTheme(ColorTheme::slotOf(kPal<P>));
+    if (u.spread) snprintf(hint, hs, "%u degrees", static_cast<unsigned>(u.spread));
+    else          snprintf(hint, hs, "copied colours: sets own");
+}
+
+// The submenus.
+template <uint8_t P> const MenuItem kBuiltinPaletteItems[] = {
+    { "Apply",          MenuItemType::ACTION,       paletteApply<P>, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeApply<P> },
+    { "Mix Position",   MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kPaletteMixPos<P> },
+    { "Mix Brightness", MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kPaletteMixGain<P> },
+    { "Save to Slot",   MenuItemType::VALUE_CHOICE, nullptr, kPaletteSaveOptions<P>, kUserThemeSlots },
+};
+template <uint8_t P> const MenuItem kSlotPaletteItems[] = {
+    { "Apply",          MenuItemType::ACTION,       paletteApply<P>, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeApply<P> },
+    { "Color",          MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kPaletteColor<P> },
+    { "Spread",         MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kPaletteSpread<P>, describeSpread<P> },
+    { "Mix Position",   MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kPaletteMixPos<P> },
+    { "Mix Brightness", MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kPaletteMixGain<P> },
+    { "Save to Slot",   MenuItemType::VALUE_CHOICE, nullptr, kPaletteSaveOptions<P>, kUserThemeSlots },
+};
+
+// The list: each palette's line under its name -- "in use" (yellow) for the
+// active one, otherwise what kind it is.
+template <uint8_t P>
+void describePalette(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    ColorTheme& t = ColorTheme::instance();
+    if (t.getPreset() == kPal<P>) { snprintf(hint, hs, "in use"); *color = COLOR_YELLOW; return; }
+    if (!ColorTheme::isSlot(kPal<P>)) { snprintf(hint, hs, "built in"); return; }
+    const ColorTheme::UserTheme& u = t.userTheme(ColorTheme::slotOf(kPal<P>));
+    if (!u.used)        snprintf(hint, hs, "empty (cyan, 60 deg)");
+    else if (u.spread)  snprintf(hint, hs, "own colour, %u deg", static_cast<unsigned>(u.spread));
+    else                snprintf(hint, hs, "copied colours");
+}
+
+#define PALETTE_BUILTIN(name, P) { name, MenuItemType::SUBMENU, nullptr, nullptr, 0, kBuiltinPaletteItems<P>, 4, nullptr, nullptr, nullptr, nullptr, describePalette<P> }
+#define PALETTE_SLOT(name, P)    { name, MenuItemType::SUBMENU, nullptr, nullptr, 0, kSlotPaletteItems<P>,    6, nullptr, nullptr, nullptr, nullptr, describePalette<P> }
+const MenuItem kPaletteItems[] = {
+    PALETTE_BUILTIN("Sunset", 1), PALETTE_BUILTIN("Aurora", 2), PALETTE_BUILTIN("Punk", 3), PALETTE_BUILTIN("Classic", 0),
+    PALETTE_SLOT("Slot 1", 4), PALETTE_SLOT("Slot 2", 5), PALETTE_SLOT("Slot 3", 6), PALETTE_SLOT("Slot 4", 7), PALETTE_SLOT("Slot 5", 8),
+};
+constexpr size_t kPaletteItemCount = sizeof(kPaletteItems) / sizeof(kPaletteItems[0]);
+static_assert(static_cast<int>(ColorPreset::CLASSIC) == 0 && static_cast<int>(ColorPreset::SUNSET) == 1 &&
+              static_cast<int>(ColorPreset::AURORA) == 2 && static_cast<int>(ColorPreset::PUNK) == 3 &&
+              static_cast<int>(ColorPreset::USER1) == 4, "kPaletteItems' numbers");
+
+// Theme > Palette opens at the palette in use.
+size_t paletteListFocus() {
+    ColorPreset p = ColorTheme::instance().getPreset();
+    switch (p) {
+        case ColorPreset::SUNSET:  return 0;
+        case ColorPreset::AURORA:  return 1;
+        case ColorPreset::PUNK:    return 2;
+        case ColorPreset::CLASSIC: return 3;
+        default:                   return 4 + ColorTheme::slotOf(p);   // the slots
+    }
+}
 
 const MenuItem kThemeSubmenuItems[] = {
-    { "Stereo / Mono", MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
-    { "Colors",        MenuItemType::VALUE_CHOICE, nullptr, kColorOptions,       10 },
-    { "Save Current",  MenuItemType::VALUE_CHOICE, nullptr, kSaveThemeOptions,   5 },
-    { "Custom Color",  MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kCustomThemeColor },
-    { "Custom Spread", MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kCustomSpreadSlider },
-    { "Mix Position",  MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kMixPosSlider },
-    { "Mix Brightness", MenuItemType::SLIDER,      nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kMixGainSlider },
+    { "Palette",       MenuItemType::SUBMENU,      nullptr, nullptr, 0, kPaletteItems, kPaletteItemCount,
+                       nullptr, nullptr, nullptr, nullptr, nullptr, paletteListFocus },
     { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
     { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
     { "Peaks",         MenuItemType::VALUE_CHOICE, nullptr, kPeaksOptions, 6 },
+    { "Mono Mix",      MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
 };
 constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
 

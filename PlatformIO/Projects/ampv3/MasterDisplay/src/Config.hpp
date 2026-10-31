@@ -111,11 +111,12 @@ constexpr uint16_t COLOR_DIM_GREEN = 0x0320; // faint reference/gridline color
 //    all channels scale together and stop when the strongest reaches full,
 //    so a colour already at full (Sunset's orange) can only get brighter by
 //    moving towards its top colour.
-// One value per theme, in ColorPreset order: Classic, Sunset, Aurora, NastyFFT, Custom.
-// (Classic's yellow and Aurora's cyan are already at full brightness, and
-// moving them would darken or shift them.)
-constexpr float THEME_MIX_POSITION[5]   = { 0.5f, 0.6f, 0.5f, 0.5f, 0.5f };
-constexpr float THEME_MIX_BRIGHTNESS[5] = { 1.0f, 1.0f, 1.0f, 1.6f, 1.0f };
+// The built-in palettes' defaults, in ColorPreset order: Classic, Sunset,
+// Aurora, Punk (each adjustable in Theme > Palette > ...). Classic's yellow
+// and Aurora's cyan are already at full brightness, and moving them would
+// darken or shift them.
+constexpr float THEME_MIX_POSITION[4]   = { 0.5f, 0.7f, 0.5f, 0.5f };
+constexpr float THEME_MIX_BRIGHTNESS[4] = { 1.0f, 1.3f, 1.0f, 1.0f };
 
 // Spectrum bar gradient thresholds, as a fraction of the bar's max height.
 // Below the yellow threshold the segment renders green, between the two
