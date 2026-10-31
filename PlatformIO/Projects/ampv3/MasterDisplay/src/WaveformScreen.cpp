@@ -26,7 +26,7 @@ void WaveformScreen::setupLanes() {
     } else {
         m_laneCount = 1;
         m_lanes[0].top = 0; m_lanes[0].bottom = SCREEN_HEIGHT - 1;
-        m_lanes[0].color = theme.interpolatedColor(0.5f);
+        m_lanes[0].color = theme.mixColor();
     }
     for (Lane& l : m_lanes) l.peak = 0.0f;
 }
@@ -115,10 +115,15 @@ void WaveformScreen::render() {
 
     AudioEngine& audio = AudioEngine::instance();
     WaveformPipeline::WindowMode mode = audio.getWaveformWindowMode();
-    int16_t lo[kCols], hi[kCols];
+    // Working buffers live in the screen object, not on the stack.
+    int16_t* lo = m_spanLo;
+    int16_t* hi = m_spanHi;
 
     if (mode == WaveformPipeline::WindowMode::DAW) {
-        int16_t minA[kCols], maxA[kCols], minB[kCols], maxB[kCols];
+        int16_t* minA = m_bufA;
+        int16_t* maxA = m_bufB;
+        int16_t* minB = m_bufC;
+        int16_t* maxB = m_bufD;
         if (stereo) {
             audio.getEnvelope(minA, maxA, minB, maxB, kCols, false);
             spansFromEnvelope(m_lanes[0], minA, maxA, lo, hi); drawLane(m_lanes[0], lo, hi);
@@ -128,11 +133,12 @@ void WaveformScreen::render() {
             spansFromEnvelope(m_lanes[0], minA, maxA, lo, hi); drawLane(m_lanes[0], lo, hi);
         }
     } else {
-        // Line modes: kCols+1 points, so column i joins point i to point i+1.
-        // Triggered in Oscilloscope mode (a still picture of the cycles).
-        int16_t a[kCols + 1], b[kCols + 1];
-        bool trigger = WAVEFORM_TRIGGER && mode == WaveformPipeline::WindowMode::OSCILLOSCOPE;
-        audio.getWaveform(a, b, kCols + 1, trigger);
+        // The oscilloscope: kCols+1 points over the scale's span, so column i
+        // joins point i to point i+1; triggered (a still picture of the cycles).
+        int16_t* a = m_bufA;   // kCols + 1 points per lane
+        int16_t* b = m_bufB;
+        size_t span = WaveformPipeline::scopeSamplesForScale(audio.getWaveformScopeScale());
+        audio.getWaveform(a, b, kCols + 1, WAVEFORM_TRIGGER, span);
         if (stereo) {
             spansFromLine(m_lanes[0], a, lo, hi); drawLane(m_lanes[0], lo, hi);
             spansFromLine(m_lanes[1], b, lo, hi); drawLane(m_lanes[1], lo, hi);

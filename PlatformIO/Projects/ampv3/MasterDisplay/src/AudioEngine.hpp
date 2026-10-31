@@ -22,7 +22,7 @@ public:
     size_t getSpectrumBandCount() const;
     // trigger: start at a rising zero crossing (oscilloscope trigger) -- see
     // WaveformPipeline::getWaveform(). The meters use the plain full window.
-    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false) const;
+    void getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger = false, size_t spanSamples = 0) const;
     // Triggered mono trace of a fixed span -- see WaveformPipeline::getScopeMono().
     void getScopeMono(int16_t* out, size_t count, size_t spanSamples) const;
     // DAW view: per-column min/max -- see WaveformPipeline::getEnvelope().
@@ -43,6 +43,15 @@ public:
     // Same pattern, for WaveformPipeline's Window Mode setting.
     void setWaveformWindowMode(WaveformPipeline::WindowMode mode);
     WaveformPipeline::WindowMode getWaveformWindowMode() const;
+    // Theme > Wave > Scale: 0..5 = 256..8192 samples per screen (oscilloscope)...
+    void    setWaveformScopeScale(uint8_t step) { m_waveform.setScopeScale(step); }
+    uint8_t getWaveformScopeScale() const       { return m_waveform.getScopeScale(); }
+    // ...and in DAW mode, 0..4 = 2..32 capture chunks per timeline column.
+    // The one zoom over both (Theme > Wave > Scale): 0..10.
+    void    setWaveformZoom(uint8_t step)       { m_waveform.setZoom(step); }
+    uint8_t getWaveformZoom() const             { return m_waveform.getZoom(); }
+    void    setWaveformDawScale(uint8_t step)   { m_waveform.setDawScale(step); }
+    uint8_t getWaveformDawScale() const         { return m_waveform.getDawScale(); }
 
 private:
     AudioEngine() = default;

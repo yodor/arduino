@@ -302,8 +302,8 @@ void AudioEngine::getScopeMono(int16_t* out, size_t count, size_t spanSamples) c
     m_waveform.getScopeMono(out, count, spanSamples);
 }
 
-void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger) const {
-    m_waveform.getWaveform(leftWave, rightWave, count, trigger);
+void AudioEngine::getWaveform(int16_t* leftWave, int16_t* rightWave, size_t count, bool trigger, size_t spanSamples) const {
+    m_waveform.getWaveform(leftWave, rightWave, count, trigger, spanSamples);
 }
 
 void AudioEngine::setWaveformWindowMode(WaveformPipeline::WindowMode mode) {

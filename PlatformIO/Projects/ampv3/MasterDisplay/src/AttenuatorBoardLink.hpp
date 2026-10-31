@@ -1,5 +1,6 @@
 #pragma once
 #include "Config.hpp"
+#include "AttenuatorConfig.hpp"
 #include <cstring>
 
 // Result of the most recently completed (or in-flight) command.

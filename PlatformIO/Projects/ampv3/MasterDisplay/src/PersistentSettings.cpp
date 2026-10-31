@@ -25,10 +25,10 @@ const char* const kTmpPath = "/settings.tmp";
 // never change what a saved setting means.
 const char* const kChannelModes[]   = { "STEREO", "MONO" };
 const char* const kStereoLayouts[]  = { "SIDE_BY_SIDE", "TOP_BOTTOM" };
-const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT" };
+const char* const kThemes[]         = { "CLASSIC", "SUNSET", "AURORA", "NASTYFFT", "CUSTOM",
+                                        "USER1", "USER2", "USER3", "USER4", "USER5" };
 const char* const kBandLayouts[]    = { "DOUBLING", "FIXED_BANDS", "FULL" };
 const char* const kEnergyModes[]    = { "PEAK", "QUADRATURE_SUM" };
-const char* const kWindowModes[]    = { "OSCILLOSCOPE", "TRACK_PREVIEW", "DAW" };
 const char* const kPeakDecays[]     = { "TURTLE", "SLOW", "NORMAL", "FAST", "CHEETAH" };
 const char* const kStandbyDisplays[] = { "CLOCK", "DIM_CLOCK", "OFF" };
 const char* const kClockModes[]     = { "CLOCK_ONLY", "SECONDS", "DATE" };
@@ -73,11 +73,61 @@ struct Key {
       [](char* o, size_t n) { snprintf(o, n, "%ld", static_cast<long>(getExpr)); },          \
       [](const char* v) { long x; if (!parseInt(v, lo, hi, x)) return false; setStmt; return true; } }
 
+#define USER_KEY(keyName, slot)                                                               \
+    { keyName,                                                                                \
+      [](char* o, size_t n) { writeUserTheme(slot, o, n); },                                 \
+      [](const char* v) { return readUserTheme(slot, v); } }
+
+void writeUserTheme(uint8_t slot, char* o, size_t n) {
+    ColorTheme& t = ColorTheme::instance();
+    const ColorTheme::UserTheme& u = t.userTheme(slot);
+    if (!u.used) { snprintf(o, n, "-"); return; }
+    ColorPreset p = static_cast<ColorPreset>(static_cast<uint8_t>(ColorPreset::USER1) + slot);
+    snprintf(o, n, "%04X,%04X,%04X,%u,%u,%u,%u", u.low, u.mid, u.high, u.style, u.spread,
+             t.mixPositionPct(p), t.mixGainPct(p));
+}
+
+bool readUserTheme(uint8_t slot, const char* v) {
+    if (!strcmp(v, "-")) return true;                       // never saved
+    unsigned lo, mi, hi, style, spread, pos, gain;
+    if (sscanf(v, "%x,%x,%x,%u,%u,%u,%u", &lo, &mi, &hi, &style, &spread, &pos, &gain) != 7) return false;
+    if (lo > 0xFFFF || mi > 0xFFFF || hi > 0xFFFF || style > 2 || spread > 180 || pos > 100 || gain < 10 || gain > 250) return false;
+    ColorTheme::UserTheme u;
+    u.used = true; u.low = lo; u.mid = mi; u.high = hi;
+    u.style = static_cast<uint8_t>(style); u.spread = static_cast<uint8_t>(spread);
+    ColorTheme::instance().restoreUserTheme(slot, u, static_cast<uint8_t>(pos), static_cast<uint8_t>(gain));
+    return true;
+}
+
 DisplaySettings& ds() { return DisplaySettings::instance(); }
 
 const Key kKeys[] = {
     ENUM_KEY("theme",           kThemes,         ColorTheme::instance().getPreset(),
              ColorTheme::instance().setPreset(static_cast<ColorPreset>(i))),
+    // The theme mix colour, per theme (Theme > Mix Position / Mix Brightness), percent.
+    INT_KEY ("mix_position_classic",  0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::CLASSIC),  ColorTheme::instance().setMixPositionPct(ColorPreset::CLASSIC,  static_cast<uint8_t>(x))),
+    INT_KEY ("mix_position_sunset",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::SUNSET),   ColorTheme::instance().setMixPositionPct(ColorPreset::SUNSET,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_position_aurora",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::AURORA),   ColorTheme::instance().setMixPositionPct(ColorPreset::AURORA,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_position_nastyfft", 0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::NASTYFFT), ColorTheme::instance().setMixPositionPct(ColorPreset::NASTYFFT, static_cast<uint8_t>(x))),
+    INT_KEY ("mix_position_custom",   0, 100, ColorTheme::instance().mixPositionPct(ColorPreset::CUSTOM),   ColorTheme::instance().setMixPositionPct(ColorPreset::CUSTOM,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_custom",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::CUSTOM),   ColorTheme::instance().setMixGainPct(ColorPreset::CUSTOM,   static_cast<uint8_t>(x))),
+    // The saved theme slots (Theme > Save Current): LOW,MID,HIGH (RGB565
+    // hex),STYLE (0 zones, 1 smooth, 2 per bar),SPREAD (degrees round the
+    // colour wheel, 0 = a straight blend),MIX POSITION,MIX BRIGHTNESS (%);
+    // "-" = never saved.
+    USER_KEY("user1", 0), USER_KEY("user2", 1), USER_KEY("user3", 2), USER_KEY("user4", 3), USER_KEY("user5", 4),
+    // The Custom theme: its colour (RGB565 hex) and spread (degrees).
+    { "custom_color",
+      [](char* o, size_t n) { snprintf(o, n, "%04X", static_cast<unsigned>(ColorTheme::instance().customColor())); },
+      [](const char* v) { char* e = nullptr; unsigned long c = strtoul(v, &e, 16);
+                          if (e == v || *e != '\0' || c > 0xFFFF) return false;
+                          ColorTheme::instance().setCustom(static_cast<uint16_t>(c), ColorTheme::instance().customSpread()); return true; } },
+    INT_KEY ("custom_spread",   15, 120, ColorTheme::instance().customSpread(),
+             ColorTheme::instance().setCustom(ColorTheme::instance().customColor(), static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_classic",  10, 250, ColorTheme::instance().mixGainPct(ColorPreset::CLASSIC),  ColorTheme::instance().setMixGainPct(ColorPreset::CLASSIC,  static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_sunset",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::SUNSET),   ColorTheme::instance().setMixGainPct(ColorPreset::SUNSET,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_aurora",   10, 250, ColorTheme::instance().mixGainPct(ColorPreset::AURORA),   ColorTheme::instance().setMixGainPct(ColorPreset::AURORA,   static_cast<uint8_t>(x))),
+    INT_KEY ("mix_brightness_nastyfft", 10, 250, ColorTheme::instance().mixGainPct(ColorPreset::NASTYFFT), ColorTheme::instance().setMixGainPct(ColorPreset::NASTYFFT, static_cast<uint8_t>(x))),
     INT_KEY ("brightness",      1, 100,          ds().getBrightnessPercent(),
              { ds().setBrightnessPercent(static_cast<uint8_t>(x)); Renderer::instance().setBacklightPercent(static_cast<uint8_t>(x)); }),
     ENUM_KEY("channel_mode",    kChannelModes,   ds().getChannelMode(),
@@ -89,8 +139,11 @@ const Key kKeys[] = {
              AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(i))),
     ENUM_KEY("spectrum_energy", kEnergyModes,    AudioEngine::instance().getSpectrumEnergyMode(),
              AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(i))),
-    ENUM_KEY("waveform_window", kWindowModes,    AudioEngine::instance().getWaveformWindowMode(),
-             AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(i))),
+    // One zoom over the oscilloscope and the timeline (Theme > Wave > Scale):
+    // 0 = 256 samples .. 5 = 8192, 6 = 1.2 s .. 10 = 20 s across. (The older
+    // waveform_window / waveform_scale / daw_scale keys are not read.)
+    INT_KEY ("waveform_zoom",   0, WaveformPipeline::kZoomSteps - 1, AudioEngine::instance().getWaveformZoom(),
+             AudioEngine::instance().setWaveformZoom(static_cast<uint8_t>(x))),
     BOOL_KEY("waveform_auto_gain", ds().getWaveformAutoGain(), ds().setWaveformAutoGain(b)),
     BOOL_KEY("peaks",           ds().getPeaksEnabled(), ds().setPeaksEnabled(b)),
     ENUM_KEY("peak_decay",      kPeakDecays,     BarPhysics::instance().getPeakDecaySpeed(),
@@ -246,7 +299,8 @@ bool PersistentSettings::importLegacy() {
     ColorTheme::instance().setPreset(static_cast<ColorPreset>(d->colorPreset));
     AudioEngine::instance().setSpectrumBandLayoutMode(static_cast<SpectrumPipeline::BandLayoutMode>(d->bandLayoutMode));
     AudioEngine::instance().setSpectrumEnergyMode(static_cast<SpectrumPipeline::EnergyMode>(d->energyMode));
-    AudioEngine::instance().setWaveformWindowMode(static_cast<WaveformPipeline::WindowMode>(d->waveformWindowMode));
+    // The old layout stored OSCILLOSCOPE 0, TRACK_PREVIEW 1 -- both the oscilloscope now.
+    AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::OSCILLOSCOPE);
     s.setBrightnessPercent(d->brightnessPercent);
     Renderer::instance().setBacklightPercent(d->brightnessPercent);
     s.setPeaksEnabled(d->peaksEnabled != 0);
@@ -282,7 +336,7 @@ void PersistentSettings::save() {
     }
     f.print("# " FW_NAME " settings -- key=value; unknown keys are ignored, missing ones use defaults\n");
     f.print("# saved by firmware " FW_VERSION "\n");
-    char value[24], line[64];
+    char value[48], line[96];
     for (const Key& k : kKeys) {
         k.write(value, sizeof(value));
         snprintf(line, sizeof(line), "%s=%s\n", k.name, value);

@@ -251,6 +251,20 @@ void menuSet_ColorNastyFFT() { ColorTheme::instance().setPreset(ColorPreset::NAS
 bool menuIsActive_ColorClassic()  { return ColorTheme::instance().getPreset() == ColorPreset::CLASSIC; }
 bool menuIsActive_ColorSunset()   { return ColorTheme::instance().getPreset() == ColorPreset::SUNSET; }
 bool menuIsActive_ColorAurora()   { return ColorTheme::instance().getPreset() == ColorPreset::AURORA; }
+void menuSet_ColorCustom()   { ColorTheme::instance().setPreset(ColorPreset::CUSTOM);   PersistentSettings::instance().markDirty(); }
+bool menuIsActive_ColorCustom() { return ColorTheme::instance().getPreset() == ColorPreset::CUSTOM; }
+// Theme > Colors: the saved slots; Theme > Save Current: store the current
+// look in a slot (and switch to it).
+template <uint8_t Slot>
+void menuSet_ColorUser() { ColorTheme::instance().setPreset(static_cast<ColorPreset>(static_cast<uint8_t>(ColorPreset::USER1) + Slot)); PersistentSettings::instance().markDirty(); }
+template <uint8_t Slot>
+bool menuIsActive_ColorUser() { return ColorTheme::instance().getPreset() == static_cast<ColorPreset>(static_cast<uint8_t>(ColorPreset::USER1) + Slot); }
+template <uint8_t Slot>
+void menuSet_SaveTheme() {
+    ColorTheme::instance().saveCurrentTo(Slot);
+    Console::log("Theme", "Saved the current look to slot %u", static_cast<unsigned>(Slot + 1));
+    PersistentSettings::instance().markDirty();
+}
 bool menuIsActive_ColorNastyFFT() { return ColorTheme::instance().getPreset() == ColorPreset::NASTYFFT; }
 
 // Band Layout: Doubling (derived bar count from FFT_SIZE, formerly
@@ -308,17 +322,6 @@ void menuSet_Brightness() {
 template <uint8_t Pct>
 bool menuIsActive_Brightness() { return DisplaySettings::instance().getBrightnessPercent() == Pct; }
 
-// Wave Window Mode: Oscilloscope (kOscilloscopeSamples, a genuine "few
-// cycles" view of waveform shape) vs Track Preview (kTrackPreviewSamples,
-// a much longer span showing amplitude envelope instead -- see
-// WaveformPipeline.hpp for the full reasoning behind both). Same core0-
-// sets/core1-applies pattern as the FFT settings above.
-void menuSet_WaveOscilloscope() { AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::OSCILLOSCOPE);  PersistentSettings::instance().markDirty(); }
-void menuSet_WaveTrackPreview() { AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::TRACK_PREVIEW); PersistentSettings::instance().markDirty(); }
-bool menuIsActive_WaveOscilloscope() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::OSCILLOSCOPE; }
-bool menuIsActive_WaveTrackPreview() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::TRACK_PREVIEW; }
-void menuSet_WaveDaw()      { AudioEngine::instance().setWaveformWindowMode(WaveformPipeline::WindowMode::DAW); PersistentSettings::instance().markDirty(); }
-bool menuIsActive_WaveDaw() { return AudioEngine::instance().getWaveformWindowMode() == WaveformPipeline::WindowMode::DAW; }
 
 // Peaks Enabled: whether SpectrumScreen/DigitalVuMeterScreen draw their
 // peak-hold indicators at all -- purely a core0/display-side setting (see
@@ -354,6 +357,19 @@ const MenuValueOption kColorOptions[] = {
     { "NastyFFT", menuSet_ColorNastyFFT, menuIsActive_ColorNastyFFT },
     { "Sunset",   menuSet_ColorSunset,   menuIsActive_ColorSunset   },
     { "Aurora",   menuSet_ColorAurora,   menuIsActive_ColorAurora   },
+    { "Custom",   menuSet_ColorCustom,   menuIsActive_ColorCustom   },
+    { "Slot 1",   menuSet_ColorUser<0>,  menuIsActive_ColorUser<0>  },
+    { "Slot 2",   menuSet_ColorUser<1>,  menuIsActive_ColorUser<1>  },
+    { "Slot 3",   menuSet_ColorUser<2>,  menuIsActive_ColorUser<2>  },
+    { "Slot 4",   menuSet_ColorUser<3>,  menuIsActive_ColorUser<3>  },
+    { "Slot 5",   menuSet_ColorUser<4>,  menuIsActive_ColorUser<4>  },
+};
+const MenuValueOption kSaveThemeOptions[] = {
+    { "Slot 1", menuSet_SaveTheme<0>, menuIsActive_ColorUser<0> },
+    { "Slot 2", menuSet_SaveTheme<1>, menuIsActive_ColorUser<1> },
+    { "Slot 3", menuSet_SaveTheme<2>, menuIsActive_ColorUser<2> },
+    { "Slot 4", menuSet_SaveTheme<3>, menuIsActive_ColorUser<3> },
+    { "Slot 5", menuSet_SaveTheme<4>, menuIsActive_ColorUser<4> },
 };
 
 const MenuValueOption kChannelModeOptions[] = {
@@ -393,11 +409,6 @@ const MenuItem kFftSubmenuItems[] = {
 };
 constexpr size_t kFftSubmenuItemCount = sizeof(kFftSubmenuItems) / sizeof(kFftSubmenuItems[0]);
 
-const MenuValueOption kWaveWindowModeOptions[] = {
-    { "Oscilloscope",  menuSet_WaveOscilloscope, menuIsActive_WaveOscilloscope },
-    { "Track Preview", menuSet_WaveTrackPreview, menuIsActive_WaveTrackPreview },
-    { "DAW",           menuSet_WaveDaw,          menuIsActive_WaveDaw          },
-};
 
 // "Wave" submenu, nested inside "Theme" -- currently just the one
 // setting (Window Mode), with room to grow the same way "FFT" did.
@@ -411,8 +422,33 @@ const MenuValueOption kWaveAutoGainOptions[] = {
     { "Off", menuSet_WaveGainOff, menuIsActive_WaveGainOff },
 };
 
+// Theme > Wave > Scale: one zoom from 5.8 ms to 20 s. The short end is the
+// triggered oscilloscope (256 .. 8192 samples per screen), the long end the
+// scrolling min/max timeline (1.2 s .. 20 s across). Applied live.
+int16_t waveScaleGet() { return AudioEngine::instance().getWaveformZoom(); }
+void waveScaleSet(int16_t v) {
+    AudioEngine::instance().setWaveformZoom(static_cast<uint8_t>(v));
+    PersistentSettings::instance().markDirty();
+}
+void waveScaleFormat(int16_t v, char* out, size_t n) {
+    if (v >= WaveformPipeline::kScopeScaleSteps) {
+        // 214 columns of N chunks, CAPTURE_CHUNK_SAMPLES / 2 samples each.
+        uint8_t daw = static_cast<uint8_t>(v - WaveformPipeline::kScopeScaleSteps);
+        float s = WAVEFORM_SAMPLES * WaveformPipeline::dawChunksForScale(daw) * (CAPTURE_CHUNK_SAMPLES / 2) / AUDIO_SAMPLE_RATE_HZ;
+        if (s < 10.0f) snprintf(out, n, "%u.%u s across", static_cast<unsigned>(s), static_cast<unsigned>(s * 10.0f + 0.5f) % 10);
+        else           snprintf(out, n, "%u s across", static_cast<unsigned>(s + 0.5f));
+        return;
+    }
+    size_t samples = WaveformPipeline::scopeSamplesForScale(static_cast<uint8_t>(v));
+    float  ms      = samples * 1000.0f / AUDIO_SAMPLE_RATE_HZ;
+    if (ms < 10.0f) snprintf(out, n, "%u samples, %u.%u ms", static_cast<unsigned>(samples),
+                             static_cast<unsigned>(ms), static_cast<unsigned>(ms * 10.0f) % 10);
+    else            snprintf(out, n, "%u samples, %u ms", static_cast<unsigned>(samples), static_cast<unsigned>(ms + 0.5f));
+}
+const MenuSlider kWaveScaleSlider = { 0, WaveformPipeline::kZoomSteps - 1, waveScaleGet, waveScaleSet, waveScaleFormat, "-", "+" };
+
 const MenuItem kWaveSubmenuItems[] = {
-    { "Window Mode", MenuItemType::VALUE_CHOICE, nullptr, kWaveWindowModeOptions, 3 },
+    { "Scale",       MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kWaveScaleSlider },
     { "Auto Gain",   MenuItemType::VALUE_CHOICE, nullptr, kWaveAutoGainOptions,   2 },
 };
 constexpr size_t kWaveSubmenuItemCount = sizeof(kWaveSubmenuItems) / sizeof(kWaveSubmenuItems[0]);
@@ -429,9 +465,60 @@ const MenuValueOption kPeaksOptions[] = {
 
 // "Theme" submenu, nested at root -- display/appearance settings grouped
 // together, with "FFT", "Wave", and "Peaks" themselves one further level in.
+// Theme > Custom Color / Custom Spread: the Custom theme -- the chosen colour
+// in the middle, the bottom and top that many degrees either side of it on
+// the colour wheel. Choosing either switches the theme to Custom.
+uint16_t customThemeColorGet()           { return ColorTheme::instance().customColor(); }
+void     customThemeColorSet(uint16_t c) {
+    ColorTheme& t = ColorTheme::instance();
+    t.setCustom(c, t.customSpread());
+    t.setPreset(ColorPreset::CUSTOM);
+    PersistentSettings::instance().markDirty();
+}
+const MenuColor kCustomThemeColor = { customThemeColorGet, customThemeColorSet };
+uint16_t customSpreadFill()       { return ColorTheme::instance().highColor(); }
+int16_t  customSpreadGet()        { return ColorTheme::instance().customSpread() / 5; }
+void     customSpreadSet(int16_t v) {
+    ColorTheme& t = ColorTheme::instance();
+    t.setCustom(t.customColor(), static_cast<uint8_t>(v * 5));
+    t.setPreset(ColorPreset::CUSTOM);
+    PersistentSettings::instance().markDirty();
+}
+void customSpreadFormat(int16_t v, char* out, size_t n) { snprintf(out, n, "%d degrees", v * 5); }
+const MenuSlider kCustomSpreadSlider = { 3, 24, customSpreadGet, customSpreadSet, customSpreadFormat, "-", "+", customSpreadFill }; // 15..120
+
+// Theme > Mix Position / Mix Brightness: the current theme's mix colour (the
+// mono waveform, the clock in Theme colour), each theme remembering its own.
+// The bar is drawn in the mix colour, live.
+uint16_t mixFill() { return ColorTheme::instance().mixColor(); }
+int16_t  mixPosGet()           { return ColorTheme::instance().mixPositionPct() / 5; }
+void     mixPosSet(int16_t v)  { ColorTheme::instance().setMixPositionPct(static_cast<uint8_t>(v * 5)); PersistentSettings::instance().markDirty(); }
+void     mixPosFormat(int16_t v, char* out, size_t n) {
+    int pct = v * 5;
+    if      (pct == 0)   snprintf(out, n, "0%% (bottom)");
+    else if (pct == 50)  snprintf(out, n, "50%% (middle)");
+    else if (pct == 100) snprintf(out, n, "100%% (top)");
+    else                 snprintf(out, n, "%d%%", pct);
+}
+int16_t  mixGainGet()          { return ColorTheme::instance().mixGainPct() / 10; }
+void     mixGainSet(int16_t v) { ColorTheme::instance().setMixGainPct(static_cast<uint8_t>(v * 10)); PersistentSettings::instance().markDirty(); }
+void     mixGainFormat(int16_t v, char* out, size_t n) {
+    int pct = v * 10;
+    unsigned limit = ColorTheme::instance().mixGainLimitPct();
+    if (pct > static_cast<int>(limit)) snprintf(out, n, "%d%% (limit %u%%)", pct, limit);
+    else                               snprintf(out, n, "%d%%", pct);
+}
+const MenuSlider kMixPosSlider  = { 0, 20, mixPosGet,  mixPosSet,  mixPosFormat,  "B", "T", mixFill };   // 0..100 % in 5s
+const MenuSlider kMixGainSlider = { 5, 20, mixGainGet, mixGainSet, mixGainFormat, "-", "+", mixFill };   // 50..200 % in 10s
+
 const MenuItem kThemeSubmenuItems[] = {
     { "Stereo / Mono", MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
-    { "Colors",        MenuItemType::VALUE_CHOICE, nullptr, kColorOptions,       4 },
+    { "Colors",        MenuItemType::VALUE_CHOICE, nullptr, kColorOptions,       10 },
+    { "Save Current",  MenuItemType::VALUE_CHOICE, nullptr, kSaveThemeOptions,   5 },
+    { "Custom Color",  MenuItemType::COLOR,        nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, &kCustomThemeColor },
+    { "Custom Spread", MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kCustomSpreadSlider },
+    { "Mix Position",  MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kMixPosSlider },
+    { "Mix Brightness", MenuItemType::SLIDER,      nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kMixGainSlider },
     { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
     { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
     { "Peaks",         MenuItemType::VALUE_CHOICE, nullptr, kPeaksOptions, 6 },

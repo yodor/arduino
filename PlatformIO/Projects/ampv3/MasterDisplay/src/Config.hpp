@@ -36,70 +36,7 @@ constexpr int16_t  AUTO_STANDBY_AUDIO_THRESHOLD = 24;
 constexpr uint32_t AUTO_STANDBY_CHECK_MS        = 250;
 constexpr uint8_t  STANDBY_DIM_PERCENT  = 15;
 
-// UART attenuator board link (pins in Pins.hpp).
-constexpr uint32_t ATTENUATOR_UART_BAUD = 115200; // confirm against the attenuator board's actual firmware
-
-// Protocol revision 7: the volume range is no longer a master-side
-// constant -- it comes from the attenuator's STATUS line (VOLMIN/VOLMAX,
-// 0-based, normally 0..31), so nothing here hard-codes it.
-
-// Protocol revision this master is written for. An attenuator reporting a
-// different PROTO= is logged loudly (the protocol doc says a master
-// written for another revision will misbehave), but still parsed.
-constexpr uint8_t ATTENUATOR_PROTO_EXPECTED = 20;
-
-// How often to re-fire VOL UP/DOWN while a volume button is held -- each
-// command is a single discrete step on the attenuator board.
-constexpr uint32_t ATTENUATOR_VOL_REPEAT_MS = 250;
-
-// How long to wait for a reply to any command before giving up and
-// reporting a timeout. Revision 7 answers EVERY command within this,
-// including STATUS during a calibration (~10ms).
-constexpr uint32_t ATTENUATOR_RESPONSE_TIMEOUT_MS = 500;
-
-// STATUS is the only getter in revision 7, so the master polls it: every
-// IDLE_MS normally, every BUSY_MS while the attenuator reports BUSY
-// (calibrating, or its boot hold -- the hold poll is shortened further to
-// the remaining time it reports). Also sent right after every successful
-// VOL/MUTE/AMP_MUTE command, so the on-screen volume reflects the
-// attenuator's real VOL/DB rather than a local guess.
-constexpr uint32_t ATTENUATOR_STATUS_POLL_IDLE_MS = 5000;
-constexpr uint32_t ATTENUATOR_STATUS_POLL_BUSY_MS = 2000;
-
-// Revision 8 read-only queries: PROGRESS polled this often while a
-// calibration runs (for the progress page), ENV this often while a page
-// that shows it is open (LEARN, rev 9, likewise).
-constexpr uint32_t ATTENUATOR_PROGRESS_POLL_MS = 1000;
-constexpr uint32_t ATTENUATOR_ENV_POLL_MS      = 5000;
-// ...and, in the background, this often anyway while the attenuator is idle --
-// for revision 14's resync hint and revision 13's NTC state (both based on a
-// 1-minute average, so a slow poll misses nothing).
-constexpr uint32_t ATTENUATOR_ENV_BACKGROUND_POLL_MS = 10000; // COMP / resync hint on the Info screen follow it
-
-// The longest line the attenuator sends, with its terminator. VER is the
-// longest (~230 characters before its free-text NOTE), so this leaves room
-// for long release notes; a longer line is dropped and logged. The UART
-// receive FIFO holds a whole reply plus the start of the next, so a reply
-// arriving while the main loop is busy is never cut.
-constexpr size_t ATTENUATOR_LINE_MAX     = 512;
-constexpr size_t ATTENUATOR_RX_FIFO_SIZE = 2 * ATTENUATOR_LINE_MAX;
-
-// Notices (resync advised, NTC fault): how long the popup stays up.
-constexpr uint32_t NOTICE_POPUP_MS = 5000;
-
-// A STATUS older than this is treated as "no link" (the attenuator stopped
-// answering, or isn't fitted on this unit) -- comfortably more than two
-// idle polls, so a single lost reply doesn't flip the display.
-constexpr uint32_t ATTENUATOR_STATUS_STALE_MS = 12000;
-
-// After a local mute toggle, ignore the attenuator's reported MUTE for this
-// long before adopting it -- a STATUS that was already in flight when the
-// user pressed mute would otherwise "undo" the press.
-constexpr uint32_t ATTENUATOR_MUTE_ADOPT_GRACE_MS = 1000;
-
-// Set true to log every UART line in both directions ([UART TX]/[UART RX])
-// -- bring-up/debug only; with STATUS polled every few seconds it's noisy.
-constexpr bool ATTENUATOR_LINK_TRACE = false;
+// The LDR attenuator link's settings: AttenuatorConfig.hpp.
 
 // Debug serial output, off for normal use:
 //  - DEBUG_AUDIO_DIAGNOSTICS: core1's once-a-second [Timing]/[RawADC]
@@ -165,6 +102,21 @@ constexpr uint16_t COLOR_WHITE     = 0xFFFF;
 constexpr uint16_t COLOR_CYAN      = 0x07FF;
 constexpr uint16_t COLOR_DIM_GREEN = 0x0320; // faint reference/gridline color
 
+// The theme's "mix" colour -- the mono waveform, and the clock when its colour
+// follows the theme (ColorTheme::mixColor()):
+//  - THEME_MIX_POSITION: where on the theme's bottom -> middle -> top
+//    gradient it sits. 0.5 = the middle colour, 1.0 = the top colour;
+//    0.6 is 20% of the way from the middle towards the top.
+//  - THEME_MIX_BRIGHTNESS: a gain on that colour, 1.0 = as is. Hue-preserving:
+//    all channels scale together and stop when the strongest reaches full,
+//    so a colour already at full (Sunset's orange) can only get brighter by
+//    moving towards its top colour.
+// One value per theme, in ColorPreset order: Classic, Sunset, Aurora, NastyFFT, Custom.
+// (Classic's yellow and Aurora's cyan are already at full brightness, and
+// moving them would darken or shift them.)
+constexpr float THEME_MIX_POSITION[5]   = { 0.5f, 0.6f, 0.5f, 0.5f, 0.5f };
+constexpr float THEME_MIX_BRIGHTNESS[5] = { 1.0f, 1.0f, 1.0f, 1.6f, 1.0f };
+
 // Spectrum bar gradient thresholds, as a fraction of the bar's max height.
 // Below the yellow threshold the segment renders green, between the two
 // thresholds it renders yellow, and above the red threshold it renders red.
@@ -179,17 +131,20 @@ constexpr float BAR_COLOR_RED_THRESHOLD    = 0.85f;
 // flat-zone themes.
 constexpr uint16_t GRADIENT_BAND_COUNT = 24;
 
-// Number of waveform samples rendered per frame. Each sample costs its own
-// short SPI line-draw transaction (erase + redraw), and per-transaction
-// overhead -- not pixel volume -- is what's limiting waveform frame rate.
-// Halving this roughly halves that call count. Lower = faster, less
-// horizontal detail; raise back toward SCREEN_WIDTH for max resolution if
-// you don't need the frame rate. This is the DISPLAY-side decimation
-// target -- how many points getWaveform() decimates down to for drawing --
-// distinct from WaveformPipeline's kOscilloscopeSamples/kTrackPreviewSamples
-// (WaveformPipeline.hpp), which is the ENGINE-side raw capture window
-// getWaveform() decimates FROM.
+// Waveform points per frame. The Waveform screen draws one column per point,
+// each one NV3007 pixel pair (2 px) wide, so SCREEN_WIDTH / 2 fills the
+// screen exactly -- it's the panel's horizontal resolution for the trace, not
+// a quality knob. The time a frame spans is set elsewhere: WaveformPipeline's
+// Theme > Wave > Scale (WaveformPipeline: the oscilloscope's span and the DAW
+// timeline's length).
 constexpr uint16_t WAVEFORM_SAMPLES = SCREEN_WIDTH / 2;
+// One waveform column per NV3007 pixel pair (2 px), so this can't be more
+// than half the width: a larger value draws past the screen edge and grows
+// the waveform's buffers for nothing. (The trace's time span is set by
+// Theme > Wave > Scale.) Also
+// the VU screens' RMS window length.
+static_assert(WAVEFORM_SAMPLES * 2 <= SCREEN_WIDTH,
+              "WAVEFORM_SAMPLES: one column per 2-px pixel pair -- at most SCREEN_WIDTH / 2");
 
 // Waveform screen auto-gain (switched in Theme > Wave > Auto Gain, off by
 // default): the trace grows to fill most of its lane and eases back when the
@@ -199,12 +154,6 @@ constexpr uint16_t WAVEFORM_SAMPLES = SCREEN_WIDTH / 2;
 // being blown up into noise. Off: fixed scale, full ADC range = lane.
 constexpr float WAVEFORM_GAIN_DECAY     = 0.995f;
 constexpr float WAVEFORM_MIN_FULL_SCALE = 256.0f;
-
-// Waveform DAW mode: capture chunks per timeline column. 5 chunks of 128
-// samples = ~14.5 ms per column at 44.1 kHz, so the 214 columns show ~3.1 s;
-// raise it for a longer, slower-scrolling view.
-constexpr uint32_t WAVEFORM_DAW_CHUNKS_PER_COLUMN = 5;
-
 
 // Target frame period. The main loop paces itself against this instead of
 // an unconditional delay, so measured FPS reflects the real budget rather
@@ -267,7 +216,7 @@ constexpr uint16_t CAPTURE_RING_CHUNKS = 16;
 static_assert((CAPTURE_RING_CHUNKS & (CAPTURE_RING_CHUNKS - 1)) == 0, "CAPTURE_RING_CHUNKS must be a power of two");
 
 // WaveformScreen's own sliding window size now lives in
-// WaveformPipeline.hpp (kOscilloscopeSamples/kTrackPreviewSamples), not
+// WaveformPipeline.hpp (the scope scale / kLevelSamples), not
 // here -- it moved from a fixed compile-time value to a runtime-
 // selectable pair once the menu grew a Wave submenu, matching the same
 // each-pipeline-owns-its-own-size-constants pattern FFT_SIZE's

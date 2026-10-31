@@ -2,10 +2,10 @@
 #include "Screen.hpp"
 #include "Config.hpp"
 
-// The waveform screen, in three modes (Theme > Waveform):
-//   OSCILLOSCOPE   a short window, triggered at a rising zero crossing:
-//                  individual cycles, standing still
-//   TRACK_PREVIEW  the long window as a line
+// The waveform screen, in two modes (Theme > Wave):
+//   OSCILLOSCOPE   the newest 256..8192 samples (Theme > Wave > Scale),
+//                  triggered at a rising zero crossing: single cycles
+//                  standing still at short scales, the envelope at long ones
 //   DAW            the long window as a min/max ENVELOPE: each column is the
 //                  span from the lowest to the highest sample in its slice
 //                  of the window (~19 samples), so every peak and transient
@@ -47,6 +47,10 @@ private:
     float gainFor(Lane& lane, int32_t framePeak);
 
     Lane m_lanes[2];
+    // render()'s working buffers (kept off the stack): the new spans, and the
+    // raw points (kCols + 1) or the envelope (min/max per lane).
+    int16_t m_spanLo[kCols] = {}, m_spanHi[kCols] = {};
+    int16_t m_bufA[kCols + 1] = {}, m_bufB[kCols + 1] = {}, m_bufC[kCols] = {}, m_bufD[kCols] = {};
     int  m_laneCount = 1;
     bool m_valid     = false;   // the lanes on the panel match lo/hi
     bool m_wasStereo = false;

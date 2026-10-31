@@ -36,6 +36,7 @@ struct MenuSlider {
     void      (*format)(int16_t, char*, size_t);     // the readout, e.g. "Left -1.50 dB" / "Center"
     const char* leftLabel;                           // at the bar's ends, e.g. "L" / "R"
     const char* rightLabel;
+    uint16_t  (*fillColor)() = nullptr;              // optional: the filled part's colour, live (e.g. the theme mix)
 };
 
 // COLOR items: the chooser offers kMenuPaletteSize colors -- the hue circle at

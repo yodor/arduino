@@ -119,7 +119,7 @@ void ClockScreen::layout() {
 
     // Settings > Clock > Color: the theme's middle mix (as the mono
     // waveform), or the custom colour.
-    m_onColor    = ds.getClockFollowTheme() ? ColorTheme::instance().interpolatedColor(0.5f) : ds.getClockColor();
+    m_onColor    = ds.getClockFollowTheme() ? ColorTheme::instance().mixColor() : ds.getClockColor();
     m_ghostColor = dim565(m_onColor);
 }
 

@@ -488,7 +488,6 @@ void MenuScreen::drawHeader(const char* title, size_t index, size_t count) {
             gfx->fillTriangle(x, kHeaderY + 9, x + w, kHeaderY + 9, x + w / 2, kHeaderY + 9 + h, kHeaderColor);
         }
     }
-    gfx->drawFastHLine(0, kDividerY, SCREEN_WIDTH, COLOR_DIM_GREEN);
 }
 
 void MenuScreen::drawFull() {
@@ -790,7 +789,7 @@ void MenuScreen::drawSliderBody() {
     gfx->fillRect(kSlTrackX0, kSlTrackY, kSlTrackX1 - kSlTrackX0, kSlTrackH, kSlTrackColor);
     if (xk != xc) {
         int16_t a = xk < xc ? xk : xc, b = xk < xc ? xc : xk;
-        gfx->fillRect(a, kSlTrackY, b - a, kSlTrackH, kSlFillColor);
+        gfx->fillRect(a, kSlTrackY, b - a, kSlTrackH, sl->fillColor ? sl->fillColor() : kSlFillColor);
     }
     gfx->fillRect(xc - 1, kSlTop, 2, kSlKnobH + 4, COLOR_WHITE);           // centre mark
     gfx->fillRect(xk - kSlKnobW / 2, kSlTrackY + kSlTrackH / 2 - kSlKnobH / 2, kSlKnobW, kSlKnobH, COLOR_WHITE); // knob
