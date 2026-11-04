@@ -1,4 +1,5 @@
 #include "MenuContent.hpp"
+#include "MasterConsole.hpp"
 #include "Console.hpp"
 #include "SystemInfo.hpp"
 #include "DebugFlags.hpp"
@@ -1326,12 +1327,27 @@ void describeCompensation(char*, size_t, char* hint, size_t hs, uint16_t* color)
     *color = level == 2 ? COLOR_GREEN : level == 1 ? COLOR_YELLOW : level == 0 ? COLOR_RED : 0x8410;
 }
 
+// Diagnostics > Attenuator Console: the USB pass-through (entered with ATTEN
+// on the USB console). Selecting it while active leaves it -- for when the
+// terminal was closed without ~. and the attenuator is still in its console.
+void menuAction_AttenConsole() {
+    MasterConsole& c = MasterConsole::instance();
+    if (!c.passthroughActive()) return;
+    c.leavePassthrough();
+    Console::log("Menu", "Left the attenuator console");
+}
+void describeAttenConsole(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    if (MasterConsole::instance().passthroughActive()) { snprintf(hint, hs, "active: select to leave"); *color = COLOR_YELLOW; }
+    else                                               snprintf(hint, hs, "off (ATTEN on USB)");
+}
+
 const MenuItem kDiagnosticsSubmenuItems[] = {
     { "Versions",     MenuItemType::SUBMENU,      nullptr, nullptr, 0, kVersionsSubmenuItems, 2 },
     { "Amp Mute",     MenuItemType::VALUE_CHOICE, nullptr, kAmpMuteOptions, 2 },
     { "Compensation", MenuItemType::VALUE_CHOICE, nullptr, kCompOptions,    2, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeCompensation },
     { "Display Test", MenuItemType::ACTION,       menuAction_DisplayTest, nullptr, 0 },
     { "Debug Output", MenuItemType::SUBMENU,      nullptr, nullptr, 0, kDebugOutputItems, 2 },
+    { "Attenuator Console", MenuItemType::ACTION, menuAction_AttenConsole, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeAttenConsole },
 };
 constexpr size_t kDiagnosticsSubmenuItemCount = sizeof(kDiagnosticsSubmenuItems) / sizeof(kDiagnosticsSubmenuItems[0]);
 

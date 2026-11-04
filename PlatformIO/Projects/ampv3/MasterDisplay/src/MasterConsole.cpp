@@ -36,10 +36,14 @@ void MasterConsole::enterPassthrough() {
     Console::log("Console", "Pass-through to the attenuator console. Type ~. at the start of a line to return.");
     m_atLineStart = true;
     m_heldTilde   = false;
+    m_sawTerminal = static_cast<bool>(Serial);
     AttenuatorBoardLink::instance().enterPassthrough(); // sends DEBUG
 }
 
+bool MasterConsole::passthroughActive() const { return AttenuatorBoardLink::instance().isPassthrough(); }
+
 void MasterConsole::leavePassthrough() {
+    if (!AttenuatorBoardLink::instance().isPassthrough()) return;
     AttenuatorBoardLink::instance().exitPassthrough(); // sends EXIT
     m_len = 0;
     Console::blank();
@@ -128,6 +132,17 @@ void MasterConsole::update() {
     AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
 
     if (link.isPassthrough()) {
+        // The terminal went away (minicom closed, cable pulled): leave, so
+        // the attenuator isn't left in its console with nobody attached.
+        bool terminal = static_cast<bool>(Serial);
+        if (terminal) {
+            m_sawTerminal = true;
+        } else if (m_sawTerminal) {
+            m_sawTerminal = false;
+            leavePassthrough();
+            Console::log("Console", "USB terminal closed -- left the attenuator console");
+            return;
+        }
         link.passthroughPump(Serial);
 
         while (Serial.available() > 0) {

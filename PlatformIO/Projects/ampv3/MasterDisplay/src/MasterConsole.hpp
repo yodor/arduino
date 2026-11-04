@@ -23,13 +23,18 @@ public:
     void begin();   // prints the console hint
     void update();  // call every loop()
 
+    // Pass-through to the attenuator's console (ATTEN): also left from the
+    // menu (Diagnostics > Attenuator Console), and by itself when the USB
+    // terminal that was attached goes away (closed, or the cable pulled).
+    bool passthroughActive() const;
+    void leavePassthrough();
+
 private:
     MasterConsole() = default;
 
     void handleLine(char* line);
     void handleTime(const char* args);
     void enterPassthrough();
-    void leavePassthrough();
     void printHelp();
 
     char   m_line[64] = {};
@@ -38,4 +43,7 @@ private:
     // pass-through escape detection
     bool m_atLineStart = true;
     bool m_heldTilde   = false;
+    // Pass-through: a USB terminal was seen attached (DTR) -- its going away
+    // then ends pass-through. A terminal that never sets DTR isn't affected.
+    bool m_sawTerminal = false;
 };
