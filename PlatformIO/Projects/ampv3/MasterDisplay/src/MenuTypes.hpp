@@ -121,4 +121,8 @@ struct MenuItem {
 
     MenuDescribe      describe   = nullptr; // any type: live label / hint in the list
     size_t          (*initialFocus)() = nullptr; // SUBMENU: which item to open at (default the first)
+    bool            (*visible)()      = nullptr; // any: shown only while this says so (default always) --
+                                                 // e.g. the calibration items, hidden while a run goes on
 };
+
+inline bool menuItemVisible(const MenuItem& item) { return !item.visible || item.visible(); }

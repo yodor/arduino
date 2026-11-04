@@ -14,4 +14,4 @@ size_t getRootMenuItemCount();
 // -- Start runs the resync and shows the progress page. If a calibration is
 // already running, the progress page instead.
 class MenuScreen;
-void menuOpenResyncStart(MenuScreen& menu);
+void menuOpenCalibration(MenuScreen& menu);   // RIGHT on a calibration message: see MenuContent.cpp

@@ -265,13 +265,20 @@ void loop() {
     } else {
         bool noticeShown = g_views.shown() == ViewManager::View::NOTICE;
         bool popupShown  = g_views.shown() == ViewManager::View::INFO_POPUP;
-        if (event == UIEvent::MODE_NEXT && noticeShown && g_noticeOverlay.isResyncNotice()) {
-            // RIGHT on the "CALIBRATION ADVISED" notice: straight to the
-            // resync start (Calibration > Rtotal, Cancel / Start).
+        // Every calibration message works the same way: RIGHT opens
+        // Calibration at the right place (MenuContent: menuOpenCalibration) --
+        // the resync notice, and the Info screen's NO CALIBRATION / CELLS
+        // CHANGED / RE-SOLVE NEEDED / CALIBRATION ERROR / CALIBRATING, on the
+        // screen itself or as the popup.
+        bool infoShown   = popupShown || (g_views.shown() == ViewManager::View::SCREEN && g_views.isCurrent(&g_infoScreen));
+        bool calMessage  = (noticeShown && g_noticeOverlay.isCalibrationNotice()) ||
+                           (infoShown && g_infoScreen.showsCalibrationMessage());
+        if (event == UIEvent::MODE_NEXT && calMessage) {
             g_noticeOverlay.dismiss();
+            g_infoScreen.dismiss();
             g_views.openMenu();
-            menuOpenResyncStart(g_menuScreen);
-            Console::log("Menu", "...at the calibration start (from the notice)");
+            menuOpenCalibration(g_menuScreen);
+            Console::log("Menu", "...at Calibration (from a calibration message)");
         } else if (event == UIEvent::MODE_NEXT) {
             g_views.nextScreen();
         } else if (event == UIEvent::MODE_PREV) {

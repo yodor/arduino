@@ -18,7 +18,8 @@ public:
     // resync: this is the "CALIBRATION ADVISED" notice, where RIGHT jumps to
     // the calibration start (main.cpp).
     void show(const char* title, const char* line1, const char* line2, uint16_t titleColor, bool resync = false);
-    bool isResyncNotice() const { return m_active && m_resync; }
+    // A calibration notice (RIGHT opens Calibration).
+    bool isCalibrationNotice() const { return m_active && m_resync; }
 
     // Watches the volume board's ENV readings and raises the resync and NTC
     // notices (see NoticeOverlay.cpp). unitOn: no notices in standby.

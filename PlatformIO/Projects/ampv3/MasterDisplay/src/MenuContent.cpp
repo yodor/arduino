@@ -588,15 +588,7 @@ size_t paletteListFocus() {
     }
 }
 
-const MenuItem kThemeSubmenuItems[] = {
-    { "Palette",       MenuItemType::SUBMENU,      nullptr, nullptr, 0, kPaletteItems, kPaletteItemCount,
-                       nullptr, nullptr, nullptr, nullptr, nullptr, paletteListFocus },
-    { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
-    { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
-    { "Peaks",         MenuItemType::VALUE_CHOICE, nullptr, kPeaksOptions, 6 },
-    { "Mono Mix",      MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
-};
-constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
+
 
 const MenuValueOption kBrightnessOptions[] = {
     { "25%",  menuSet_Brightness<25>,  menuIsActive_Brightness<25>  },
@@ -617,8 +609,11 @@ const MenuValueOption kClockModeOptions[] = {
 const MenuItem kClockSubmenuItems[] = {
     { "Set Time",     MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kTimeEditor },
     { "Set Date",     MenuItemType::EDITOR,       nullptr, nullptr, 0, nullptr, 0, nullptr, &kDateEditor },
-    { "Display",      MenuItemType::VALUE_CHOICE, nullptr, kClockModeOptions,   3 },
     { "Format",       MenuItemType::VALUE_CHOICE, nullptr, kClockFormatOptions, 2 },
+};
+// Theme > Clock: how the clock looks.
+const MenuItem kThemeClockItems[] = {
+    { "Display",      MenuItemType::VALUE_CHOICE, nullptr, kClockModeOptions,   3 },
     { "Color",        MenuItemType::SUBMENU,      nullptr, nullptr, 0, kClockColorSubmenuItems, 2 },
 };
 constexpr size_t kClockSubmenuItemCount = sizeof(kClockSubmenuItems) / sizeof(kClockSubmenuItems[0]);
@@ -881,16 +876,6 @@ size_t fillLearning(char (*lines)[kInfoLineLen], size_t maxLines) {
 // Calibration -> Forget (rev 9 FORGET). Cancel is first and
 // focused; picking one of the others shows the Status page, where the ~3 s
 // of BUSY and the resulting state can be watched.
-void menuAction_ForgetCal()  { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::CAL);  Console::log("Menu", "FORGET CAL requested"); }
-void menuAction_ForgetComp() { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::COMP); Console::log("Menu", "FORGET COMP requested"); }
-void menuAction_ForgetAll()  { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::ALL);  Console::log("Menu", "FORGET ALL requested"); }
-
-const MenuValueOption kForgetOptions[] = {
-    { "Cancel",      nullptr,               nullptr },
-    { "Calibration", menuAction_ForgetCal,  nullptr }, // volume muted until a new (full) calibration completes
-    { "Learning",    menuAction_ForgetComp, nullptr }, // thermal learning log; compensation relearns
-    { "Everything",  menuAction_ForgetAll,  nullptr },
-};
 
 // --- Digit-by-digit number editors ---------------------------------------------
 // One editor field per decimal digit (most significant first): Up/Down change
@@ -1102,20 +1087,52 @@ void describeCalibration(char* label, size_t ls, char* hint, size_t hs, uint16_t
     snprintf(hint, hs, "calibrated, last %s", s.lastCal[0] ? s.lastCal : "--");
 }
 
-// Calibration > Calibrate > Start / Verify / Full.
-void describeCalStart(char*, size_t, char* hint, size_t hs, uint16_t*) {
+// --- Calibration -------------------------------------------------------------------------
+//
+//   Calibration
+//   +- 1600K (auto)     the state item: live label and line under it
+//   |    idle    -> Start, Verify (Start, Last Verify), Full, Status, Forget Calibration
+//   |    running -> the Progress page (Right or Left returns)
+//   +- Compensation     Learning, Temperature, Forget Learning
+//   +- Auto Depth
+//   +- Model
+//
+// While a calibration or verify runs, only the state item shows: the rest is
+// hidden (MenuItem::visible), and a submenu you were in backs out by itself.
+
+bool calRunning() {
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    return link.isStatusFresh() && link.status().running();
+}
+bool calIdle() { return !calRunning(); }
+
+// Start / Verify / Full: what they do, or why the last attempt didn't start.
+bool describeStartAttempt(char* hint, size_t hs, uint16_t* color) {
+    AttenuatorBoardLink& link = AttenuatorBoardLink::instance();
+    if (link.calStart() == AttenuatorCalStart::PENDING || VolumeControl::instance().isCalibrationPending()) {
+        snprintf(hint, hs, "starting..."); *color = COLOR_YELLOW; return true;
+    }
+    if (link.calStart() == AttenuatorCalStart::REJECTED) {
+        snprintf(hint, hs, "did not start: %s", link.getCalStartError()); *color = COLOR_RED; return true;
+    }
+    return false;
+}
+void describeCalStart(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    if (describeStartAttempt(hint, hs, color)) return;
     snprintf(hint, hs, "choose R, then it runs");
 }
 void describeCalVerify(char*, size_t, char* hint, size_t hs, uint16_t* color) {
     if (AttenuatorBoardLink::instance().status().cal != AttenuatorCalState::OK) { snprintf(hint, hs, "needs a calibration"); *color = COLOR_RED; return; }
+    if (describeStartAttempt(hint, hs, color)) return;
     snprintf(hint, hs, "8 min, amp muted, no change");
 }
-void describeCalFull(char*, size_t, char* hint, size_t hs, uint16_t*) {
+void describeCalFull(char*, size_t, char* hint, size_t hs, uint16_t* color) {
+    if (describeStartAttempt(hint, hs, color)) return;
     snprintf(hint, hs, "6 min, re-measures cells");
 }
 void menuAction_CalVerify() {
     const AttenuatorStatus& s = AttenuatorBoardLink::instance().status();
-    if (s.running() || s.cal != AttenuatorCalState::OK) return;   // the page says why
+    if (s.running() || s.cal != AttenuatorCalState::OK) return;   // the line under it says why
     VolumeControl::instance().calibrate(VolumeControl::CalR::VERIFY);
 }
 void menuAction_CalFull() {
@@ -1123,24 +1140,51 @@ void menuAction_CalFull() {
     VolumeControl::instance().calibrate(VolumeControl::CalR::FULL);
 }
 
+// Forget Calibration / Forget Learning: Cancel first, then Confirm.
+void menuAction_ForgetCal()  { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::CAL);  Console::log("Menu", "FORGET CAL requested"); }
+void menuAction_ForgetComp() { VolumeControl::instance().forget(AttenuatorBoardLink::Forget::COMP); Console::log("Menu", "FORGET COMP requested"); }
+const MenuValueOption kForgetCalOptions[] = {
+    { "Cancel",  nullptr,              nullptr },
+    { "Confirm", menuAction_ForgetCal, nullptr },   // volume muted until a new (full) calibration completes
+};
+const MenuValueOption kForgetCompOptions[] = {
+    { "Cancel",  nullptr,               nullptr },
+    { "Confirm", menuAction_ForgetComp, nullptr },  // the thermal learning log; compensation relearns
+};
+
+const MenuItem kVerifyItems[] = {
+    { "Start",       MenuItemType::ACTION, menuAction_CalVerify, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeCalVerify },
+    { "Last Verify", MenuItemType::INFO,   nullptr,              nullptr, 0, nullptr, 0, fillVerifyResult },
+};
 const MenuItem kCalibrateItems[] = {
-    { "Start",  MenuItemType::EDITOR, nullptr,              nullptr, 0, nullptr, 0, fillCalibrationProgress, &kRTotalEditor, nullptr, nullptr, describeCalStart },
-    { "Verify", MenuItemType::ACTION, menuAction_CalVerify, nullptr, 0, nullptr, 0, fillCalibrationProgress, nullptr,        nullptr, nullptr, describeCalVerify },
-    { "Full",   MenuItemType::ACTION, menuAction_CalFull,   nullptr, 0, nullptr, 0, fillCalibrationProgress, nullptr,        nullptr, nullptr, describeCalFull },
+    { "Start",  MenuItemType::EDITOR,  nullptr,            nullptr, 0, nullptr, 0, nullptr, &kRTotalEditor, nullptr, nullptr, describeCalStart },
+    { "Verify", MenuItemType::SUBMENU, nullptr,            nullptr, 0, kVerifyItems, 2 },
+    { "Full",   MenuItemType::ACTION,  menuAction_CalFull, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, nullptr, describeCalFull },
+    { "Status", MenuItemType::INFO,    nullptr,            nullptr, 0, nullptr, 0, fillCalibrationStatus },
+    { "Forget Calibration", MenuItemType::VALUE_CHOICE, nullptr, kForgetCalOptions, 2, nullptr, 0, fillCalibrationStatus },
 };
 constexpr size_t kCalibrateItemCount = sizeof(kCalibrateItems) / sizeof(kCalibrateItems[0]);
 
+const MenuItem kCompensationCalItems[] = {
+    { "Learning",        MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
+    { "Temperature",     MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillTemperature },
+    { "Forget Learning", MenuItemType::VALUE_CHOICE, nullptr, kForgetCompOptions, 2, nullptr, 0, fillLearning },
+};
+
 const MenuItem kCalibrationSubmenuItems[] = {
-    { "Calibrate", MenuItemType::SUBMENU,     nullptr, nullptr, 0, kCalibrateItems, kCalibrateItemCount, nullptr, nullptr, nullptr, nullptr, describeCalibration },
-    { "Last Verify", MenuItemType::INFO,      nullptr, nullptr, 0, nullptr, 0, fillVerifyResult },
-    { "Auto Depth", MenuItemType::VALUE_CHOICE, nullptr, kAutoPrefOptions, 3, nullptr, 0, fillModelInfo },
-    { "Model",    MenuItemType::SUBMENU,      nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount },
-    { "Progress", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress },
-    { "Status",   MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillCalibrationStatus },
-    { "Temperature", MenuItemType::INFO,      nullptr, nullptr, 0, nullptr, 0, fillTemperature },
-    { "Learning", MenuItemType::INFO,         nullptr, nullptr, 0, nullptr, 0, fillLearning },
-    { "Forget",   MenuItemType::VALUE_CHOICE, nullptr, kForgetOptions, 4, nullptr, 0, fillCalibrationStatus },
-};constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
+    // The state item: two forms with the same live label -- the menu shows one.
+    { "Calibrate",    MenuItemType::SUBMENU, nullptr, nullptr, 0, kCalibrateItems, kCalibrateItemCount, nullptr, nullptr, nullptr, nullptr,
+                      describeCalibration, nullptr, calIdle },
+    { "Calibrating",  MenuItemType::INFO,    nullptr, nullptr, 0, nullptr, 0, fillCalibrationProgress, nullptr, nullptr, nullptr,
+                      describeCalibration, nullptr, calRunning },
+    { "Compensation", MenuItemType::SUBMENU, nullptr, nullptr, 0, kCompensationCalItems, 3, nullptr, nullptr, nullptr, nullptr,
+                      nullptr, nullptr, calIdle },
+    { "Auto Depth",   MenuItemType::VALUE_CHOICE, nullptr, kAutoPrefOptions, 3, nullptr, 0, fillModelInfo, nullptr, nullptr, nullptr,
+                      nullptr, nullptr, calIdle },
+    { "Model",        MenuItemType::SUBMENU, nullptr, nullptr, 0, kModelSubmenuItems, kModelSubmenuItemCount, nullptr, nullptr, nullptr, nullptr,
+                      nullptr, nullptr, calIdle },
+};
+constexpr size_t kCalibrationSubmenuItemCount = sizeof(kCalibrationSubmenuItems) / sizeof(kCalibrationSubmenuItems[0]);
 
 // --- Diagnostics ---
 // The action only raises a request; main.cpp closes the menu and runs the
@@ -1369,7 +1413,7 @@ const MenuItem kPowerSubmenuItems[] = {
 constexpr size_t kPowerSubmenuItemCount = sizeof(kPowerSubmenuItems) / sizeof(kPowerSubmenuItems[0]);
 
 // --- Settings ---
-// Settings -> Volume Display: what the Info screen's big value shows.
+// Theme -> Volume Label: what the Info screen's big value shows.
 void menuSet_VolDb()    { DisplaySettings::instance().setVolumeDisplay(VolumeDisplay::DB);    PersistentSettings::instance().markDirty(); }
 void menuSet_VolSteps() { DisplaySettings::instance().setVolumeDisplay(VolumeDisplay::STEPS); PersistentSettings::instance().markDirty(); }
 bool menuIsActive_VolDb()    { return DisplaySettings::instance().getVolumeDisplay() == VolumeDisplay::DB; }
@@ -1395,10 +1439,21 @@ void    balanceFormat(int16_t v, char* out, size_t n) {
 }
 const MenuSlider kBalanceSlider = { -16, 16, balanceGet, balanceSet, balanceFormat, "L", "R" };
 
+const MenuItem kThemeSubmenuItems[] = {
+    { "Palette",       MenuItemType::SUBMENU,      nullptr, nullptr, 0, kPaletteItems, kPaletteItemCount,
+                       nullptr, nullptr, nullptr, nullptr, nullptr, paletteListFocus },
+    { "FFT",           MenuItemType::SUBMENU,      nullptr, nullptr, 0, kFftSubmenuItems,   kFftSubmenuItemCount },
+    { "Wave",          MenuItemType::SUBMENU,      nullptr, nullptr, 0, kWaveSubmenuItems,  kWaveSubmenuItemCount },
+    { "Peaks",         MenuItemType::VALUE_CHOICE, nullptr, kPeaksOptions, 6 },
+    { "Volume Label",  MenuItemType::VALUE_CHOICE, nullptr, kVolumeDisplayOptions, 2 },
+    { "Clock",         MenuItemType::SUBMENU,      nullptr, nullptr, 0, kThemeClockItems, 2 },
+    { "Mono Mix",      MenuItemType::VALUE_CHOICE, nullptr, kChannelModeOptions, 2 },
+};
+constexpr size_t kThemeSubmenuItemCount = sizeof(kThemeSubmenuItems) / sizeof(kThemeSubmenuItems[0]);
+
 const MenuItem kSettingsSubmenuItems[] = {
     { "Brightness",      MenuItemType::VALUE_CHOICE, nullptr, kBrightnessOptions,  4 },
     { "Balance",         MenuItemType::SLIDER,       nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &kBalanceSlider },
-    { "Volume Display",  MenuItemType::VALUE_CHOICE, nullptr, kVolumeDisplayOptions, 2 },
     { "Clock",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kClockSubmenuItems,       kClockSubmenuItemCount },
     { "Power",           MenuItemType::SUBMENU, nullptr, nullptr, 0, kPowerSubmenuItems,       kPowerSubmenuItemCount },
 };
@@ -1429,13 +1484,22 @@ int indexOfInfo(const MenuItem* items, size_t count, MenuInfoFill fill, MenuItem
 }
 } // namespace
 
-void menuOpenResyncStart(MenuScreen& menu) {
+// RIGHT on any calibration message (the resync notice, the Info screen's
+// NO CALIBRATION / CELLS CHANGED / ... / CALIBRATING): Calibration, at the
+// right place -- the Progress page while a run goes on, otherwise the state
+// item's submenu with Start focused.
+void menuOpenCalibration(MenuScreen& menu) {
     int calibration = indexOfSubmenu(kRootMenuItems, sizeof(kRootMenuItems) / sizeof(kRootMenuItems[0]), kCalibrationSubmenuItems);
     if (calibration < 0) return;
     menu.focus(static_cast<size_t>(calibration));
     menu.enter();
-    int calibrate = indexOfSubmenu(kCalibrationSubmenuItems, kCalibrationSubmenuItemCount, kCalibrateItems);
-    if (calibrate < 0) return;
-    menu.focus(static_cast<size_t>(calibrate));
-    menu.enter();      // into Calibrate: "Start" is first -- Right, then Right on the R, runs it
+    // The state item visible right now: the running form (its Progress page)
+    // or the idle form (its submenu, Start first).
+    for (size_t i = 0; i < kCalibrationSubmenuItemCount; ++i) {
+        if (menuItemVisible(kCalibrationSubmenuItems[i])) {
+            menu.focus(i);
+            menu.enter();
+            return;
+        }
+    }
 }

@@ -126,4 +126,5 @@ private:
     bool describeChanged(const MenuItem& item) const;
     uint32_t m_describeHash    = 0;
     uint32_t m_describeCheckMs = 0;
+    void keepVisible();   // see MenuScreen.cpp
 };

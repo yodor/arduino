@@ -41,6 +41,10 @@ public:
     // it's released. Clears up/down while passive; returns whether there was
     // any volume input at all (the popup is poked for it).
     bool filterFirstVolumePress(bool& up, bool& down, bool onThisScreen);
+
+    // Showing a calibration message (NO CALIBRATION, CELLS CHANGED, ...,
+    // CALIBRATING)? RIGHT then opens Calibration (main.cpp).
+    bool showsCalibrationMessage() const { return m_drawnView == View::NOT_CALIBRATED || m_drawnView == View::CALIBRATING; }
     void dismiss() { m_active = false; }
 
     // The middle-right readout, stepped with the remote's Options key on this

@@ -148,7 +148,7 @@ void InfoScreen::drawStaticForView(View v) {
             break;
         case View::CALIBRATING:
             drawCentered("CALIBRATING", 4, kMsgY, COLOR_YELLOW);
-            drawCentered("volume locked until it finishes", 2, kMsgY + 44, kColorSubtle);
+            drawCentered("press RIGHT for progress", 2, kMsgY + 44, kColorSubtle);
             break;
         case View::NOT_CALIBRATED: {
             const char* title = (s.cal == AttenuatorCalState::NONE)    ? "NO CALIBRATION"
@@ -163,7 +163,7 @@ void InfoScreen::drawStaticForView(View v) {
                 gfx->setCursor(kMargin, kMsgY + 44);
                 gfx->print(s.err);
             } else {
-                drawCentered("Menu > Calibration", 2, kMsgY + 44, kColorSubtle);
+                drawCentered("press RIGHT to calibrate", 2, kMsgY + 44, kColorSubtle);
             }
             break;
         }

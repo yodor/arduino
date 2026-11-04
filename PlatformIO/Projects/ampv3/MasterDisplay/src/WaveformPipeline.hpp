@@ -129,6 +129,11 @@ private:
     // The DC level over the newest kLevelSamples, kept running on core 1 for
     // the DAW timeline (sums of the raw samples).
     uint32_t          m_dcSumL = 0, m_dcSumR = 0;
+    // How many samples the running sums hold, and how many the ring holds --
+    // both stop when full. (Not derived from m_written: that wraps after 2^32
+    // samples, ~27 hours, and a wrapped count once broke the DAW's DC level.)
+    uint32_t          m_dcCount = 0;
+    volatile uint32_t m_filled  = 0;
 
     // A reader's view of the ring: the newest `window` samples, DC removed
     // with that window's own mean (computed in begin()).

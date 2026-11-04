@@ -189,9 +189,14 @@ void MenuScreen::moveFocus(int delta) {
     } else {
         StackFrame& frame = m_stack[m_stackDepth - 1];
         if (frame.itemCount == 0) return;
-        int idx = static_cast<int>(frame.focusedIdx) + delta;
-        if (idx < 0) idx = static_cast<int>(frame.itemCount) - 1;
-        if (idx >= static_cast<int>(frame.itemCount)) idx = 0;
+        // To the next visible item that way (hidden ones are skipped), wrapping.
+        int idx = static_cast<int>(frame.focusedIdx);
+        for (size_t tries = 0; tries < frame.itemCount; ++tries) {
+            idx += delta;
+            if (idx < 0) idx = static_cast<int>(frame.itemCount) - 1;
+            if (idx >= static_cast<int>(frame.itemCount)) idx = 0;
+            if (menuItemVisible(frame.items[idx])) break;
+        }
         frame.focusedIdx = static_cast<size_t>(idx);
     }
     m_dirty = true;
@@ -214,7 +219,8 @@ void MenuScreen::openOptions() {
 void MenuScreen::enter() {
     StackFrame& frame = m_stack[m_stackDepth - 1];
     if (frame.itemCount == 0) return;
-    if (m_inInfo) return; // read-only page -- nothing to select
+    if (m_inInfo) { back(); return; }   // read-only page: Right goes back, like Left
+    if (!m_inValueChoice && !menuItemVisible(focusedItem())) return;
     if (m_inSlider) {
         m_inSlider = false; // Right = keep the value (already applied)
         m_dirty    = true;
@@ -373,7 +379,33 @@ bool MenuScreen::back() {
     return false; // at the root with nothing open -- caller closes the menu
 }
 
+// Items can hide (MenuItem::visible): if the submenu we're in was entered
+// through an item that's now hidden, back out to where it was; if the focused
+// item is hidden, move to the nearest visible one. An open INFO page is left
+// alone (e.g. a run's progress page keeps showing its result).
+void MenuScreen::keepVisible() {
+    for (size_t level = 1; level < m_stackDepth; ++level) {
+        const StackFrame& parent = m_stack[level - 1];
+        if (!menuItemVisible(parent.items[parent.focusedIdx])) {
+            m_stackDepth    = level;
+            m_inInfo = m_inEditor = m_inColor = m_inSlider = m_inValueChoice = false;
+            m_dirty = true;
+            break;
+        }
+    }
+    if (m_inInfo || m_inEditor || m_inColor || m_inSlider || m_inValueChoice) return;
+    StackFrame& frame = m_stack[m_stackDepth - 1];
+    if (frame.itemCount == 0 || menuItemVisible(frame.items[frame.focusedIdx])) return;
+    for (size_t d = 1; d < frame.itemCount; ++d) {
+        size_t down = (frame.focusedIdx + d) % frame.itemCount;
+        size_t up   = (frame.focusedIdx + frame.itemCount - d) % frame.itemCount;
+        if (menuItemVisible(frame.items[up]))   { frame.focusedIdx = up;   m_dirty = true; return; }
+        if (menuItemVisible(frame.items[down])) { frame.focusedIdx = down; m_dirty = true; return; }
+    }
+}
+
 void MenuScreen::render() {
+    keepVisible();
     // INFO pages show live data: re-fill periodically, redraw only on change.
     if (m_inInfo && (millis() - m_lastInfoFillMs >= kInfoRefreshMs)) {
         if (refillInfo()) m_dirty = true;
@@ -527,8 +559,14 @@ void MenuScreen::drawFull() {
     } else {
         title = (m_stackDepth == 1) ? "MENU" : m_stack[m_stackDepth - 2].items[m_stack[m_stackDepth - 2].focusedIdx].label;
         label = item.label;
-        index = frame.focusedIdx;
-        count = frame.itemCount;
+        // The position among the items shown (hidden ones don't count).
+        index = 0;
+        count = 0;
+        for (size_t i = 0; i < frame.itemCount; ++i) {
+            if (!menuItemVisible(frame.items[i])) continue;
+            if (i < frame.focusedIdx) ++index;
+            ++count;
+        }
         switch (item.type) {
             case MenuItemType::VALUE_CHOICE:
                 // Show the setting's current value right under its name.

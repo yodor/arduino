@@ -16,9 +16,11 @@ void WaveformPipeline::pushChunk(const uint16_t* interleavedChunk) {
         uint16_t r = interleavedChunk[i * 2 + 1] & 0x0FFF;
         // The running sums over the newest kLevelSamples: add the new sample,
         // drop the one leaving that window (still in the ring: it's 2x longer).
-        if (w >= kLevelSamples) {
-            m_dcSumL -= m_ringL[(w - kLevelSamples) & kMask];
+        if (m_dcCount >= kLevelSamples) {
+            m_dcSumL -= m_ringL[(w - kLevelSamples) & kMask];   // modular: fine across the wrap
             m_dcSumR -= m_ringR[(w - kLevelSamples) & kMask];
+        } else {
+            ++m_dcCount;
         }
         m_ringL[w & kMask] = l;
         m_ringR[w & kMask] = r;
@@ -27,8 +29,12 @@ void WaveformPipeline::pushChunk(const uint16_t* interleavedChunk) {
     }
     __dmb();            // the samples are in the ring before the count says so
     m_written = w;
+    if (m_filled < kRingSamples) {
+        uint32_t f = m_filled + static_cast<uint32_t>(kChunkPerChannel);
+        m_filled = f < kRingSamples ? f : static_cast<uint32_t>(kRingSamples);
+    }
 
-    uint32_t n = (w < kLevelSamples) ? w : kLevelSamples;
+    uint32_t n = m_dcCount;
     accumulateEnvelope(interleavedChunk, static_cast<float>(m_dcSumL) / n, static_cast<float>(m_dcSumR) / n);
 }
 
@@ -36,11 +42,12 @@ void WaveformPipeline::pushChunk(const uint16_t* interleavedChunk) {
 // is twice the longest window, so core 1 can't reach these samples while
 // they're read (it would need ~185 ms of audio to do so).
 bool WaveformPipeline::view(size_t window, View& v) const {
-    uint32_t w = m_written;
+    uint32_t w      = m_written;
+    uint32_t filled = m_filled;
     __dmb();
-    if (w == 0) return false;
+    if (filled == 0) return false;
     if (window > kMaxWindowSamples) window = kMaxWindowSamples;
-    if (window > w) window = w;                       // just after boot
+    if (window > filled) window = filled;             // just after boot
     v.p = this;
     v.base = w - static_cast<uint32_t>(window);
     v.window = window;
