@@ -39,6 +39,11 @@ struct Walk {
   float ratioMin[2] = {NAN, NAN}, ratioMax[2] = {NAN, NAN};
   float moved[2] = {NAN, NAN}, movedSpread[2] = {NAN, NAN};   // cells vs the stored walk (effective counts)
   float compOff[2] = {NAN, NAN};                              // compensation offset while it measured
+  float settled[2] = {NAN, NAN};                              // VERIFY's settled quiet-point residual
+  uint16_t settledHoldS = 0;
+  uint8_t probeStep[3] = {0xFF, 0xFF, 0xFF};                  // VERIFY's settled step probes
+  float probeSer[2][3], probeShu[2][3], probeErr[2][3];
+  uint16_t probeHoldS[3] = {0, 0, 0};
 };
 // The last cell check (power-up, CAL, VERIFY).
 struct Cells {

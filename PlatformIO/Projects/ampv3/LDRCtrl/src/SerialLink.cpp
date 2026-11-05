@@ -469,6 +469,8 @@ void SerialLink::cmdVerifyResult(const String &) {
   stream_.print(F(" AGE_MIN="));
   if (r->boot == boot) stream_.print((millis() / 1000 - r->upS) / 60); else stream_.print('-');
   kv(stream_, F("BLOCK"), r->blockC, 2);
+  kv(stream_, F("SETTLED_L"), s.settled[0], 2); kv(stream_, F("SETTLED_R"), s.settled[1], 2);
+  stream_.print(F(" HOLD_S=")); stream_.print(r->settledHoldS);
   kv(stream_, F("RES_L"), s.residual[0], 1);  kv(stream_, F("RES_R"), s.residual[1], 1);
   kv(stream_, F("MOVED_L"), r->moved[0], 1);  kv(stream_, F("MOVED_R"), r->moved[1], 1);
   kv(stream_, F("SPREAD_L"), s.spread[0], 1); kv(stream_, F("SPREAD_R"), s.spread[1], 1);

@@ -1,9 +1,12 @@
-LDR attenuator firmware -- 2026-10-31a  (driver v1b, 2nd-edition LDR boards)
+LDR attenuator firmware -- 2026-11-01c  (driver v1b, 2nd-edition LDR boards)
 
-* VERIFY's verdict now also watches the QUIET steps (volume-up pass, step 0 left out): a mean
-  error beyond 1.5 dB gives RESYNC, and with it the hint RESYNC=1 WHY=VERIFY. Your VERIFY #6
-  (quiet steps +1.7 dB) would have said RESYNC instead of OK. VERIFY RESULT gains QUIET_L/R.
-* Health: series memory and settling are judged within the operating depth only (up to
-  1.1 x Rtotal), with the AUTO preference's memory limit. The walk measures deeper than the
-  table uses; points beyond it never play (your 2348k / 2628k warnings).
-Everything from 30k included. Protocol 20 (one more key in VERIFY RESULT). Tests: 22.
+The cells wander about +-2 counts with their recent light history (the same on both channels;
+VERIFY #14-#16 showed it). The firmware no longer reads that as an error:
+* VERIFY verdict: RESYNC only beyond 3 counts (settled quiet point), clear of the wander.
+* CHANGES judges the compensation from a temperature step only when the shift it should cause
+  exceeds the wander (>= 4 counts); smaller changes are reported as within the wander.
+* Fix: the settled step probes read the series with the shunt held bright when the shunt is too
+  dark to pass a measurable current (R at steps 25/28 was "unreadable"), as the step verify does.
+* README, Limitations: the wander as a known property (absolute level +-1.5-2 dB at the quiet and
+  middle steps, L/R balance unaffected).
+Tests: python3 test/run_tests.py (23).

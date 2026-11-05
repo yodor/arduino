@@ -106,4 +106,11 @@ bool lastSeekFailed();
 float autoChoiceOhms(LDRVolume &left, LDRVolume &right);
 float walkReachOhms(LDRVolume &left, LDRVolume &right);
 float onAutoPrefChanged(LDRVolume &left, LDRVolume &right);
+// The settled quiet point for CAL VERIFY: hold the quiet step (as played) until the series cells
+// settle, then each channel's residual in counts (> 0: driven brighter than needed = louder).
+void settledQuietResidual(LDRVolume *const *ch, uint8_t na, const char *labels, float *residual, uint16_t &heldS, Stream &out);
+// CAL VERIFY's settled step probes (steps at series targets <= 300k, 60k, 15k), per channel:
+// series and shunt live/target, level error (dB), and the hold per probe. steps[k] = 0xFF: none.
+void settledStepProbes(LDRVolume *const *ch, uint8_t na, const char *labels, uint8_t *steps,
+                       float (*ser)[3], float (*shu)[3], float (*err)[3], uint16_t *holdS, Stream &out);
 } // namespace DualCalibration

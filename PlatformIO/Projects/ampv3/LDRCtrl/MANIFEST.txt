@@ -1,4 +1,4 @@
-Firmware source package: 2026-10-31a
+Firmware source package: 2026-11-01c
 
 0b22e67b7cb8db07  src/Ads1115.cpp
 e9da838abadb246c  src/Ads1115.hpp
@@ -17,7 +17,7 @@ f80ffcb7486378c4  src/BoardSensors.hpp
 8385797c2e0488da  src/BusyHook.hpp
 5e7f8a5edac5ee00  src/CalArgs.hpp
 954e9ecc81a2d1e1  src/CalProgress.cpp
-72b51393c1b20423  src/CalProgress.hpp
+ddf06250fe20043f  src/CalProgress.hpp
 23c8b5780299c6bf  src/CalStamp.hpp
 4d6bb7426e90aadd  src/CalStorage.cpp
 39ecc84c37429cf2  src/CalStorage.hpp
@@ -30,7 +30,7 @@ cc0e7500895ff8c7  src/Commands.cpp
 c1a89237fc94f32a  src/Config.hpp
 516224ac45e17e99  src/Console.cpp
 bd4812e63957f620  src/Console.hpp
-1670995bc77cb9a9  src/ConsoleCommands.cpp
+4e415cf87636ae73  src/ConsoleCommands.cpp
 b0b7a09efe1d991a  src/ConsoleCommands.hpp
 71c1646457dee47c  src/ConsoleNum.hpp
 2662c0dee07705c5  src/DarkProfile.hpp
@@ -38,8 +38,8 @@ b0b7a09efe1d991a  src/ConsoleCommands.hpp
 b4baf1bc76555548  src/DividerMath.hpp
 6fb24a6ecd356d2a  src/DriverChannels.cpp
 16438e883cfb58ae  src/DriverChannels.hpp
-86b7081f6adbf6b5  src/DualCalibration.cpp
-dbc205660de86cf8  src/DualCalibration.hpp
+33bb526a2e731095  src/DualCalibration.cpp
+8e2d69e712515715  src/DualCalibration.hpp
 9c39b65fb52357e9  src/LDRVolume.cpp
 5e7d562c1fac7022  src/LDRVolume.hpp
 05a3fda2db448b5c  src/LdrSensor.cpp
@@ -52,8 +52,8 @@ d098a8f1e6258ed4  src/RailComp.cpp
 902053dc399a01b6  src/Relay.cpp
 1518a7d671993e89  src/Relay.hpp
 201237e4f6ed2ecb  src/Results.cpp
-ddc811903c4f6aff  src/Results.hpp
-c7e25ad174fa5e29  src/SerialLink.cpp
+c7ef8d88329ac94e  src/Results.hpp
+3d5f9ec2cd1cc058  src/SerialLink.cpp
 df402d1995852465  src/SerialLink.hpp
 4186544f13916286  src/Settings.cpp
 747ef9032cc8ba7a  src/Settings.hpp
@@ -65,10 +65,10 @@ c4253849c4457c38  src/ThermalComp.hpp
 61e41d5a240a053f  src/ThermalLog.cpp
 f5e253c98aec62c0  src/ThermalLog.hpp
 6e71fac86e21cfac  src/TrimSearch.hpp
-3596bf4b6e09aa68  src/VerifyAnalysis.hpp
-28024377dfcea895  src/VerifyHistory.cpp
-7af6b74fbc8723a4  src/VerifyHistory.hpp
-f6286acbca9d9a62  src/Version.hpp
+9a49f809151e7921  src/VerifyAnalysis.hpp
+dab800ba03666276  src/VerifyHistory.cpp
+ae5d14652344a033  src/VerifyHistory.hpp
+63e9e8c7db641824  src/Version.hpp
 62cec520f5825c86  src/VersionInfo.cpp
 ec6f3d5bdcd50429  src/VersionInfo.hpp
 ceacecd40b8b63ea  src/VolumeRamp.cpp
@@ -87,6 +87,7 @@ e3629d4f9c15eb44  test/test_cal_args.cpp
 ef9d3a692d8d9c9a  test/test_console_routing.py
 52a2d80e41c0b17e  test/test_deep_refine.cpp
 4e23df1db604f403  test/test_fit_nonfinite.cpp
+88c14ad966a90e1c  test/test_history_layout.cpp
 61ad9c738d089d49  test/test_learning_log_format.cpp
 ace284604b3413aa  test/test_log_retention.cpp
 1e54cb0faa7a3d78  test/test_protocol_routing.py
@@ -96,12 +97,12 @@ fcad35e58e85d446  test/test_seek_fix.cpp
 43e53e8a1a27ebb3  test/test_series_guard.cpp
 1885e8074e18bee8  test/test_settings_text.cpp
 2a3991abd6025a29  test/test_verify_analysis.cpp
-c134104be9246b46  test/test_verify_verdict.cpp
+d076cbf02bba57bf  test/test_verify_verdict.cpp
 02527e09efce114d  test/test_walk_comparison.cpp
 1d653b2b99de660e  test/test_walk_memory.cpp
 199c2f08d09c9c51  test/test_warmup_hint.cpp
 93f51324e2ec2d9b  tools/protocol_capture.py
 1bba7cee96dcc5e8  platformio.ini
-0119c2325e39333a  README.md
-f31950b4f666153c  ldr-attenuator-console.md
-6ca55274e59bc4e5  ldr-attenuator-protocol.md
+6542c7b4fd5500ea  README.md
+6fce1f4a6d6c1f14  ldr-attenuator-console.md
+d8887ac1e0d0c852  ldr-attenuator-protocol.md

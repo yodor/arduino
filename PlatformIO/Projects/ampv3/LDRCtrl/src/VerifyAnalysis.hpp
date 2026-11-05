@@ -61,25 +61,27 @@ inline bool common(const Shift &l, const Shift &r, float commonCounts = 2.0f) {
   return l.n && r.n && fabsf(l.mean - r.mean) <= commonCounts;
 }
 
-// A run's verdict, for the controller (VERIFY RESULT) and the resync hint:
-//   CHECK   L and R are off differently (residuals more than 3 counts apart), or a channel's
-//           cells changed shape (spread over 2.5 counts): worth a look on the console
-//   RESYNC  the table is off -- a residual beyond 3 counts, the middle steps' mean error beyond
-//           1 dB, or the quiet steps' beyond 1.5 dB (where an offset is most audible) -- and a
-//           resync fixes that
-//   OK      otherwise
-// NAN inputs (not measured) do not count.
+// A run's verdict, for the controller (VERIFY RESULT) and the resync hint. It rests on the
+// SETTLED quiet point only (the quiet step held until the cells settle): the quick step readings
+// (3 s after arriving) and the walk depend on what played minutes before -- CdS light history --
+// by about +-2 counts, and a resync cannot change that, so they are reported but do not decide.
+//   CHECK   the two channels' settled residuals more than 3 counts apart, or a channel's cells
+//           changed shape (walk spread over 2.5 counts): worth a look on the console
+//   RESYNC  a settled residual beyond 3 counts: the table is off, a resync fixes it. The cells
+//           themselves wander about +-2 counts with what played in the last half hour (CdS light
+//           history, a slow tail of tens of minutes, the same on both channels) -- 3 counts keeps
+//           clear of that, so only offsets a resync can actually fix raise the hint.
+//   OK      otherwise -- also when nothing settled was measured (a run from older firmware)
 enum class Verdict : uint8_t { OK, RESYNC, CHECK };
+constexpr float WANDER_RESYNC = 3.0f;   // counts: above the cells' history-dependent wander
+// A temperature step only says something about the compensation when the shift it should cause
+// clearly exceeds that wander (+-2 counts): at least 4 counts.
+constexpr float WANDER_JUDGE = 4.0f;
 inline const char *verdictName(Verdict v) { return v == Verdict::CHECK ? "CHECK" : v == Verdict::RESYNC ? "RESYNC" : "OK"; }
-inline Verdict verdict(const float residual[2], const float spread[2], const float middleDb[2],
-                       const float quietDb[2] = nullptr) {
-  if (!isnan(residual[0]) && !isnan(residual[1]) && fabsf(residual[0] - residual[1]) > 3.0f) return Verdict::CHECK;
+inline Verdict verdict(const float settled[2], const float spread[2]) {
+  if (!isnan(settled[0]) && !isnan(settled[1]) && fabsf(settled[0] - settled[1]) > 3.0f) return Verdict::CHECK;
   for (uint8_t c = 0; c < 2; c++) if (!isnan(spread[c]) && spread[c] > 2.5f) return Verdict::CHECK;
-  for (uint8_t c = 0; c < 2; c++) {
-    if (!isnan(residual[c]) && fabsf(residual[c]) > 3.0f) return Verdict::RESYNC;
-    if (!isnan(middleDb[c]) && fabsf(middleDb[c]) > 1.0f) return Verdict::RESYNC;
-    if (quietDb && !isnan(quietDb[c]) && fabsf(quietDb[c]) > 1.5f) return Verdict::RESYNC;
-  }
+  for (uint8_t c = 0; c < 2; c++) if (!isnan(settled[c]) && fabsf(settled[c]) > WANDER_RESYNC) return Verdict::RESYNC;
   return Verdict::OK;
 }
 

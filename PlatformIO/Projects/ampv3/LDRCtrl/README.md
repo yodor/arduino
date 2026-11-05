@@ -94,7 +94,7 @@ A full characterization runs in about six minutes and needs no external equipmen
 4. **Every step is solved** for its target attenuation, taking the source impedance and the amplifier's input impedance into account, then **trimmed** on the real cells, both channels in parallel.
 5. **The quietest point is matched** with settled readings between the channels, and plausibility guards catch trims that ended on a misleading reading.
 
-A **resync** repeats only the trims, the quiet-point match and a check of the middle depths, in about two to three minutes. A **re-solve** chooses a new total resistance from the stored curves without measuring the cells again. A cell check at power-up recognizes when the cells have been replaced.
+A **resync** repeats only the trims, the quiet-point match and a check of the middle depths, in about three to seven minutes -- most of it waiting for the cells to settle after the trims' bright phases (CdS keeps conducting more for minutes after strong light), so the quiet point is measured as it will be while listening. A **re-solve** chooses a new total resistance from the stored curves without measuring the cells again. A cell check at power-up recognizes when the cells have been replaced.
 
 ### Temperature and supply compensation
 
@@ -124,6 +124,14 @@ Shared in case they save someone time:
 - **A buffer after the attenuator is not automatically better.** With the amplifier's 10 kΩ input as the load, the output impedance stays low and the full depth remains usable; a buffer would bring treble roll-off and noise at a deep setting.
 
 ## Limitations
+
+- **The cells wander with their recent history.** CdS cells keep conducting more for a while after
+  strong light, with a slow tail of tens of minutes at about 1 MOhm. So the series cells' operating
+  point moves by about +-2 counts (+-20 % in resistance) depending on what played in the last half
+  hour -- the same on both channels. The absolute level of the quiet and middle steps therefore
+  varies by about +-1.5-2 dB; the L/R balance does not (in the measurements both channels moved
+  together within half a count). It is smaller at shallower depths (`SET AUTO SNAPPY`). The resync
+  hint and the verify verdict are set above this wander, so it does not trigger resyncs.
 
 - Levels settle over a few seconds after a large volume change, more slowly at the quiet end. That is the nature of CdS cells.
 - After a large temperature change outside the learned range, a resync gives the best accuracy; the attenuator says when.

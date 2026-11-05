@@ -7,6 +7,7 @@
 #include "QuietSeek.hpp"
 #include "AutoPref.hpp"
 #include "Results.hpp"
+#include "DividerMath.hpp"
 #include "VerifyHistory.hpp"
 #include "DriverChannels.hpp"
 #include "Config.hpp"
@@ -565,37 +566,14 @@ float lastQuietMatchDb() {
 float gKneeShiftLR[2] = {NAN, NAN};
 bool gLastSeekFailed = false;    // the last quiet-point seek did not converge (resync hint)
 
-void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
-  bool seekFailedNow = false;
-  gKneeShiftLR[0] = gKneeShiftLR[1] = NAN;
-  const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
-  constexpr uint8_t MAX_PROBES = 8;
-  constexpr float TOL = QuietSeek::TOL; // each channel within 1.5% of its target ...
-  constexpr float PAIR_TOL = 1.015f;   // ... and the two within 1.5% of each other (~0.13 dB)
-  constexpr uint32_t QUIET_HOLD_MS = 60000;
-  int8_t s0[MAX_CH]; uint32_t oldF[MAX_CH], f[MAX_CH]; float target[MAX_CH], perCount[MAX_CH], got[MAX_CH], err[MAX_CH];
-  bool active[MAX_CH], ok[MAX_CH]; uint8_t probes[MAX_CH] = {0, 0};
-  bool everRead[MAX_CH] = {false, false};
-  out.println(F("--- quiet-end series point (settled seek, stereo-matched) ---"));
-  for (uint8_t c = 0; c < na; c++) {
-    s0[c] = ch[c]->lowestValidStep();
-    active[c] = s0[c] >= 0;
-    ok[c] = false; err[c] = 0.0f;
-    if (!active[c]) continue;
-    const VolumeLut::Entry &e = ch[c]->lut().step((uint8_t)s0[c]);
-    oldF[c] = f[c] = e.seriesFine; target[c] = e.targetRs; got[c] = 0.0f;
-    bool ex; perCount[c] = Capabilities::slopeAt(ch[c]->seriesCurve(), target[c], ex);
-    if (!(perCount[c] > 0.01f)) perCount[c] = 0.25f;
-    ch[c]->driveElementFine(false, e.shuntFine);
-    ch[c]->driveElementFine(true, e.seriesFine);
-  }
-  // The trim ends at the loud steps; a cell needs a while to recover from that (R's
-  // series cell well over a minute on the bench). Measure the quiet point as it is in
-  // listening, not seconds after a loud passage.
-  // Hold the quiet step until the cells have settled from the trims' loud steps: at least
-  // HOLD_MIN_S, then as soon as BOTH channels' series readings drift less than HOLD_BAND over
-  // the last HOLD_WINDOW readings (2 s apart, 10 s) -- a slow memory tail shows as steady
-  // drift and keeps the hold going -- at most QUIET_HOLD_MS. (Was a fixed 60 s.)
+// Hold the step the channels are playing until the series cells have SETTLED: at least
+// HOLD_MIN_S, then as soon as both channels' series readings drift less than 0.4 % over the last
+// 10 s (readings 2 s apart), at most HOLD_MAX_S. CdS keeps conducting more for minutes after
+// strong light (light history): measured before it has recovered, a cell reads brighter than it
+// will be while the volume sits at that step -- a resync then set the table too dark, and VERIFY
+// read the table too loud (the +-2 counts swings in the VERIFY reports). 60 s was not enough:
+// the hold ran out every time. Returns the seconds held; steady = it converged.
+uint32_t holdUntilSettled(LDRVolume *const *ch, uint8_t na, bool &steady, uint32_t HOLD_MAX_S = 240) {
   constexpr uint32_t HOLD_MIN_S = 30;
   constexpr uint8_t  HOLD_WINDOW = 6;
   constexpr float    HOLD_BAND = 1.004f;
@@ -603,10 +581,9 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
   float win[MAX_CH][HOLD_WINDOW] = {};
   uint8_t nWin = 0;
   uint32_t held = 0;
-  bool steady = false;
-  const uint32_t maxS = QUIET_HOLD_MS / 1000;
-  for (uint32_t t = 0; t < maxS; t++) {             // 1 s waits: PROGRESS counts it up
-    CalProgress::step((uint16_t)t, (uint16_t)maxS);
+  steady = false;
+  for (uint32_t t = 0; t < HOLD_MAX_S; t++) {        // 1 s waits: PROGRESS counts it up
+    CalProgress::step((uint16_t)t, (uint16_t)HOLD_MAX_S);
     BusyHook::wait(1000);
     held = t + 1;
     if (held % 2 || held + 10 < HOLD_MIN_S) continue; // readings every 2 s, from 20 s on
@@ -624,6 +601,129 @@ void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stre
     }
     if (steady) break;
   }
+  return held;
+}
+
+// VERIFY's settled step probes: a few steps in the transition from the walk-derived deep steps to
+// the trimmed loud steps -- the first steps whose series target is at or below 300k, 60k and 15k.
+// Each: arrive from the step below (the darker side, as when turning the volume up), hold until
+// the cells settle (at most 90 s: these depths settle far faster than the quiet point), then both
+// cells of both channels against their targets and the level error. A shunt too dark to read is
+// taken at its target (it then barely affects the level).
+void settledStepProbes(LDRVolume *const *ch, uint8_t na, const char *labels, uint8_t *steps,
+                       float (*ser)[3], float (*shu)[3], float (*err)[3], uint16_t *holdS, Stream &out) {
+  static const float AT[3] = {300000.0f, 60000.0f, 15000.0f};
+  const DividerMath::Load load = AudioModel::load();
+  out.println(F("--- settled step probes (each held until the cells settle) ---"));
+  for (uint8_t k = 0; k < 3; k++) {
+    steps[k] = 0xFF; holdS[k] = 0;
+    for (uint8_t c = 0; c < 2; c++) { ser[c][k] = NAN; shu[c][k] = NAN; err[c][k] = NAN; }
+    // the step: from the quiet end upwards, the first whose series target is at or below AT[k]
+    for (uint8_t i = 0; i < ch[0]->numSteps(); i++) {
+      const VolumeLut::Entry &e = ch[0]->lut().step(i);
+      if (!e.valid || ch[0]->lut().isTransparent(i) || e.targetRs > AT[k]) continue;
+      bool dup = false;
+      for (uint8_t j = 0; j < k; j++) if (steps[j] == i) dup = true;
+      if (!dup && i > 0) steps[k] = i;
+      break;
+    }
+    if (steps[k] == 0xFF) continue;
+    const uint8_t st = steps[k];
+    for (uint8_t c = 0; c < na; c++) ch[c]->driveLutStep((uint8_t)(st - 1));     // the darker side
+    BusyHook::wait(DarkWalk::APPROACH_MS);
+    for (uint8_t c = 0; c < na; c++) ch[c]->driveLutStep(st);
+    bool steady;
+    holdS[k] = (uint16_t)holdUntilSettled(ch, na, steady, 90);
+    out.print(F("  step ")); out.print(st); out.print(F(" (held ")); out.print(holdS[k]);
+    out.print(steady ? F(" s)") : F(" s, still drifting)"));
+    for (uint8_t c = 0; c < na; c++) {
+      const VolumeLut::Entry &e = ch[c]->lut().step(st);
+      const uint8_t sd = (labels && labels[c] == 'R') ? 1 : 0;
+      float rsh = 0.0f;
+      const float rs = ch[c]->readAveraged(rsh);                 // both cells readable
+      float rsU = rs, rshU = rsh;
+      if (!(rs > 0.0f) || !(rsh > 0.0f)) {
+        // Too little measuring current (the shunt as dark as this step wants): read the series
+        // with the shunt held bright -- its resistance does not depend on the shunt -- and take
+        // the shunt at its target (masked by the load at these steps). As the step verify does.
+        ch[c]->driveElementFine(false, (uint32_t)CAL_BRIGHT_HOLD_DUTY * DriverChannels::FINE_PER_COUNT);
+        BusyHook::wait(300);
+        float unused;
+        rsU = ch[c]->readAveraged(unused);
+        ch[c]->driveElementFine(false, e.shuntFine);
+        rshU = 0.0f;
+      }
+      if (!(rsU > 0.0f)) { out.print(F(" | ")); out.print(labels ? labels[c] : '?'); out.print(F(" unreadable")); continue; }
+      ser[sd][k] = rsU / e.targetRs;
+      if (rshU > 0.0f && e.targetRsh > 0.0f) shu[sd][k] = rshU / e.targetRsh;
+      const float g = DividerMath::gain(rsU, rshU > 0.0f ? rshU : e.targetRsh, load);
+      err[sd][k] = 20.0f * log10f(g) - e.targetDb;
+      out.print(F(" | ")); out.print(labels ? labels[c] : '?'); out.print(F(" ser x")); out.print(ser[sd][k], 3);
+      out.print(F(" shu ")); if (isnan(shu[sd][k])) out.print(F("--")); else { out.print('x'); out.print(shu[sd][k], 3); }
+      out.print(F(" err ")); if (err[sd][k] >= 0) out.print('+'); out.print(err[sd][k], 2); out.print(F(" dB"));
+    }
+    out.println();
+  }
+}
+
+// VERIFY's settled quiet point: the quiet step as played (compensation included), held until
+// settled, then the series cell against its target, in counts (the seek's local slope).
+// residual > 0: driven brighter than the cells need (louder); NAN if unreadable.
+void settledQuietResidual(LDRVolume *const *ch, uint8_t na, const char *labels, float *residual, uint16_t &heldS, Stream &out) {
+  for (uint8_t c = 0; c < na; c++) {
+    residual[c] = NAN;
+    const int8_t s0 = ch[c]->lowestValidStep();
+    if (s0 < 0) continue;
+    const VolumeLut::Entry &e = ch[c]->lut().step((uint8_t)s0);
+    ch[c]->driveElementFine(false, e.shuntFine);
+    ch[c]->driveElementFine(true, e.seriesFine);
+  }
+  out.println(F("--- settled quiet point (held until the cells settle, then measured) ---"));
+  bool steady;
+  heldS = (uint16_t)holdUntilSettled(ch, na, steady);
+  out.print(F("  held ")); out.print(heldS);
+  out.println(steady ? F(" s: settled") : F(" s: the full hold (still drifting)"));
+  for (uint8_t c = 0; c < na; c++) {
+    const int8_t s0 = ch[c]->lowestValidStep();
+    if (s0 < 0) continue;
+    const float target = ch[c]->lut().step((uint8_t)s0).targetRs;
+    const float r = readSeries(ch[c]);
+    bool ex; float perCount = Capabilities::slopeAt(ch[c]->seriesCurve(), target, ex);
+    if (!(perCount > 0.01f)) perCount = 0.25f;
+    if (r > 0.0f && target > 0.0f) residual[c] = logf(target / r) / perCount;
+    out.print(F("  ")); out.print(labels ? labels[c] : '?'); out.print(F(": series "));
+    if (!(r > 0.0f)) { out.println(F("unreadable")); continue; }
+    out.print(r / 1000.0f, 0); out.print(F("k vs target ")); out.print(target / 1000.0f, 0);
+    out.print(F("k (x")); out.print(r / target, 3); out.print(F(") -> residual "));
+    if (residual[c] >= 0) out.print('+'); out.print(residual[c], 2); out.println(F(" counts"));
+  }
+}
+
+void settleQuietPoint(LDRVolume *const *ch, uint8_t na, const char *labels, Stream &out) {
+  bool seekFailedNow = false;
+  gKneeShiftLR[0] = gKneeShiftLR[1] = NAN;
+  const uint32_t FPC = DriverChannels::FINE_PER_COUNT;
+  constexpr uint8_t MAX_PROBES = 8;
+  constexpr float TOL = QuietSeek::TOL; // each channel within 1.5% of its target ...
+  constexpr float PAIR_TOL = 1.015f;   // ... and the two within 1.5% of each other (~0.13 dB)
+  int8_t s0[MAX_CH]; uint32_t oldF[MAX_CH], f[MAX_CH]; float target[MAX_CH], perCount[MAX_CH], got[MAX_CH], err[MAX_CH];
+  bool active[MAX_CH], ok[MAX_CH]; uint8_t probes[MAX_CH] = {0, 0};
+  bool everRead[MAX_CH] = {false, false};
+  out.println(F("--- quiet-end series point (settled seek, stereo-matched) ---"));
+  for (uint8_t c = 0; c < na; c++) {
+    s0[c] = ch[c]->lowestValidStep();
+    active[c] = s0[c] >= 0;
+    ok[c] = false; err[c] = 0.0f;
+    if (!active[c]) continue;
+    const VolumeLut::Entry &e = ch[c]->lut().step((uint8_t)s0[c]);
+    oldF[c] = f[c] = e.seriesFine; target[c] = e.targetRs; got[c] = 0.0f;
+    bool ex; perCount[c] = Capabilities::slopeAt(ch[c]->seriesCurve(), target[c], ex);
+    if (!(perCount[c] > 0.01f)) perCount[c] = 0.25f;
+    ch[c]->driveElementFine(false, e.shuntFine);
+    ch[c]->driveElementFine(true, e.seriesFine);
+  }
+  bool steady = false;
+  const uint32_t held = holdUntilSettled(ch, na, steady);
   Results::cal.holdS = (uint16_t)held;
   out.print(F("  quiet step held ")); out.print(held);
   out.println(steady ? F(" s: settled (both channels within 0.4 % over 10 s)")

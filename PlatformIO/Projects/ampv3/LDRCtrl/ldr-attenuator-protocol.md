@@ -352,7 +352,7 @@ not reach it.
 **`VERIFY RESULT`** (answered at any time) -- the newest run in one line:
 
 ```
-OK VERIFY SEQ=3 RESTARTS=0 AGE_MIN=12 BLOCK=24.35 RES_L=-10.0 RES_R=-11.0 MOVED_L=29.6 MOVED_R=29.6 SPREAD_L=1.0 SPREAD_R=1.2 MID_L=-8.02 MID_R=-8.10 QUIET_L=-9.40 QUIET_R=-9.10 RMS_L=6.72 RMS_R=6.10 LR=1.89 ADOPTED=1 VERDICT=RESYNC
+OK VERIFY SEQ=3 RESTARTS=0 AGE_MIN=12 BLOCK=24.35 SETTLED_L=+0.41 SETTLED_R=+0.28 HOLD_S=96 RES_L=-10.0 RES_R=-11.0 MOVED_L=29.6 MOVED_R=29.6 SPREAD_L=1.0 SPREAD_R=1.2 MID_L=-8.02 MID_R=-8.10 QUIET_L=-9.40 QUIET_R=-9.10 RMS_L=6.72 RMS_R=6.10 LR=1.89 ADOPTED=1 VERDICT=RESYNC
 ```
 
 | Key | Meaning |
@@ -360,13 +360,14 @@ OK VERIFY SEQ=3 RESTARTS=0 AGE_MIN=12 BLOCK=24.35 RES_L=-10.0 RES_R=-11.0 MOVED_
 | `SEQ` | run number (0 and `VERDICT=NONE`: no run on record) |
 | `RESTARTS`, `AGE_MIN` | how long ago: restarts since, and minutes if in this power-up (`-` otherwise) |
 | `BLOCK` | driver block temperature during the run |
-| `RES_L/R` | residual, counts: the table plus the compensation minus what the cells need. Near 0: fits. Negative: driven too dark (quieter), positive: too bright (louder) |
+| `SETTLED_L/R`, `HOLD_S` | **the verdict's measurement:** at the end of the run the quiet step is played as heard (compensation included) and held until the series cells settle (up to 240 s, `HOLD_S`), then each channel's residual in counts. Positive: driven brighter than needed (louder). `--` for runs from older firmware |
+| `RES_L/R` | the walk's residual, counts (table plus compensation minus what the cells need). Measured minutes after loud passages, so it carries the cells' light history (about +-2 counts): informative, not used for the verdict |
 | `MOVED_L/R`, `SPREAD_L/R` | how far the cells moved since the stored walk (counts of effective drive), and the range over the depths (small: a uniform, temperature-like shift) |
 | `MID_L/R` | mean level error of the middle steps, dB |
 | `QUIET_L/R` | mean level error of the quiet steps (volume-up pass, step 0 left out), dB |
 | `RMS_L/R`, `LR` | rms level error of all steps (volume up), worst L-R difference, dB |
 | `ADOPTED` | 1 if the stored walk is now this run's |
-| `VERDICT` | `OK`; `RESYNC` (residual beyond 3 counts, middle steps beyond 1 dB, or quiet steps beyond 1.5 dB: a resync fixes it); `CHECK` (L and R differ by more than 3 counts, or a shape change: worth a look on the console) |
+| `VERDICT` | from the **settled** quiet point only: `OK`; `RESYNC` (a settled residual beyond 3 counts: a resync fixes it -- the cells themselves wander about +-2 counts with their recent light history, the same on both channels, so smaller values are no table error); `CHECK` (the two channels' settled residuals more than 3 counts apart, or a shape change in the walk: worth a look on the console). The quick step readings (`MID`, `QUIET`, `RMS`, `LR`) depend on what played minutes before -- CdS light history -- and are reported, not judged. A run without a settled measurement (older firmware) gives `OK` |
 
 **`ENV`: `RESYNC=1 WHY=VERIFY`** when the newest run's verdict is `RESYNC` and no calibration has
 run since -- held as `WHY=WARMING` during warm-up, like the temperature reasons; the next resync

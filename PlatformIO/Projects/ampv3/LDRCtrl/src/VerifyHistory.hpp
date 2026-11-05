@@ -37,6 +37,15 @@ struct Record {
   int16_t creepPeakT[2][2];
   float cellWorst[2] = {0, 0};
   uint8_t cellOff[2] = {0, 0}, cellChanged[2] = {0, 0};
+  // -- appended (2026-10-31b): kept LAST, so a record from before is a prefix of this one --
+  float settled[2] = {NAN, NAN};     // settled quiet-point residual, counts (> 0: louder)
+  uint16_t settledHoldS = 0;
+  // -- appended (2026-11-01b): settled step probes in the walk/trim transition --
+  uint8_t probeStep[3] = {0xFF, 0xFF, 0xFF};
+  float probeSer[2][3] = {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
+  float probeShu[2][3] = {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
+  float probeErr[2][3] = {{NAN, NAN, NAN}, {NAN, NAN, NAN}};
+  uint16_t probeHoldS[3] = {0, 0, 0};
 };
 
 void begin();                        // load; call after LittleFS is mounted
@@ -50,7 +59,7 @@ void restoreResults();               // the newest run back into Results (after 
 // hint knows whether the newest run still describes the table.
 void noteCalibration(uint32_t full, uint32_t resync);
 // A stored run's figures and verdict (VerifyAnalysis::verdict).
-struct Summary { float residual[2], spread[2], middleDb[2], quietDb[2], rms[2], worstLR; uint8_t verdict; };
+struct Summary { float residual[2], spread[2], middleDb[2], quietDb[2], rms[2], worstLR, settled[2]; uint8_t verdict; };
 Summary summarize(const Record &r);
 // The newest run said RESYNC and no calibration has run since (the hint's WHY=VERIFY).
 bool pendingResync();

@@ -27,18 +27,18 @@ inline uint16_t nominal(Kind k, Phase p) {
   switch (k) {
     case Kind::VERIFY:                 // ~8 min: cell check, every step up/down, the walk, creep
       switch (p) { case Phase::CHECK: return 10; case Phase::STEPS: return 200; case Phase::WALK: return 120;
-                   case Phase::CREEP: return 125; default: return 0; }
+                   case Phase::CREEP: return 125; case Phase::HOLD: return 240; default: return 0; }
     case Kind::FULL:
       switch (p) { case Phase::SWEEP_SERIES: return 80; case Phase::SWEEP_SHUNT: return 80;
                    case Phase::WALK: return 90; case Phase::SOLVE: return 3; case Phase::TRIM: return 35;
-                   case Phase::HOLD: return 40; case Phase::SEEK: return 30; case Phase::SAVE: return 5;
+                   case Phase::HOLD: return 120; case Phase::SEEK: return 30; case Phase::SAVE: return 5;
                    default: return 0; }
     case Kind::RESOLVE:
       if (p == Phase::SOLVE) return 3;
       // fall through: otherwise a resync
     case Kind::RESYNC:
     case Kind::NONE:
-      switch (p) { case Phase::CHECK: return 8; case Phase::TRIM: return 22; case Phase::HOLD: return 40;
+      switch (p) { case Phase::CHECK: return 8; case Phase::TRIM: return 22; case Phase::HOLD: return 120;
                    case Phase::SEEK: return 55; case Phase::SAVE: return 4; default: return 0; }
   }
   return 0;

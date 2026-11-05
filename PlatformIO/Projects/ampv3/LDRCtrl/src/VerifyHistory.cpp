@@ -27,11 +27,16 @@ void begin() {
   File f = LittleFS.open(PATH, "r");
   if (!f) return;
   Header h;
-  const bool ok = f.read((uint8_t *)&h, sizeof h) == (int)sizeof h && memcmp(h.magic, "VHS1", 4) == 0 &&
-                  h.recSize == sizeof(Record) && h.count <= KEEP &&
-                  f.read((uint8_t *)gRec, sizeof(Record) * h.count) == (int)(sizeof(Record) * h.count);
+  bool ok = f.read((uint8_t *)&h, sizeof h) == (int)sizeof h && memcmp(h.magic, "VHS1", 4) == 0 &&
+            h.count <= KEEP && h.recSize > 0 && h.recSize <= sizeof(Record);
+  // Records only ever GROW at their end: an older, shorter record is read into a fresh one, its
+  // new fields keep their defaults ("not measured"). A different layout: history starts afresh.
+  for (uint8_t i = 0; ok && i < h.count; i++) {
+    gRec[i] = Record{};
+    ok = f.read((uint8_t *)&gRec[i], h.recSize) == (int)h.recSize;
+  }
   f.close();
-  if (ok) gN = (uint8_t)h.count;     // a different layout (older firmware): history starts afresh
+  if (ok) gN = (uint8_t)h.count;
 }
 
 uint8_t count() { return gN; }
@@ -92,7 +97,8 @@ Summary summarize(const Record &r) {
     const float d = fabsf(r.up[0][i] - r.up[1][i]);
     if (isnan(s.worstLR) || d > s.worstLR) s.worstLR = d;
   }
-  s.verdict = (uint8_t)VerifyAnalysis::verdict(s.residual, s.spread, s.middleDb, s.quietDb);
+  s.settled[0] = r.settled[0]; s.settled[1] = r.settled[1];
+  s.verdict = (uint8_t)VerifyAnalysis::verdict(s.settled, s.spread);
   return s;
 }
 

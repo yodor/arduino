@@ -967,6 +967,17 @@ void ConsoleCommands::cmdReport(Args &) {
         out.line("%s", buf);
       }
       if (w.fromVerify) {
+        const VerifyHistory::Record *sr = VerifyHistory::latest();
+        if (sr) out.line("  SETTLED quiet point: residual L %s R %s counts (held %u s) -- the verdict's measurement; %s",
+                         fx(sr->settled[0], 2, true).s, fx(sr->settled[1], 2, true).s, (unsigned)sr->settledHoldS,
+                         VerifyAnalysis::verdictName((VerifyAnalysis::Verdict)VerifyHistory::summarize(*sr).verdict));
+        if (sr) for (uint8_t k = 0; k < 3; k++) {
+          if (sr->probeStep[k] == 0xFF) continue;
+          out.line("  SETTLED step %2u (held %3u s): L ser x%s shu %s err %s dB | R ser x%s shu %s err %s dB",
+                   (unsigned)sr->probeStep[k], (unsigned)sr->probeHoldS[k],
+                   fx(sr->probeSer[0][k], 3).s, isnan(sr->probeShu[0][k]) ? "--" : fx(sr->probeShu[0][k], 3).s, fx(sr->probeErr[0][k], 2, true).s,
+                   fx(sr->probeSer[1][k], 3).s, isnan(sr->probeShu[1][k]) ? "--" : fx(sr->probeShu[1][k], 3).s, fx(sr->probeErr[1][k], 2, true).s);
+        }
         out.line("  vs stored: shift L %s R %s counts | ratio L x%s..%s R x%s..%s",
                  fx(w.shift[0], 1, true).s, fx(w.shift[1], 1, true).s, fx(w.ratioMin[0], 2).s, fx(w.ratioMax[0], 2).s,
                  fx(w.ratioMin[1], 2).s, fx(w.ratioMax[1], 2).s);
@@ -985,13 +996,20 @@ void ConsoleCommands::cmdReport(Args &) {
       const VerifyHistory::Record *rec = VerifyHistory::latest();
       if (rec) out.line("STEPS  (VERIFY #%u, %s) level error in dB, volume up / down; L-R measured (up)", (unsigned)rec->seq, whenOf(*rec).s);
       else out.line("STEPS  (VERIFY, %s ago) level error in dB, volume up / down; L-R measured (up)", ago(v.ms).s);
-      out.line("  st  target   L up   R up   L dn   R dn    L-R");
+      out.line("  st  target   L up   R up   L dn   R dn    L-R | L ser/shu     R ser/shu    (live/target, volume up)");
       for (uint8_t i = 0; i < v.n; i++) {
         if (isnan(v.target[i])) continue;
         const float e[4] = {v.up[0][i] - v.target[i], v.up[1][i] - v.target[i], v.dn[0][i] - v.target[i], v.dn[1][i] - v.target[i]};
         if (isnan(e[0]) && isnan(e[1]) && isnan(e[2]) && isnan(e[3])) continue;
-        out.line("  %2u %7s %6s %6s %6s %6s %6s", (unsigned)i, fx(v.target[i], 2).s, fx(e[0], 2, true).s, fx(e[1], 2, true).s,
-                 fx(e[2], 2, true).s, fx(e[3], 2, true).s, fx(v.up[0][i] - v.up[1][i], 2, true).s);
+        // Each cell against its target (volume up): which cell makes a level error. "--" = not
+        // measured (a shunt switched off, or too dark to read).
+        char cell[2][48];
+        for (uint8_t c = 0; c < 2; c++) {
+          const float rs = v.upSer[c][i], rh = v.upShu[c][i];
+          snprintf(cell[c], sizeof cell[c], "%s%s/%s%s", isnan(rs) ? "" : "x", fx(rs, 2).s, isnan(rh) ? "" : "x", fx(rh, 2).s);
+        }
+        out.line("  %2u %7s %6s %6s %6s %6s %6s | %-12s  %-12s", (unsigned)i, fx(v.target[i], 2).s, fx(e[0], 2, true).s, fx(e[1], 2, true).s,
+                 fx(e[2], 2, true).s, fx(e[3], 2, true).s, fx(v.up[0][i] - v.up[1][i], 2, true).s, cell[0], cell[1]);
       }
       float rms[4], worst[4]; uint8_t cnt[4];
       Results::errorStats(v.up[0], v.target, v.n, rms[0], worst[0], cnt[0]);
@@ -1410,6 +1428,11 @@ void ConsoleCommands::runVerify() {
     verifyWalk();
     CalProgress::phase(CalProgress::Phase::CREEP);
     verifyCreep(90);
+    // A few steps where the walk-derived and the trimmed steps meet, each held until settled.
+    { Results::Walk &w = Results::walk;
+      DualCalibration::settledStepProbes(both, 2, "LR", w.probeStep, w.probeSer, w.probeShu, w.probeErr, w.probeHoldS, stream_); }
+    // The verdict's measurement: the quiet step as played, held until the cells settle.
+    DualCalibration::settledQuietResidual(both, 2, "LR", Results::walk.settled, Results::walk.settledHoldS, stream_);
     LDRVolume::releaseToAudio(both, 2);
   }
   VerifyHistory::Record rec;
@@ -1430,9 +1453,11 @@ void ConsoleCommands::runVerify() {
     out.line("WALK     %s: %s instead of %s", Commands::adoptText(ad), fx(pick, 0).s, fx(left_.rTotalOhms(), 0).s);
   else out.line("WALK     %s", Commands::adoptText(ad));
   const VerifyHistory::Summary sm = VerifyHistory::summarize(rec);
-  out.line("VERDICT  %s  (residual L %s R %s counts, quiet steps L %s R %s dB, middle steps L %s R %s dB)",
-           VerifyAnalysis::verdictName((VerifyAnalysis::Verdict)sm.verdict), fx(sm.residual[0], 1, true).s, fx(sm.residual[1], 1, true).s,
-           fx(sm.quietDb[0], 2, true).s, fx(sm.quietDb[1], 2, true).s, fx(sm.middleDb[0], 2, true).s, fx(sm.middleDb[1], 2, true).s);
+  out.line("VERDICT  %s  (settled quiet point L %s R %s counts, held %u s) | quick readings, not used for the verdict:"
+           " quiet steps L %s R %s dB, middle L %s R %s dB, walk residual L %s R %s",
+           VerifyAnalysis::verdictName((VerifyAnalysis::Verdict)sm.verdict), fx(sm.settled[0], 2, true).s, fx(sm.settled[1], 2, true).s,
+           (unsigned)rec.settledHoldS, fx(sm.quietDb[0], 2, true).s, fx(sm.quietDb[1], 2, true).s, fx(sm.middleDb[0], 2, true).s,
+           fx(sm.middleDb[1], 2, true).s, fx(sm.residual[0], 1, true).s, fx(sm.residual[1], 1, true).s);
   Board::reportDieTemp(stream_, F("Die temp at the end"), millis() - t0);
   out.line("===== VERIFY END (#%u stored) -- send REPORT for the summary =====", (unsigned)rec.seq);
 }
@@ -1470,7 +1495,13 @@ void ConsoleCommands::buildVerifyRecord(VerifyHistory::Record &r) {
     for (uint8_t i = 0; i < DarkProfile::MAX_POINTS; i++) { r.peak[c][i] = w.peak[c][i]; r.peakS[c][i] = w.peakS[c][i]; }
     r.trackedShift[c] = w.shift[c]; r.ratioMin[c] = w.ratioMin[c]; r.ratioMax[c] = w.ratioMax[c];
     r.moved[c] = w.moved[c]; r.movedSpread[c] = w.movedSpread[c];
+    r.settled[c] = w.settled[c];
     if (!isnan(w.compOff[c])) r.compOff[c] = w.compOff[c];      // the offset the walk actually ran with
+  }
+  r.settledHoldS = w.settledHoldS;
+  for (uint8_t k = 0; k < 3; k++) {
+    r.probeStep[k] = w.probeStep[k]; r.probeHoldS[k] = w.probeHoldS[k];
+    for (uint8_t c = 0; c < 2; c++) { r.probeSer[c][k] = w.probeSer[c][k]; r.probeShu[c][k] = w.probeShu[c][k]; r.probeErr[c][k] = w.probeErr[c][k]; }
   }
   const Results::Creep &cr = Results::creep;
   for (uint8_t ph = 0; ph < 2; ph++) for (uint8_t c = 0; c < 2; c++) {
@@ -1531,20 +1562,21 @@ void ConsoleCommands::printVerifyChanges(Console &out, const VerifyHistory::Reco
   else if (!uni)
     out.line("  => the cells' SHAPE changed: some depths moved more than others (spread up to %s counts) -- not a plain temperature shift",
              fx((s[0].max - s[0].min) > (s[1].max - s[1].min) ? s[0].max - s[0].min : s[1].max - s[1].min, 1).s);
-  else if (fabsf(dT) >= 0.5f) {
+  else if (fabsf(dT) >= 0.5f && !isnan(a.compK[0]) && fabsf(0.5f * (a.compK[0] + a.compK[1]) * dT) >= VerifyAnalysis::WANDER_JUDGE) {
     const float meas = mean / dT, learned = 0.5f * (a.compK[0] + a.compK[1]);
     out.line("  => both cells shifted uniformly, %s counts for %s C = %s/C; the learning uses %s/C%s", fx(mean, 1, true).s,
              fx(dT, 2, true).s, fx(meas, 2, true).s, fx(learned, 2, true).s,
              isnan(learned) ? "" : fabsf(meas - learned) <= 0.2f * fabsf(learned) ? " -- consistent" : " -- the compensation is off by more than 20 %");
   } else {
-    // A small temperature change still moves the cells: show what the learned slope accounts for.
+    // A small temperature change (its expected shift within the cells' +-2-count wander): show
+    // what the learned slope accounts for, and whether the rest fits within the wander.
     const float learned = 0.5f * (a.compK[0] + a.compK[1]);
     const float expect = isnan(learned) ? NAN : learned * dT;
-    if (!isnan(expect) && fabsf(mean - expect) <= 1.5f)
-      out.line("  => both cells shifted uniformly by %s counts; the %s C temperature change accounts for %s of it (learned %s/C) -- consistent",
+    if (!isnan(expect) && fabsf(mean - expect) <= 2.0f)
+      out.line("  => both cells shifted uniformly by %s counts; the %s C temperature change accounts for %s (learned %s/C); the rest is within the cells' history-dependent wander (+-2 counts) -- consistent",
                fx(mean, 1, true).s, fx(dT, 2, true).s, fx(expect, 1, true).s, fx(learned, 2, true).s);
     else
-      out.line("  => both cells shifted uniformly by %s counts; the %s C temperature change accounts for %s (learned %s/C), leaving %s -- drift, or memory from what played before",
+      out.line("  => both cells shifted uniformly by %s counts; the %s C temperature change accounts for %s (learned %s/C), leaving %s -- beyond the usual wander: drift, or memory from what played before",
                fx(mean, 1, true).s, fx(dT, 2, true).s, fx(expect, 1, true).s, fx(learned, 2, true).s, fx(mean - expect, 1, true).s);
   }
 }
