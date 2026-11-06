@@ -163,9 +163,9 @@ void loop() {
     MasterConsole::instance().update(); // USB console + attenuator pass-through
     Console::service();                 // send the lines core 1 queued
 
-    // DOWN's double-click (mute) only outside the menu, the display test and
-    // standby -- there DOWN must act at once.
-    InputEngine::instance().setDownGestures(!g_views.menuOpen() && !g_views.displayTestOpen() && PowerControl::instance().isOn());
+    // The UP+DOWN mute chord only outside the menu, the display test and
+    // standby -- there UP and DOWN navigate.
+    InputEngine::instance().setVolumeChord(!g_views.menuOpen() && !g_views.displayTestOpen() && PowerControl::instance().isOn());
     UIEvent event = InputEngine::instance().pollEvents();
 
     // Any key or remote press counts as activity for auto standby.

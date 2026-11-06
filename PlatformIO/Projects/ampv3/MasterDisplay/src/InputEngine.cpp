@@ -92,26 +92,15 @@ UIEvent InputEngine::pollEvents() {
         if (!consumed) push(UIEvent::MODE_NEXT);
     }
 
-    // DOWN gestures: double-click = mute, single tap = one step down (after
-    // the double-click window), hold = repeat (isVolDownHeld()).
-    if (m_downGestures) {
-        if (m_btnVolDown.justReleased) {
-            bool tap = (now - m_btnVolDown.pressedSinceMs) < DOWN_HOLD_MS;
-            if (tap && m_downTapPending && now - m_downTapMs <= DOUBLE_CLICK_MS) {
-                m_downTapPending = false;
-                push(UIEvent::MUTE_TOGGLE);
-            } else if (tap) {
-                m_downTapPending = true;
-                m_downTapMs      = now;
-            } else {
-                m_downTapPending = false; // that was a hold; it already stepped the volume
-            }
-        }
-        if (m_downTapPending && !m_btnVolDown.isHeld() && now - m_downTapMs > DOUBLE_CLICK_MS) {
-            m_downTapPending = false;
-            push(UIEvent::GAIN_DOWN);
-        }
+    // The mute chord: UP and DOWN down together -> mute toggle, then the
+    // volume buttons stay quiet until both are released (setVolumeChord()).
+    bool upDown = m_btnVolUp.isHeld(), downDown = m_btnVolDown.isHeld();
+    if (m_chordEnabled && !m_chordLatched && upDown && downDown) {
+        m_chordLatched = true;
+        push(UIEvent::MUTE_TOGGLE);
+        if (m_monitor) Console::log("Btn", "UP+DOWN chord -> mute");
     }
+    if (m_chordLatched && !upDown && !downDown) m_chordLatched = false;
 
     // IR Signal Receiver
     if (m_irPin != 255 && IrReceiver.decode()) {
